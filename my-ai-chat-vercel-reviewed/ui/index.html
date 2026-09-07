@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#0f1219" />
+    <meta name="description" content="My AI Chat — a refined personal AI chat client prototype." />
+    <title>My AI Chat</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <div class="mobile-scrim" id="mobileScrim" aria-hidden="true"></div>
+
+      <aside class="sidebar" id="sidebar" aria-label="Chat history">
+        <div class="sidebar-head">
+          <div class="brand-row">
+            <div class="brand-mark" aria-hidden="true">M</div>
+            <span class="brand-name">My AI Chat</span>
+            <button class="icon-button sidebar-close" id="closeSidebar" aria-label="Close sidebar" title="Close sidebar">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+          <button class="new-chat-button" id="newChatButton">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            <span>New Chat</span>
+            <kbd>Ctrl K</kbd>
+          </button>
+          <label class="search-box" for="chatSearch">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+            <input id="chatSearch" type="search" placeholder="Search chats" autocomplete="off" />
+          </label>
+        </div>
+
+        <nav class="history-scroll" aria-label="Conversations">
+          <section class="history-section folders-section">
+            <button class="section-label section-toggle" id="foldersToggle" aria-expanded="true">
+              <span>Folders</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+            </button>
+            <div class="folder-list" id="folderList">
+              <button class="history-item folder-item">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5h6l2 2h9v9h-17z"/></svg>
+                <span>Work ideas</span><span class="count">8</span>
+              </button>
+              <button class="history-item folder-item">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5h6l2 2h9v9h-17z"/></svg>
+                <span>Learning</span><span class="count">12</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="history-section" id="todayChats">
+            <div class="section-label">Today</div>
+            <button class="history-item chat-item active" data-chat-id="launch">
+              <span class="chat-title">Plan a product launch</span>
+              <span class="item-more" aria-hidden="true">•••</span>
+            </button>
+            <button class="history-item chat-item" data-chat-id="react">
+              <span class="chat-title">Explain React state</span>
+              <span class="item-more" aria-hidden="true">•••</span>
+            </button>
+            <button class="history-item chat-item" data-chat-id="email">
+              <span class="chat-title">Improve a client email</span>
+              <span class="item-more" aria-hidden="true">•••</span>
+            </button>
+          </section>
+
+          <section class="history-section">
+            <div class="section-label">Yesterday</div>
+            <button class="history-item chat-item" data-chat-id="travel">
+              <span class="chat-title">Singapore weekend plan</span>
+              <span class="item-more" aria-hidden="true">•••</span>
+            </button>
+            <button class="history-item chat-item" data-chat-id="python">
+              <span class="chat-title">Python data cleanup</span>
+              <span class="item-more" aria-hidden="true">•••</span>
+            </button>
+            <button class="history-item chat-item" data-chat-id="notes">
+              <span class="chat-title">Summarize meeting notes</span>
+              <span class="item-more" aria-hidden="true">•••</span>
+            </button>
+          </section>
+        </nav>
+
+        <div class="sidebar-footer">
+          <button class="history-item settings-button" id="settingsButton">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.2h-4v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3v-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5V3h4v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.1v4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+            <span>Settings</span>
+            <span class="theme-hint" id="themeHint">Dark</span>
+          </button>
+        </div>
+      </aside>
+
+      <main class="main-panel">
+        <header class="topbar">
+          <button class="icon-button menu-button" id="openSidebar" aria-label="Open sidebar" title="Open sidebar">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          </button>
+          <div class="model-wrap">
+            <button class="model-button" id="modelButton" aria-haspopup="listbox" aria-expanded="false">
+              <span class="model-dot" aria-hidden="true"></span>
+              <span id="currentModel">Gemini 3.1 Pro</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg>
+            </button>
+            <div class="model-menu" id="modelMenu" role="listbox" aria-label="Choose model"></div>
+          </div>
+          <div class="topbar-actions">
+            <span class="prototype-badge">Phase 2</span>
+            <button class="icon-button quick-theme" id="quickTheme" aria-label="Switch to light mode" title="Toggle theme">
+              <svg class="moon-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.2A8 8 0 0 1 8.8 4 8 8 0 1 0 20 15.2Z"/></svg>
+              <svg class="sun-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+            </button>
+          </div>
+        </header>
+
+        <section class="conversation" id="conversation" aria-live="polite"></section>
+
+        <div class="composer-dock">
+          <div class="composer-wrap">
+            <div class="attachment-chip" id="attachmentChip" hidden>
+              <span class="file-icon">TXT</span>
+              <span><strong>notes.txt</strong><small>Ready to attach</small></span>
+              <button id="removeAttachment" aria-label="Remove attachment">×</button>
+            </div>
+            <form class="composer" id="composerForm">
+              <textarea id="messageInput" rows="1" placeholder="Message Gemini 3.1 Pro…" aria-label="Message" maxlength="50000"></textarea>
+              <div class="composer-actions">
+                <div class="composer-left">
+                  <button class="composer-icon" type="button" id="attachButton" disabled aria-label="Attachments not enabled" title="Attachments are not enabled in Phase 2">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8.5 12.5 6.6-6.6a3 3 0 0 1 4.2 4.2l-8.5 8.5a5 5 0 0 1-7.1-7.1l8-8"/></svg>
+                  </button>
+                  <button class="mode-pill" type="button" id="thinkingMode" disabled aria-label="Thinking uses model defaults" title="Uses model defaults">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 22h4M8.2 14.5A7 7 0 1 1 15.8 14.5c-.8.6-1.3 1.4-1.4 2.5h-4.8c-.1-1.1-.6-1.9-1.4-2.5Z"/></svg>
+                    <span>Thinking</span>
+                  </button>
+                </div>
+                <button class="send-button" type="submit" id="sendButton" aria-label="Send message">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg>
+                </button>
+              </div>
+            </form>
+            <p class="composer-note">Chats stay in this tab until refresh. AI can make mistakes.</p>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <dialog class="settings-dialog" id="settingsDialog">
+      <form method="dialog" class="settings-card">
+        <div class="settings-head">
+          <div><p class="eyebrow">Preferences</p><h2>Settings</h2></div>
+          <button class="icon-button" value="cancel" aria-label="Close settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+        <div class="setting-row">
+          <div><strong>Appearance</strong><p>Choose the theme that feels best.</p></div>
+          <div class="segmented" role="group" aria-label="Appearance">
+            <button type="button" data-theme-choice="dark">Dark</button>
+            <button type="button" data-theme-choice="light">Light</button>
+          </div>
+        </div>
+        <div class="setting-row muted-setting">
+          <div><strong>Sync across devices</strong><p>Planned for a future version.</p></div>
+          <span class="coming-soon">Coming soon</span>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
