@@ -50,3 +50,4 @@ there is no database, login, upload system, or cloud sync in this package.
 `vercel.json` explicitly enables `supportsCancellation` for `api/chat.js` so a
 browser-side Stop/cancel can propagate through `request.signal` to the Gemini
 SDK on Vercel's Node.js runtime.
+test
