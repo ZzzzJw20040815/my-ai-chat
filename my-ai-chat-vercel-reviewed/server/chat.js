@@ -1,5 +1,8 @@
 import { GoogleGenAI } from '@google/genai';
-import { isAllowedModel } from '../shared/models.js';
+import { isAllowedModel, modelMetadata } from '../shared/models.js';
+import {
+  MAX_OUTPUT_TOKENS_LIMIT, MAX_SYSTEM_INSTRUCTION_LENGTH, SAMPLING_LIMITS, THINKING_LEVELS,
+} from '../shared/settings.js';
 
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_MESSAGES = 100;
@@ -45,7 +48,44 @@ export function validatePayload(payload) {
     return { role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] };
   });
   if (contents.at(-1).role !== 'user') throw new Error('INVALID_REQUEST');
-  return { model: payload.model, contents };
+  return { model: payload.model, contents, config: validateGenerationSettings(payload.settings, payload.model) };
+}
+function invalidRequest() { throw new Error('INVALID_REQUEST'); }
+function validNumber(value, limits) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= limits.min && value <= limits.max;
+}
+export function validateGenerationSettings(value, modelId) {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalidRequest();
+  const config = {};
+  if ('systemInstruction' in value) {
+    if (typeof value.systemInstruction !== 'string' || value.systemInstruction.length > MAX_SYSTEM_INSTRUCTION_LENGTH) invalidRequest();
+    if (value.systemInstruction.trim()) config.systemInstruction = value.systemInstruction;
+  }
+  if ('maxOutputTokens' in value && value.maxOutputTokens !== null) {
+    if (!Number.isInteger(value.maxOutputTokens) || value.maxOutputTokens < 1 || value.maxOutputTokens > MAX_OUTPUT_TOKENS_LIMIT) invalidRequest();
+    config.maxOutputTokens = value.maxOutputTokens;
+  }
+  if ('thinkingLevel' in value && value.thinkingLevel !== 'default') {
+    if (!THINKING_LEVELS.includes(value.thinkingLevel)) invalidRequest();
+    if (!modelMetadata(modelId)?.capabilities.thinkingLevels.includes(value.thinkingLevel)) invalidRequest();
+    config.thinkingConfig = { thinkingLevel: value.thinkingLevel.toUpperCase() };
+  }
+  if ('samplingOverrides' in value) {
+    const sampling = value.samplingOverrides;
+    if (!sampling || typeof sampling !== 'object' || Array.isArray(sampling) || typeof sampling.enabled !== 'boolean') invalidRequest();
+    if (sampling.enabled) {
+      if (!validNumber(sampling.temperature, SAMPLING_LIMITS.temperature)
+        || !validNumber(sampling.topP, SAMPLING_LIMITS.topP)) invalidRequest();
+      config.temperature = sampling.temperature;
+      config.topP = sampling.topP;
+      if (modelMetadata(modelId)?.capabilities.topK) {
+        if (!Number.isInteger(sampling.topK) || !validNumber(sampling.topK, SAMPLING_LIMITS.topK)) invalidRequest();
+        config.topK = sampling.topK;
+      }
+    }
+  }
+  return config;
 }
 async function readPayload(request) {
   const reader = request.body?.getReader();
@@ -67,7 +107,7 @@ async function readPayload(request) {
 export async function googleStream(apiKey, params, signal) {
   const ai = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: 'v1beta' } });
   return ai.models.generateContentStream({
-    ...params, config: { abortSignal: signal, maxOutputTokens: 8192 },
+    ...params, config: { ...params.config, abortSignal: signal },
   });
 }
 // Injectable transport is only for unit tests; requests cannot select a mock.

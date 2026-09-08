@@ -19,7 +19,7 @@ export function createChat(model = DEFAULT_MODEL) {
     group: 'Today', messages: [], draft: '', scrollTop: 0, demo: false };
 }
 // Include complete turns only. Failed/stopped partial responses never masquerade as valid context.
-export function contextFor(chat, userId) {
+export function contextFor(chat, userId, contextLimit = 'all') {
   const end = chat.messages.findIndex(message => message.id === userId && message.role === 'user');
   if (end < 0) throw new Error('Message not found');
   const result = [];
@@ -33,5 +33,13 @@ export function contextFor(chat, userId) {
       index++;
     }
   }
-  return result.map(({ id, role, content, status }) => ({ id, role, content, status }));
+  let limited = result;
+  if (contextLimit !== 'all') {
+    const limit = Number(contextLimit);
+    if ([10, 20, 50].includes(limit) && result.length > limit) {
+      limited = result.slice(-limit);
+      if (limited[0]?.role === 'assistant') limited = limited.slice(1);
+    }
+  }
+  return limited.map(({ id, role, content, status }) => ({ id, role, content, status }));
 }
