@@ -8,13 +8,14 @@ export function uniqueId(source = crypto) {
   return [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-');
 }
 /** Message: stable UUID, role, Markdown content, ISO createdAt, status, model, feedback.
- * Chat: stable UUID, title, model, createdAt, messages, draft. Memory only. */
+ * Chat: stable UUID, title, model, createdAt/updatedAt, folderId and messages. */
 export function createMessage(role, content = '', model = null) {
   return { id: uniqueId(), role, content, createdAt: new Date().toISOString(),
     status: 'complete', model: role === 'assistant' ? model : null, feedback: null };
 }
 export function createChat(model = DEFAULT_MODEL) {
-  return { id: uniqueId(), title: 'New conversation', model, createdAt: new Date().toISOString(),
+  const createdAt = new Date().toISOString();
+  return { id: uniqueId(), title: 'New conversation', model, folderId: null, createdAt, updatedAt: createdAt,
     group: 'Today', messages: [], draft: '', scrollTop: 0, demo: false };
 }
 // Include complete turns only. Failed/stopped partial responses never masquerade as valid context.

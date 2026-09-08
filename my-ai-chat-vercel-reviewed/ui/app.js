@@ -2,12 +2,14 @@ import { MODELS, DEFAULT_MODEL, modelName, isAllowedModel } from '../shared/mode
 import { demoData } from './demo.js';
 import { icons } from './icons.js';
 import { createChat, createMessage, contextFor } from './state.js';
+import { loadOrSeedChats, saveChat } from './storage.js';
 import { renderMarkdown } from './markdown.js';
 import { consumeStream } from './stream.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const escapeHtml = value => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+const ACTIVE_CHAT_STORAGE_KEY = 'my-ai-chat-active-chat-id';
 const chats = new Map();
 function demoMarkdown(html) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -23,14 +25,20 @@ function demoMarkdown(html) {
   }
   return convert(doc.body).trim();
 }
-for (const [oldId, data] of Object.entries(demoData)) {
-  const chat = createChat();
-  chat.title = data.title; chat.demo = true;
-  chat.group = data.subtitle.startsWith('Yesterday') ? 'Yesterday' : 'Today';
-  chat.messages = data.messages.map(item => createMessage(item.role, item.text || demoMarkdown(item.html), DEFAULT_MODEL));
-  chats.set(chat.id, chat);
+function createDemoChats() {
+  const seedTime = Date.now();
+  return Object.entries(demoData).map(([oldId, data], index) => {
+    const chat = createChat();
+    chat.id = 'demo-' + oldId;
+    chat.createdAt = new Date(seedTime + index).toISOString();
+    chat.updatedAt = chat.createdAt;
+    chat.title = data.title; chat.demo = true;
+    chat.group = data.subtitle.startsWith('Yesterday') ? 'Yesterday' : 'Today';
+    chat.messages = data.messages.map(item => createMessage(item.role, item.text || demoMarkdown(item.html), DEFAULT_MODEL));
+    return chat;
+  });
 }
-let activeChat = chats.keys().next().value, generation = null, editingId = null, toastTimer;
+let activeChat, generation = null, editingId = null, toastTimer, storageWarningShown = false;
 const conversation = $('#conversation'), input = $('#messageInput');
 const sendIcon = $('#sendButton').innerHTML;
 const mobile = matchMedia('(max-width: 819px)');
@@ -39,6 +47,19 @@ const current = () => chats.get(activeChat);
 function toast(message) {
   $('#toast').textContent = message; $('#toast').classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('show'), 2500);
+}
+function rememberActiveChat(id) {
+  try { localStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, id); } catch {}
+}
+async function persistChat(chat) {
+  chat.updatedAt = new Date().toISOString();
+  try { await saveChat(chat); }
+  catch {
+    if (!storageWarningShown) {
+      storageWarningShown = true;
+      toast('Local storage is unavailable. This session will remain in memory only.');
+    }
+  }
 }
 function renderHistory() {
   const term = $('#chatSearch').value.trim().toLowerCase();
@@ -144,12 +165,13 @@ function openSidebar() {
 function selectChat(id) {
   current().draft = input.value; current().scrollTop = conversation.scrollTop;
   activeChat = id; editingId = null; input.value = current().draft;
+  rememberActiveChat(activeChat);
   closeSidebar(); syncModel(); syncComposer(); renderHistory(); renderConversation();
   conversation.scrollTop = current().scrollTop;
 }
-function newChat() {
+async function newChat() {
   const chat = createChat(current().model); chats.set(chat.id, chat); $('#chatSearch').value = '';
-  selectChat(chat.id); input.focus();
+  selectChat(chat.id); input.focus(); await persistChat(chat);
 }
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
@@ -192,6 +214,7 @@ async function generate(chat, user) {
     updateMessage(chat.id, assistant);
     syncComposer();
     if (activeChat === chat.id) renderConversation();
+    await persistChat(chat);
   }
 }
 function stopGeneration() {
@@ -199,23 +222,24 @@ function stopGeneration() {
   generation.abort.abort();
   const chat = chats.get(generation.chatId);
   const message = chat.messages.find(m => m.id === generation.messageId);
-  message.status = 'stopped'; updateMessage(chat.id, message);
+  message.status = 'stopped'; updateMessage(chat.id, message); void persistChat(chat);
 }
-function retry(messageId) {
+async function retry(messageId) {
   if (generation) return;
   const chat = current(), index = chat.messages.findIndex(m => m.id === messageId);
   if (index < 1 || chat.messages[index].role !== 'assistant' || index !== chat.messages.length - 1) return;
   const user = chat.messages[index - 1];
   chat.messages.splice(index);
-  void generate(chat, user);
+  renderConversation(true); await persistChat(chat); void generate(chat, user);
 }
-$('#composerForm').addEventListener('submit', event => {
+$('#composerForm').addEventListener('submit', async event => {
   event.preventDefault();
   if (generation || editingId || !input.value.trim()) return;
   const chat = current(), user = createMessage('user', input.value.trim());
   chat.messages.push(user);
   if (!chat.demo && chat.messages.length === 1) chat.title = user.content.slice(0, 45);
-  chat.draft = ''; input.value = ''; renderHistory(); void generate(chat, user);
+  chat.draft = ''; input.value = ''; renderHistory(); renderConversation(true); syncComposer();
+  await persistChat(chat); void generate(chat, user);
 });
 $('#sendButton').addEventListener('click', () => { if (generation?.chatId === activeChat) stopGeneration(); });
 input.addEventListener('input', () => { current().draft = input.value; syncComposer(); });
@@ -224,7 +248,7 @@ input.addEventListener('keydown', event => {
     event.preventDefault(); if (!generation) $('#composerForm').requestSubmit();
   }
 });
-$('#newChatButton').addEventListener('click', newChat);
+$('#newChatButton').addEventListener('click', () => void newChat());
 $('#chatSearch').addEventListener('input', renderHistory);
 $('#foldersToggle').addEventListener('click', () => {
   const expanded = $('#foldersToggle').getAttribute('aria-expanded') === 'true';
@@ -235,7 +259,8 @@ $('#modelButton').addEventListener('click', () => setModelMenu(!$('#modelMenu').
 $('#modelMenu').addEventListener('click', event => {
   const option = event.target.closest('[data-model]');
   if (!option || generation || !isAllowedModel(option.dataset.model)) return;
-  current().model = option.dataset.model; syncModel(); setModelMenu(false); renderConversation(); $('#modelButton').focus();
+  current().model = option.dataset.model; void persistChat(current());
+  syncModel(); setModelMenu(false); renderConversation(); $('#modelButton').focus();
 });
 $('#modelMenu').addEventListener('keydown', event => {
   if (!['ArrowDown','ArrowUp','Home','End'].includes(event.key)) return;
@@ -264,7 +289,7 @@ async function copy(text) {
   }
   catch { toast('Clipboard unavailable. Please select and copy the text.'); }
 }
-conversation.addEventListener('click', event => {
+conversation.addEventListener('click', async event => {
   const codeCopy = event.target.closest('[data-code-copy]');
   if (codeCopy) { void copy($('code', codeCopy.closest('.code-block')).textContent); return; }
   const button = event.target.closest('[data-action]');
@@ -275,8 +300,9 @@ conversation.addEventListener('click', event => {
   switch (button.dataset.action) {
     case 'copy': void copy(message.content); break;
     case 'like': case 'dislike':
-      message.feedback = message.feedback === button.dataset.action ? null : button.dataset.action; updateMessage(chat.id, message); break;
-    case 'regenerate': retry(message.id); break;
+      message.feedback = message.feedback === button.dataset.action ? null : button.dataset.action;
+      updateMessage(chat.id, message); void persistChat(chat); break;
+    case 'regenerate': void retry(message.id); break;
     case 'edit':
       if (generation) return;
       editingId = message.id; syncComposer(); renderConversation(); $('textarea', $('[data-message-id="' + message.id + '"]'))?.focus(); break;
@@ -286,12 +312,13 @@ conversation.addEventListener('click', event => {
       const value = $('textarea', article).value.trim(); if (!value) return;
       const index = chat.messages.findIndex(m => m.id === message.id);
       message.content = value; message.updatedAt = new Date().toISOString();
-      chat.messages.splice(index + 1); editingId = null; void generate(chat, message); break;
+      chat.messages.splice(index + 1); editingId = null; renderConversation(true);
+      await persistChat(chat); void generate(chat, message); break;
     }
   }
 });
 document.addEventListener('keydown', event => {
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && !$('#settingsDialog').open) { event.preventDefault(); newChat(); }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && !$('#settingsDialog').open) { event.preventDefault(); void newChat(); }
   if (event.key === 'Escape') { closeSidebar(true); setModelMenu(false); }
   if (event.key === 'Tab' && mobile.matches && $('#sidebar').classList.contains('open')) {
     const controls = $$('button:not([disabled]),input', $('#sidebar')).filter(el => el.getClientRects().length);
@@ -302,5 +329,21 @@ document.addEventListener('keydown', event => {
 new ResizeObserver(() => {
   conversation.style.paddingBottom = Math.ceil($('.composer-dock').getBoundingClientRect().height + 28) + 'px';
 }).observe($('.composer-dock'));
-let theme = 'dark'; try { theme = localStorage.getItem('my-ai-chat-theme') === 'light' ? 'light' : 'dark'; } catch {}
-setTheme(theme); closeSidebar(); syncModel(); renderHistory(); renderConversation(); syncComposer();
+async function initializeApp() {
+  let initialChats;
+  try { initialChats = await loadOrSeedChats(createDemoChats); }
+  catch {
+    storageWarningShown = true;
+    initialChats = createDemoChats();
+    setTimeout(() => toast('Local storage is unavailable. This session will remain in memory only.'), 0);
+  }
+  for (const chat of initialChats) chats.set(chat.id, chat);
+  let savedActiveChat;
+  try { savedActiveChat = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY); } catch {}
+  activeChat = savedActiveChat && chats.has(savedActiveChat) ? savedActiveChat : chats.keys().next().value;
+  rememberActiveChat(activeChat);
+  let theme = 'dark'; try { theme = localStorage.getItem('my-ai-chat-theme') === 'light' ? 'light' : 'dark'; } catch {}
+  setTheme(theme); closeSidebar(); syncModel(); renderHistory(); renderConversation(); syncComposer();
+}
+
+await initializeApp();
