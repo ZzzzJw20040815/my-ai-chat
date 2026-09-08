@@ -17,7 +17,7 @@ const waitFor = async (check, timeout = 4000) => {
   throw new Error('Timed out waiting for persisted app state');
 };
 
-function installDom(indexedDB, fetchMock) {
+function installDom(indexedDB, fetchMock, storage) {
   const dom = new JSDOM(html, { url: 'https://app.example/' });
   const media = { matches: false, addEventListener() {}, removeEventListener() {} };
   Object.assign(globalThis, {
@@ -27,7 +27,7 @@ function installDom(indexedDB, fetchMock) {
     Node: dom.window.Node,
     Element: dom.window.Element,
     HTMLElement: dom.window.HTMLElement,
-    localStorage: dom.window.localStorage,
+    localStorage: storage,
     matchMedia: () => media,
     indexedDB,
     fetch: fetchMock,
@@ -36,6 +36,16 @@ function installDom(indexedDB, fetchMock) {
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
   return dom;
+}
+
+function createMemoryStorage() {
+  const values = new Map();
+  return {
+    getItem: key => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: key => values.delete(key),
+    clear: () => values.clear(),
+  };
 }
 
 function createFetchMock() {
@@ -87,7 +97,8 @@ function submitMessage(text) {
 test('new chat lifecycle persists across refresh/reopen without duplicating demos', async () => {
   const indexedDB = new IDBFactory();
   const { fetchMock, contexts } = createFetchMock();
-  let dom = installDom(indexedDB, fetchMock);
+  const storage = createMemoryStorage();
+  let dom = installDom(indexedDB, fetchMock, storage);
   await import('../ui/app.js?phase3a-browser=first');
   assert.equal((await loadChats(indexedDB)).filter(chat => chat.demo).length, 6);
 
@@ -139,16 +150,30 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   assert.equal(regeneratedChat.model, 'gemini-3.1-pro-preview');
   assert.equal(regeneratedChat.messages.at(-1).model, 'gemini-3.1-pro-preview');
 
+  document.querySelector('#newChatButton').click();
+  submitMessage('Chat B marker');
+  await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => item.title === 'Chat B marker');
+    return chat?.messages.at(-1)?.role === 'assistant' && chat.messages.at(-1).status === 'complete';
+  });
+  const chatButtons = [...document.querySelectorAll('.chat-item')];
+  chatButtons.find(button => button.textContent.includes('请记住测试代码 7263。')).click();
+  chatButtons.find(button => button.textContent.includes('Chat B marker')).click();
+  const chatB = (await loadChats(indexedDB)).find(item => item.title === 'Chat B marker');
+  assert.equal(storage.getItem('my-ai-chat-active-chat-id'), chatB.id);
+
   dom.window.close();
-  dom = installDom(indexedDB, fetchMock);
+  dom = installDom(indexedDB, fetchMock, storage);
   await import('../ui/app.js?phase3a-browser=reopen');
   const restored = await loadChats(indexedDB);
   assert.equal(restored.filter(chat => chat.demo).length, 6);
-  assert.equal(restored.filter(chat => !chat.demo).length, 1);
-  const userChat = restored.find(chat => !chat.demo);
+  assert.equal(restored.filter(chat => !chat.demo).length, 2);
+  const userChat = restored.find(chat => chat.title === '请记住测试代码 7263。');
   assert.equal(userChat.title, '请记住测试代码 7263。');
   assert.equal(userChat.model, 'gemini-3.1-pro-preview');
   assert.ok(userChat.messages.some(message => message.content.includes('刚才')));
+  assert.equal(document.querySelector('.chat-heading h1').textContent, 'Chat B marker');
+  assert.equal(document.querySelector('[aria-current="true"]').dataset.chatId, chatB.id);
   const historyButton = [...document.querySelectorAll('.chat-item')]
     .find(button => button.textContent.includes('请记住测试代码 7263。'));
   assert.ok(historyButton);

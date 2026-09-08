@@ -117,3 +117,13 @@ test('Markdown supports requested elements and sanitizes scripts, HTML, unsafe l
   assert.ok([...doc.querySelectorAll('a')].every(a => !a.getAttribute('href') || a.href.startsWith('https://')));
   assert.equal(doc.querySelector('a').rel,'noopener noreferrer');
 });
+test('Chinese quoted emphasis next to Chinese prose renders without exposing Markdown markers', () => {
+  const win = new JSDOM('').window;
+  const html = renderMarkdown('***“狂魔哥”***是一个……\n\n**“关键词”**是一个……\n\n`***“代码”***是`\n\n```md\n**“代码块”**是\n```', win);
+  const doc = new JSDOM(html).window.document;
+  assert.equal(doc.querySelector('em strong')?.textContent, '“狂魔哥”');
+  assert.equal(doc.querySelector('strong:not(em strong)')?.textContent, '“关键词”');
+  assert.doesNotMatch(doc.body.textContent, /\*\*\*“狂魔哥”|\*\*“关键词”/);
+  assert.equal(doc.querySelector('p code')?.textContent, '***“代码”***是');
+  assert.equal(doc.querySelector('pre code')?.textContent, '**“代码块”**是\n');
+});

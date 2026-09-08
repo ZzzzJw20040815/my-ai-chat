@@ -9,6 +9,7 @@ import { consumeStream } from './stream.js';
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const escapeHtml = value => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+const ACTIVE_CHAT_STORAGE_KEY = 'my-ai-chat-active-chat-id';
 const chats = new Map();
 function demoMarkdown(html) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -46,6 +47,9 @@ const current = () => chats.get(activeChat);
 function toast(message) {
   $('#toast').textContent = message; $('#toast').classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('show'), 2500);
+}
+function rememberActiveChat(id) {
+  try { localStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, id); } catch {}
 }
 async function persistChat(chat) {
   chat.updatedAt = new Date().toISOString();
@@ -161,6 +165,7 @@ function openSidebar() {
 function selectChat(id) {
   current().draft = input.value; current().scrollTop = conversation.scrollTop;
   activeChat = id; editingId = null; input.value = current().draft;
+  rememberActiveChat(activeChat);
   closeSidebar(); syncModel(); syncComposer(); renderHistory(); renderConversation();
   conversation.scrollTop = current().scrollTop;
 }
@@ -333,7 +338,10 @@ async function initializeApp() {
     setTimeout(() => toast('Local storage is unavailable. This session will remain in memory only.'), 0);
   }
   for (const chat of initialChats) chats.set(chat.id, chat);
-  activeChat = chats.keys().next().value;
+  let savedActiveChat;
+  try { savedActiveChat = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY); } catch {}
+  activeChat = savedActiveChat && chats.has(savedActiveChat) ? savedActiveChat : chats.keys().next().value;
+  rememberActiveChat(activeChat);
   let theme = 'dark'; try { theme = localStorage.getItem('my-ai-chat-theme') === 'light' ? 'light' : 'dark'; } catch {}
   setTheme(theme); closeSidebar(); syncModel(); renderHistory(); renderConversation(); syncComposer();
 }
