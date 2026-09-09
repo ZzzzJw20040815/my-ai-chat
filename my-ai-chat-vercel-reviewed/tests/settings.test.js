@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { validateGenerationSettings, validatePayload } from '../server/chat.js';
 import { MODELS } from '../shared/models.js';
 import {
@@ -102,4 +103,16 @@ test('server rejects invalid known parameters and unsupported thinking levels', 
   assert.deepEqual(MODELS.map(model => model.capabilities.thinkingLevels), [
     ['low', 'medium', 'high'], ['low', 'medium', 'high'],
   ]);
+});
+
+test('settings dialog has exactly one vertical scroll container with mobile safe-area bounds', async () => {
+  const css = await readFile(new URL('../ui/styles.css', import.meta.url), 'utf8');
+  const dialogRule = css.match(/\.settings-dialog \{([^}]+)\}/)?.[1] || '';
+  const cardRule = css.match(/\.settings-card \{([^}]+)\}/)?.[1] || '';
+  assert.match(dialogRule, /overflow:\s*hidden/);
+  assert.doesNotMatch(dialogRule, /overflow-y:\s*(?:auto|scroll)/);
+  assert.match(cardRule, /overflow-y:\s*auto/);
+  assert.match(cardRule, /overflow-x:\s*hidden/);
+  assert.match(css, /safe-area-inset-top/);
+  assert.match(css, /safe-area-inset-bottom/);
 });

@@ -283,9 +283,9 @@ html[data-theme="light"] .moon-icon { display: none; }
 
 .mobile-scrim { display: none; position: fixed; z-index: 25; inset: 0; background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
 
-.settings-dialog { width: min(92vw, 620px); max-height: min(88vh, 820px); padding: 0; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.settings-dialog { width: min(92vw, 620px); max-height: none; padding: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
 .settings-dialog::backdrop { background: rgba(3,5,10,.62); backdrop-filter: blur(4px); }
-.settings-card { max-height: min(88vh, 820px); padding: 22px; overflow: auto; }
+.settings-card { max-height: min(88vh, 820px); padding: 22px; overflow-x: hidden; overflow-y: auto; }
 .settings-head { position: sticky; z-index: 2; top: -22px; display: flex; align-items: flex-start; justify-content: space-between; margin: -22px -22px 0; padding: 22px 22px 18px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .settings-head h2 { margin: 4px 0 0; font-size: 23px; letter-spacing: -.025em; }
 .settings-section { padding-top: 22px; }
@@ -355,8 +355,8 @@ html[data-theme="light"] .moon-icon { display: none; }
   .composer-note { font-size: 10px; }
   .setting-row { align-items: flex-start; flex-direction: column; gap: 12px; }
   .segmented { width: 100%; }.segmented button { flex: 1; }
-  .settings-dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); }
-  .settings-card { max-height: calc(100dvh - 20px); padding: 18px; }
+  .settings-dialog { width: calc(100vw - 20px); }
+  .settings-card { max-height: calc(100dvh - max(10px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom))); padding: 18px; }
   .settings-head { top: -18px; margin: -18px -18px 0; padding: 18px 18px 15px; }
   .setting-field { grid-template-columns: 1fr; gap: 9px; }
   .setting-field select, .setting-field input { width: 100%; }
