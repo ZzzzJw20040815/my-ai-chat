@@ -202,6 +202,17 @@
               <label class="compact-field" id="topKField"><span>Top K</span><input id="topKSetting" type="number" min="1" max="1000" step="1" /><small id="topKSupport"></small></label>
             </fieldset>
           </div>
+          <div class="safety-settings">
+            <label class="setting-field safety-mode-field">
+              <span><strong>Safety Settings <span class="gemini-only">Gemini only</span></strong><small>Use model defaults, or customize Gemini's adjustable content filters.</small></span>
+              <select id="safetyModeSetting" aria-label="Safety settings mode">
+                <option value="default">Use model defaults</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            <div class="safety-custom-fields" id="safetyCustomFields"></div>
+            <p class="safety-note">Safety settings control adjustable Gemini filters only. Built-in core safety protections still apply.</p>
+          </div>
         </section>
         <section class="settings-section" aria-labelledby="appearanceSettingsTitle">
           <div class="settings-section-head"><div><p class="eyebrow">General</p><h3 id="appearanceSettingsTitle">Appearance</h3></div></div>

@@ -1,7 +1,8 @@
 import { GoogleGenAI } from '@google/genai';
 import { isAllowedModel, modelMetadata } from '../shared/models.js';
 import {
-  MAX_OUTPUT_TOKENS_LIMIT, MAX_SYSTEM_INSTRUCTION_LENGTH, SAMPLING_LIMITS, THINKING_LEVELS,
+  MAX_OUTPUT_TOKENS_LIMIT, MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_MODES,
+  SAFETY_THRESHOLDS, SAMPLING_LIMITS, THINKING_LEVELS,
 } from '../shared/settings.js';
 
 export const MAX_BODY_BYTES = 256 * 1024;
@@ -17,6 +18,7 @@ export const ERROR_TEXT = Object.freeze({
   CONTEXT_LIMIT: '当前对话超过本阶段的长度限制。请新建聊天或缩短消息；未静默丢弃上下文。',
   TIMEOUT: '生成超时，请重试或缩短问题。',
   BLOCKED: 'Gemini 未返回可显示的文本，或此回复被安全机制阻止。请调整问题后重试。',
+  SAFETY_BLOCKED: '回复被 Gemini 安全设置阻止。',
   TRUNCATED: '回复达到输出长度限制，可继续提问。',
 });
 const jsonError = (code, status) => Response.json({ error: { code, message: ERROR_TEXT[code] } }, {
@@ -85,7 +87,33 @@ export function validateGenerationSettings(value, modelId) {
       }
     }
   }
+  if ('safetySettings' in value) {
+    const safety = value.safetySettings;
+    if (!safety || typeof safety !== 'object' || Array.isArray(safety) || !SAFETY_MODES.includes(safety.mode)) invalidRequest();
+    const allowedKeys = new Set(['mode', ...SAFETY_CATEGORIES.map(({ key }) => key)]);
+    if (Object.keys(safety).some(key => !allowedKeys.has(key))) invalidRequest();
+    for (const { key } of SAFETY_CATEGORIES) {
+      if (key in safety && !SAFETY_THRESHOLDS.includes(safety[key])) invalidRequest();
+    }
+    if (safety.mode === 'custom') {
+      if (SAFETY_CATEGORIES.some(({ key }) => !SAFETY_THRESHOLDS.includes(safety[key]))) invalidRequest();
+      config.safetySettings = SAFETY_CATEGORIES.map(({ key, category }) => ({ category, threshold: safety[key] }));
+    }
+  }
   return config;
+}
+
+const SAFETY_LABELS = Object.freeze(Object.fromEntries(SAFETY_CATEGORIES.map(({ category, label }) => [category, label])));
+const SAFETY_PROBABILITIES = new Set(['NEGLIGIBLE', 'LOW', 'MEDIUM', 'HIGH']);
+function safetyBlockedFeedback(chunk) {
+  const candidate = chunk?.candidates?.[0];
+  if (!chunk?.promptFeedback?.blockReason && candidate?.finishReason !== 'SAFETY') return null;
+  const ratings = candidate?.safetyRatings || chunk?.promptFeedback?.safetyRatings || [];
+  const rating = ratings.find(item => item?.blocked && SAFETY_LABELS[item.category])
+    || ratings.find(item => SAFETY_LABELS[item?.category] && SAFETY_PROBABILITIES.has(item?.probability));
+  const detail = rating && SAFETY_PROBABILITIES.has(rating.probability)
+    ? ` Category: ${SAFETY_LABELS[rating.category]}. Probability: ${rating.probability}.` : '';
+  return ERROR_TEXT.SAFETY_BLOCKED + detail;
 }
 async function readPayload(request) {
   const reader = request.body?.getReader();
@@ -142,7 +170,8 @@ export async function handleChat(request, env, transport = googleStream, timeout
           const iterator = await transport(env.GEMINI_API_KEY, params, abort.signal);
           for await (const chunk of iterator) {
             if (abort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-            if (chunk.promptFeedback?.blockReason) throw { code: 'BLOCKED' };
+            const safetyMessage = safetyBlockedFeedback(chunk);
+            if (safetyMessage) throw { code: 'SAFETY_BLOCKED', message: safetyMessage };
             finishReason = chunk.candidates?.[0]?.finishReason || finishReason;
             const delta = chunk.text;
             if (typeof delta === 'string' && delta) {
@@ -151,12 +180,13 @@ export async function handleChat(request, env, transport = googleStream, timeout
               emit({ type: 'delta', text: delta });
             }
           }
+          if (finishReason === 'SAFETY') throw { code: 'SAFETY_BLOCKED', message: ERROR_TEXT.SAFETY_BLOCKED };
           if (finishReason && !['STOP', 'MAX_TOKENS'].includes(finishReason)) throw { code: 'BLOCKED' };
           if (!textLength) throw { code: 'BLOCKED' };
           emit({ type: 'done', notice: finishReason === 'MAX_TOKENS' ? ERROR_TEXT.TRUNCATED : null });
         } catch (error) {
-          const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'CONTEXT_LIMIT'].includes(error?.code) ? error.code : classifyError(error)[0];
-          if (!cancelled) emit({ type: 'error', code, message: ERROR_TEXT[code] });
+          const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'SAFETY_BLOCKED', 'CONTEXT_LIMIT'].includes(error?.code) ? error.code : classifyError(error)[0];
+          if (!cancelled) emit({ type: 'error', code, message: error?.message || ERROR_TEXT[code] });
         } finally {
           cleanup();
           try { controller.close(); } catch { /* A cancelled reader is already closed. */ }

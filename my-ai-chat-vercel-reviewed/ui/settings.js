@@ -28,5 +28,6 @@ export function requestSettings(settings) {
     maxOutputTokens: normalized.maxOutputTokens,
     thinkingLevel: normalized.thinkingLevel,
     samplingOverrides: { ...normalized.samplingOverrides },
+    safetySettings: { ...normalized.safetySettings },
   };
 }
