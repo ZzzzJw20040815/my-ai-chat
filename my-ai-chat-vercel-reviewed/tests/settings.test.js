@@ -116,3 +116,15 @@ test('settings dialog has exactly one vertical scroll container with mobile safe
   assert.match(css, /safe-area-inset-top/);
   assert.match(css, /safe-area-inset-bottom/);
 });
+
+test('mobile settings close and composer send controls use stable flex alignment', async () => {
+  const css = await readFile(new URL('../ui/styles.css', import.meta.url), 'utf8');
+  const headerRule = css.match(/\.settings-head \{([^}]+)\}/)?.[1] || '';
+  assert.match(headerRule, /display:\s*flex/);
+  assert.match(headerRule, /align-items:\s*center/);
+  assert.match(headerRule, /gap:\s*16px/);
+  assert.match(css, /\.settings-head \.icon-button\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px/);
+  assert.match(css, /\.composer-actions\s*\{[^}]*gap:\s*8px;[^}]*padding:\s*0 2px 2px/);
+  assert.match(css, /\.composer-dock\s*\{[\s\S]*?padding-bottom:\s*max\(11px, env\(safe-area-inset-bottom\)\)/);
+  assert.doesNotMatch(css, /@media \(max-width: 520px\)[\s\S]*?\.send-button\s*\{[^}]*transform:/);
+});
