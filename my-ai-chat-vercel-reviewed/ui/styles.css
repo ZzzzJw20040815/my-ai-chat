@@ -314,6 +314,18 @@ html[data-theme="light"] .moon-icon { display: none; }
 .compact-field { min-width: 0; color: var(--muted); font-size: 12px; }
 .compact-field input { width: 100%; margin-top: 6px; }
 .compact-field.unsupported { opacity: .55; }
+.safety-settings { margin-top: 16px; padding-top: 2px; border-top: 1px solid var(--border); }
+.safety-mode-field { border-top: 0; }
+.gemini-only { display: inline-block; margin-left: 5px; padding: 2px 5px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-strong); font-size: 10px; font-weight: 700; vertical-align: 1px; }
+.safety-custom-fields { min-width: 0; padding: 4px 0 8px; }
+.safety-custom-fields[hidden] { display: none; }
+.safety-category-row { min-width: 0; padding: 11px 0; display: grid; grid-template-columns: 130px minmax(0, 1fr); align-items: center; gap: 14px; border-top: 1px solid var(--border); }
+.safety-category-row > strong { font-size: 13px; }
+.safety-levels { min-width: 0; width: 100%; padding: 3px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); }
+.safety-levels button { min-width: 0; min-height: 38px; padding: 6px 3px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px; }
+.safety-levels button:hover { color: var(--text); }
+.safety-levels button.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 5px rgba(0,0,0,.12); }
+.safety-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 22px; padding: 18px 0; border-top: 1px solid var(--border); }
 .setting-row strong { font-size: 14px; }.setting-row p { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
 .segmented { padding: 3px; display: flex; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); }
@@ -364,6 +376,8 @@ html[data-theme="light"] .moon-icon { display: none; }
   .setting-field select, .setting-field input { width: 100%; }
   .advanced-fields { grid-template-columns: 1fr 1fr; }
   .compact-field:last-child { grid-column: 1 / -1; }
+  .safety-category-row { grid-template-columns: 1fr; gap: 8px; }
+  .safety-levels button { min-height: 44px; font-size: 10px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

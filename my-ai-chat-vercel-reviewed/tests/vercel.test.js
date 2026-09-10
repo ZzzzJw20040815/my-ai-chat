@@ -33,6 +33,10 @@ test('Vercel Function and official SDK stream SSE and forward all context', asyn
   const response = await api.fetch(makeRequest({
     systemInstruction: 'Answer in Chinese.', maxOutputTokens: 2048, thinkingLevel: 'high',
     samplingOverrides: { enabled: true, temperature: 0.7, topP: 0.8, topK: 40 },
+    safetySettings: {
+      mode: 'custom', harassment: 'OFF', hateSpeech: 'BLOCK_NONE',
+      sexuallyExplicit: 'BLOCK_ONLY_HIGH', dangerousContent: 'BLOCK_LOW_AND_ABOVE',
+    },
   }));
   const reader = response.body.getReader();
   assert.match(new TextDecoder().decode((await reader.read()).value),/start/);
@@ -46,6 +50,12 @@ test('Vercel Function and official SDK stream SSE and forward all context', asyn
   assert.equal(body.generationConfig.temperature, 0.7);
   assert.equal(body.generationConfig.topP, 0.8);
   assert.ok(!('topK' in body.generationConfig));
+  assert.deepEqual(body.safetySettings, [
+    { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'OFF' },
+    { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
+    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_LOW_AND_ABOVE' },
+  ]);
   upstream.enqueue(sse('明',true)); upstream.close();
   let output=''; while(true){const {done,value}=await reader.read();if(done)break;output+=new TextDecoder().decode(value);}
   assert.match(output,/明/); assert.match(output,/done/); assert.ok(!output.includes('unit-test-sentinel'));
@@ -63,6 +73,10 @@ test('Vercel Function leaves Gemini generation defaults untouched when settings 
   const response = await api.fetch(makeRequest({
     systemInstruction: '', maxOutputTokens: null, thinkingLevel: 'default',
     samplingOverrides: { enabled: false, temperature: 1, topP: 0.95, topK: 40 },
+    safetySettings: {
+      mode: 'default', harassment: 'BLOCK_MEDIUM_AND_ABOVE', hateSpeech: 'BLOCK_MEDIUM_AND_ABOVE',
+      sexuallyExplicit: 'BLOCK_MEDIUM_AND_ABOVE', dangerousContent: 'BLOCK_MEDIUM_AND_ABOVE',
+    },
   }));
   await response.text();
   const body = await captured.json();
@@ -72,6 +86,7 @@ test('Vercel Function leaves Gemini generation defaults untouched when settings 
   assert.ok(!body.generationConfig?.temperature);
   assert.ok(!body.generationConfig?.topP);
   assert.ok(!body.generationConfig?.topK);
+  assert.ok(!body.safetySettings);
 });
 
 test('Vercel Function Stop propagates to Gemini upstream fetch AbortSignal', async t => {

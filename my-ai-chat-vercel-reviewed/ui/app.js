@@ -1,5 +1,5 @@
 import { MODELS, DEFAULT_MODEL, modelName, isAllowedModel, modelMetadata } from '../shared/models.js';
-import { MAX_SYSTEM_INSTRUCTION_LENGTH } from '../shared/settings.js';
+import { MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_LEVELS } from '../shared/settings.js';
 import { demoData } from './demo.js';
 import { icons } from './icons.js';
 import { createChat, createMessage, contextFor } from './state.js';
@@ -203,6 +203,17 @@ function syncSettingsUi() {
   $('#advancedFields').disabled = !globalSettings.samplingOverrides.enabled;
   // A fieldset disables all descendants, then Top K adds its model capability constraint.
   if (globalSettings.samplingOverrides.enabled) $('#topKSetting').disabled = !topKSupported;
+  $('#safetyModeSetting').value = globalSettings.safetySettings.mode;
+  const customSafety = globalSettings.safetySettings.mode === 'custom';
+  $('#safetyCustomFields').hidden = !customSafety;
+  $('#safetyCustomFields').innerHTML = SAFETY_CATEGORIES.map(({ key, label }) =>
+    '<div class="safety-category-row"><strong>' + escapeHtml(label) + '</strong><div class="safety-levels" role="radiogroup" aria-label="' +
+    escapeHtml(label) + ' safety threshold">' + SAFETY_LEVELS.map(({ label: levelLabel, shortLabel, threshold }) =>
+      '<button type="button" role="radio" aria-checked="' + (globalSettings.safetySettings[key] === threshold) + '" aria-label="' +
+      escapeHtml(levelLabel) + '" title="' + escapeHtml(levelLabel) + '" class="' + (globalSettings.safetySettings[key] === threshold ? 'active' : '') +
+      '" data-safety-category="' + key + '" data-safety-threshold="' + threshold + '">' + escapeHtml(shortLabel) + '</button>'
+    ).join('') + '</div></div>'
+  ).join('');
 }
 function updateGlobalSettings(patch) {
   globalSettings = saveGlobalSettings({ ...globalSettings, ...patch });
@@ -330,6 +341,16 @@ $('#thinkingLevelSetting').addEventListener('change', event => updateGlobalSetti
 $('#samplingEnabledSetting').addEventListener('change', event => updateGlobalSettings({
   samplingOverrides: { ...globalSettings.samplingOverrides, enabled: event.target.checked },
 }));
+$('#safetyModeSetting').addEventListener('change', event => updateGlobalSettings({
+  safetySettings: { ...globalSettings.safetySettings, mode: event.target.value },
+}));
+$('#safetyCustomFields').addEventListener('click', event => {
+  const button = event.target.closest('[data-safety-category][data-safety-threshold]');
+  if (!button) return;
+  updateGlobalSettings({
+    safetySettings: { ...globalSettings.safetySettings, [button.dataset.safetyCategory]: button.dataset.safetyThreshold },
+  });
+});
 for (const [selector, key] of [['#temperatureSetting', 'temperature'], ['#topPSetting', 'topP'], ['#topKSetting', 'topK']]) {
   $(selector).addEventListener('change', event => updateGlobalSettings({
     samplingOverrides: { ...globalSettings.samplingOverrides, [key]: Number(event.target.value) },
