@@ -1,10 +1,12 @@
-import { MODELS, DEFAULT_MODEL, modelName, isAllowedModel } from '../shared/models.js';
+import { MODELS, DEFAULT_MODEL, modelName, isAllowedModel, modelMetadata } from '../shared/models.js';
+import { MAX_SYSTEM_INSTRUCTION_LENGTH } from '../shared/settings.js';
 import { demoData } from './demo.js';
 import { icons } from './icons.js';
 import { createChat, createMessage, contextFor } from './state.js';
 import { loadOrSeedChats, saveChat } from './storage.js';
 import { renderMarkdown } from './markdown.js';
 import { consumeStream } from './stream.js';
+import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from './settings.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -39,6 +41,7 @@ function createDemoChats() {
   });
 }
 let activeChat, generation = null, editingId = null, toastTimer, storageWarningShown = false;
+let globalSettings = loadGlobalSettings();
 const conversation = $('#conversation'), input = $('#messageInput');
 const sendIcon = $('#sendButton').innerHTML;
 const mobile = matchMedia('(max-width: 819px)');
@@ -170,8 +173,40 @@ function selectChat(id) {
   conversation.scrollTop = current().scrollTop;
 }
 async function newChat() {
-  const chat = createChat(current().model); chats.set(chat.id, chat); $('#chatSearch').value = '';
+  const chat = createChat(globalSettings.defaultModel); chats.set(chat.id, chat); $('#chatSearch').value = '';
   selectChat(chat.id); input.focus(); await persistChat(chat);
+}
+function syncSettingsUi() {
+  $('#defaultModelSetting').innerHTML = MODELS.map(model => '<option value="' + model.id + '">' + escapeHtml(model.name) + '</option>').join('');
+  $('#defaultModelSetting').value = globalSettings.defaultModel;
+  $('#systemInstructionSetting').value = globalSettings.systemInstruction;
+  $('#systemInstructionCount').textContent = globalSettings.systemInstruction.length + ' / ' + MAX_SYSTEM_INSTRUCTION_LENGTH;
+  $('#contextLimitSetting').value = globalSettings.contextLimit;
+  $('#maxOutputTokensSetting').value = globalSettings.maxOutputTokens ?? '';
+  $('#thinkingLevelSetting').value = globalSettings.thinkingLevel;
+  const capabilities = modelMetadata(globalSettings.defaultModel)?.capabilities;
+  for (const option of $('#thinkingLevelSetting').options) {
+    option.disabled = option.value !== 'default' && !capabilities?.thinkingLevels.includes(option.value);
+  }
+  if ($('#thinkingLevelSetting').selectedOptions[0]?.disabled) {
+    globalSettings = saveGlobalSettings({ ...globalSettings, thinkingLevel: 'default' });
+    $('#thinkingLevelSetting').value = 'default';
+  }
+  $('#samplingEnabledSetting').checked = globalSettings.samplingOverrides.enabled;
+  $('#temperatureSetting').value = globalSettings.samplingOverrides.temperature;
+  $('#topPSetting').value = globalSettings.samplingOverrides.topP;
+  $('#topKSetting').value = globalSettings.samplingOverrides.topK;
+  const topKSupported = capabilities?.topK === true;
+  $('#topKSetting').disabled = !globalSettings.samplingOverrides.enabled || !topKSupported;
+  $('#topKField').classList.toggle('unsupported', !topKSupported);
+  $('#topKSupport').textContent = topKSupported ? '' : 'Not supported by the selected model.';
+  $('#advancedFields').disabled = !globalSettings.samplingOverrides.enabled;
+  // A fieldset disables all descendants, then Top K adds its model capability constraint.
+  if (globalSettings.samplingOverrides.enabled) $('#topKSetting').disabled = !topKSupported;
+}
+function updateGlobalSettings(patch) {
+  globalSettings = saveGlobalSettings({ ...globalSettings, ...patch });
+  syncSettingsUi();
 }
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
@@ -191,7 +226,11 @@ async function generate(chat, user) {
   try {
     readerResponse = await fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: chat.model, messages: contextFor(chat, user.id) }),
+      body: JSON.stringify({
+        model: chat.model,
+        messages: contextFor(chat, user.id, globalSettings.contextLimit),
+        settings: requestSettings(globalSettings),
+      }),
       signal: job.abort.signal,
     });
     if (!readerResponse.ok) {
@@ -272,10 +311,33 @@ $('#openSidebar').addEventListener('click', openSidebar);
 $('#closeSidebar').addEventListener('click', () => closeSidebar(true));
 $('#mobileScrim').addEventListener('click', () => closeSidebar(true));
 mobile.addEventListener('change', () => closeSidebar());
-$('#settingsButton').addEventListener('click', () => { closeSidebar(); $('#settingsDialog').showModal(); });
+$('#settingsButton').addEventListener('click', () => { closeSidebar(); syncSettingsUi(); $('#settingsDialog').showModal(); });
 $('#settingsDialog').addEventListener('close', () => { if (mobile.matches) $('#openSidebar').focus(); });
 $('#quickTheme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $$('[data-theme-choice]').forEach(button => button.addEventListener('click', () => setTheme(button.dataset.themeChoice)));
+$('#defaultModelSetting').addEventListener('change', event => updateGlobalSettings({ defaultModel: event.target.value }));
+$('#systemInstructionSetting').addEventListener('input', event => {
+  globalSettings = saveGlobalSettings({ ...globalSettings, systemInstruction: event.target.value });
+  $('#systemInstructionCount').textContent = globalSettings.systemInstruction.length + ' / ' + MAX_SYSTEM_INSTRUCTION_LENGTH;
+});
+$('#clearSystemInstruction').addEventListener('click', () => updateGlobalSettings({ systemInstruction: '' }));
+$('#contextLimitSetting').addEventListener('change', event => updateGlobalSettings({ contextLimit: event.target.value }));
+$('#maxOutputTokensSetting').addEventListener('change', event => {
+  const value = event.target.value.trim();
+  updateGlobalSettings({ maxOutputTokens: value ? Number(value) : null });
+});
+$('#thinkingLevelSetting').addEventListener('change', event => updateGlobalSettings({ thinkingLevel: event.target.value }));
+$('#samplingEnabledSetting').addEventListener('change', event => updateGlobalSettings({
+  samplingOverrides: { ...globalSettings.samplingOverrides, enabled: event.target.checked },
+}));
+for (const [selector, key] of [['#temperatureSetting', 'temperature'], ['#topPSetting', 'topP'], ['#topKSetting', 'topK']]) {
+  $(selector).addEventListener('change', event => updateGlobalSettings({
+    samplingOverrides: { ...globalSettings.samplingOverrides, [key]: Number(event.target.value) },
+  }));
+}
+$('#resetGlobalSettings').addEventListener('click', () => {
+  globalSettings = resetGlobalSettings(); syncSettingsUi(); toast('Model settings reset to defaults');
+});
 async function copy(text) {
   try {
     if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
@@ -344,6 +406,7 @@ async function initializeApp() {
   rememberActiveChat(activeChat);
   let theme = 'dark'; try { theme = localStorage.getItem('my-ai-chat-theme') === 'light' ? 'light' : 'dark'; } catch {}
   setTheme(theme); closeSidebar(); syncModel(); renderHistory(); renderConversation(); syncComposer();
+  syncSettingsUi();
 }
 
 await initializeApp();

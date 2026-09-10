@@ -19,6 +19,9 @@ const waitFor = async (check, timeout = 4000) => {
 
 function installDom(indexedDB, fetchMock, storage) {
   const dom = new JSDOM(html, { url: 'https://app.example/' });
+  const dialog = dom.window.document.querySelector('#settingsDialog');
+  dialog.showModal = () => dialog.setAttribute('open', '');
+  dialog.close = () => { dialog.removeAttribute('open'); dialog.dispatchEvent(new dom.window.Event('close')); };
   const media = { matches: false, addEventListener() {}, removeEventListener() {} };
   Object.assign(globalThis, {
     window: dom.window,
@@ -52,8 +55,10 @@ function createFetchMock() {
   const encoder = new TextEncoder();
   const attempts = new Map();
   const contexts = [];
+  const payloads = [];
   const fetchMock = async (_, init) => {
     const payload = JSON.parse(init.body);
+    payloads.push(payload);
     contexts.push(payload.messages.map(message => message.content));
     const prompt = payload.messages.at(-1).content;
     const attempt = (attempts.get(prompt) || 0) + 1;
@@ -84,7 +89,7 @@ function createFetchMock() {
       },
     }), { headers: { 'Content-Type': 'text/event-stream' } });
   };
-  return { fetchMock, contexts };
+  return { fetchMock, contexts, payloads };
 }
 
 function submitMessage(text) {
@@ -96,13 +101,32 @@ function submitMessage(text) {
 
 test('new chat lifecycle persists across refresh/reopen without duplicating demos', async () => {
   const indexedDB = new IDBFactory();
-  const { fetchMock, contexts } = createFetchMock();
+  const { fetchMock, contexts, payloads } = createFetchMock();
   const storage = createMemoryStorage();
   let dom = installDom(indexedDB, fetchMock, storage);
   await import('../ui/app.js?phase3a-browser=first');
   assert.equal((await loadChats(indexedDB)).filter(chat => chat.demo).length, 6);
 
+  document.querySelector('#settingsButton').click();
+  const defaultModel = document.querySelector('#defaultModelSetting');
+  defaultModel.value = 'gemini-3.7-flash';
+  defaultModel.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(document.querySelector('#currentModel').textContent, 'Gemini 3.1 Pro');
+  const systemInstruction = document.querySelector('#systemInstructionSetting');
+  systemInstruction.value = '请始终简洁回答。';
+  systemInstruction.dispatchEvent(new window.Event('input', { bubbles: true }));
+  document.querySelector('#contextLimitSetting').value = '10';
+  document.querySelector('#contextLimitSetting').dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.querySelector('#maxOutputTokensSetting').value = '2048';
+  document.querySelector('#maxOutputTokensSetting').dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.querySelector('#thinkingLevelSetting').value = 'high';
+  document.querySelector('#thinkingLevelSetting').dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.querySelector('#samplingEnabledSetting').checked = true;
+  document.querySelector('#samplingEnabledSetting').dispatchEvent(new window.Event('change', { bubbles: true }));
+  document.querySelector('#settingsDialog').close();
+
   document.querySelector('#newChatButton').click();
+  assert.equal(document.querySelector('#currentModel').textContent, 'Gemini 3.7 Flash');
   document.querySelector('#modelButton').click();
   document.querySelector('[data-model="gemini-3.1-pro-preview"]').click();
   await waitFor(async () => (await loadChats(indexedDB)).find(chat => !chat.demo)?.model === 'gemini-3.1-pro-preview');
@@ -112,6 +136,10 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
     const message = (await loadChats(indexedDB)).find(chat => !chat.demo)?.messages.at(-1);
     return message?.role === 'assistant' && message.status === 'complete';
   });
+  assert.equal(payloads[0].settings.systemInstruction, '请始终简洁回答。');
+  assert.equal(payloads[0].settings.maxOutputTokens, 2048);
+  assert.equal(payloads[0].settings.thinkingLevel, 'high');
+  assert.equal(payloads[0].settings.samplingOverrides.enabled, true);
   submitMessage('测试代码是什么？');
   await waitFor(async () => (await loadChats(indexedDB)).find(chat => !chat.demo)?.messages.length === 4);
   assert.ok(contexts.at(-1).includes('请记住测试代码 7263。'));
@@ -174,6 +202,14 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   assert.ok(userChat.messages.some(message => message.content.includes('刚才')));
   assert.equal(document.querySelector('.chat-heading h1').textContent, 'Chat B marker');
   assert.equal(document.querySelector('[aria-current="true"]').dataset.chatId, chatB.id);
+  document.querySelector('#settingsButton').click();
+  assert.equal(document.querySelector('#defaultModelSetting').value, 'gemini-3.7-flash');
+  assert.equal(document.querySelector('#systemInstructionSetting').value, '请始终简洁回答。');
+  assert.equal(document.querySelector('#contextLimitSetting').value, '10');
+  assert.equal(document.querySelector('#maxOutputTokensSetting').value, '2048');
+  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'high');
+  assert.equal(document.querySelector('#samplingEnabledSetting').checked, true);
+  document.querySelector('#settingsDialog').close();
   const historyButton = [...document.querySelectorAll('.chat-item')]
     .find(button => button.textContent.includes('请记住测试代码 7263。'));
   assert.ok(historyButton);

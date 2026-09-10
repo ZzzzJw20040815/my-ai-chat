@@ -154,6 +154,57 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
           </button>
         </div>
+        <section class="settings-section" aria-labelledby="modelSettingsTitle">
+          <div class="settings-section-head">
+            <div><p class="eyebrow">Model</p><h3 id="modelSettingsTitle">Model settings</h3></div>
+            <button class="text-button danger-text" type="button" id="resetGlobalSettings">Reset to defaults</button>
+          </div>
+          <label class="setting-field">
+            <span><strong>Default Model</strong><small>Used only when creating a new chat.</small></span>
+            <select id="defaultModelSetting" aria-label="Default model"></select>
+          </label>
+          <label class="setting-field setting-field-stack">
+            <span><strong>System Instruction</strong><small>Sent as Gemini system instruction for future requests.</small></span>
+            <textarea id="systemInstructionSetting" rows="5" maxlength="20000" placeholder="e.g. You are a senior novel editor…"></textarea>
+            <span class="field-meta"><span id="systemInstructionCount">0 / 20000</span><button class="text-button" type="button" id="clearSystemInstruction">Clear</button></span>
+          </label>
+          <label class="setting-field">
+            <span><strong>Context Limit</strong><small>Controls history sent to Gemini; saved chats are not deleted.</small></span>
+            <select id="contextLimitSetting">
+              <option value="all">All Previous Messages</option>
+              <option value="50">Last 50 messages</option>
+              <option value="20">Last 20 messages</option>
+              <option value="10">Last 10 messages</option>
+            </select>
+          </label>
+          <label class="setting-field">
+            <span><strong>Max Output Tokens</strong><small>Leave blank to use the model default.</small></span>
+            <input id="maxOutputTokensSetting" type="number" min="1" max="65536" step="1" inputmode="numeric" placeholder="Default" />
+          </label>
+          <label class="setting-field">
+            <span><strong>Thinking Level</strong><small>Default uses the model's own value.</small></span>
+            <select id="thinkingLevelSetting">
+              <option value="default">Default</option>
+              <option value="minimal">Minimal</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+          <div class="advanced-settings">
+            <label class="toggle-row">
+              <span><strong>Override sampling defaults</strong><small>For Gemini 3.x, model defaults are recommended.</small></span>
+              <input id="samplingEnabledSetting" type="checkbox" role="switch" />
+            </label>
+            <fieldset class="advanced-fields" id="advancedFields">
+              <label class="compact-field"><span>Temperature</span><input id="temperatureSetting" type="number" min="0" max="2" step="0.05" /></label>
+              <label class="compact-field"><span>Top P</span><input id="topPSetting" type="number" min="0" max="1" step="0.01" /></label>
+              <label class="compact-field" id="topKField"><span>Top K</span><input id="topKSetting" type="number" min="1" max="1000" step="1" /><small id="topKSupport"></small></label>
+            </fieldset>
+          </div>
+        </section>
+        <section class="settings-section" aria-labelledby="appearanceSettingsTitle">
+          <div class="settings-section-head"><div><p class="eyebrow">General</p><h3 id="appearanceSettingsTitle">Appearance</h3></div></div>
         <div class="setting-row">
           <div><strong>Appearance</strong><p>Choose the theme that feels best.</p></div>
           <div class="segmented" role="group" aria-label="Appearance">
@@ -165,6 +216,7 @@
           <div><strong>Sync across devices</strong><p>Planned for a future version.</p></div>
           <span class="coming-soon">Coming soon</span>
         </div>
+        </section>
       </form>
     </dialog>
 

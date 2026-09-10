@@ -5,13 +5,13 @@ import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import api from '../api/chat.js';
 
-const makeRequest = () => new Request('https://app.example/api/chat', {
+const makeRequest = (settings) => new Request('https://app.example/api/chat', {
   method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },
   body: JSON.stringify({ model: 'gemini-3.1-pro-preview', messages: [
     { id:'u1', role:'user', content:'我叫小明', status:'complete' },
     { id:'a1', role:'assistant', content:'你好，小明', status:'complete' },
     { id:'u2', role:'user', content:'我叫什么？', status:'complete' },
-  ] }),
+  ], ...(settings ? { settings } : {}) }),
 });
 const encoder = new TextEncoder();
 const sse = (text, done=false) => encoder.encode('data: ' + JSON.stringify({ candidates:[{
@@ -30,16 +30,48 @@ test('Vercel Function and official SDK stream SSE and forward all context', asyn
     captured = new Request(input,init);
     return new Response(new ReadableStream({start(c){upstream=c; c.enqueue(sse('小'));}}),{headers:{'Content-Type':'text/event-stream'}});
   });
-  const response = await api.fetch(makeRequest());
+  const response = await api.fetch(makeRequest({
+    systemInstruction: 'Answer in Chinese.', maxOutputTokens: 2048, thinkingLevel: 'high',
+    samplingOverrides: { enabled: true, temperature: 0.7, topP: 0.8, topK: 40 },
+  }));
   const reader = response.body.getReader();
   assert.match(new TextDecoder().decode((await reader.read()).value),/start/);
   assert.match(new TextDecoder().decode((await reader.read()).value),/小/);
   assert.match(captured.url,/^https:\/\/generativelanguage.googleapis.com\/v1beta\/models\/gemini-3\.1-pro-preview:streamGenerateContent/);
   assert.ok(!captured.url.includes('unit-test-sentinel'));
   const body=await captured.json(); assert.deepEqual(body.contents.map(m=>m.role),['user','model','user']);
+  assert.equal(body.systemInstruction.parts[0].text, 'Answer in Chinese.');
+  assert.equal(body.generationConfig.maxOutputTokens, 2048);
+  assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, 'HIGH');
+  assert.equal(body.generationConfig.temperature, 0.7);
+  assert.equal(body.generationConfig.topP, 0.8);
+  assert.ok(!('topK' in body.generationConfig));
   upstream.enqueue(sse('明',true)); upstream.close();
   let output=''; while(true){const {done,value}=await reader.read();if(done)break;output+=new TextDecoder().decode(value);}
   assert.match(output,/明/); assert.match(output,/done/); assert.ok(!output.includes('unit-test-sentinel'));
+});
+
+test('Vercel Function leaves Gemini generation defaults untouched when settings use Default', async t => {
+  withTestKey(t);
+  let captured;
+  t.mock.method(globalThis, 'fetch', async (input, init) => {
+    captured = new Request(input, init);
+    return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(sse('ok', true)); controller.close();
+    } }), { headers: { 'Content-Type': 'text/event-stream' } });
+  });
+  const response = await api.fetch(makeRequest({
+    systemInstruction: '', maxOutputTokens: null, thinkingLevel: 'default',
+    samplingOverrides: { enabled: false, temperature: 1, topP: 0.95, topK: 40 },
+  }));
+  await response.text();
+  const body = await captured.json();
+  assert.ok(!body.systemInstruction);
+  assert.ok(!body.generationConfig?.maxOutputTokens);
+  assert.ok(!body.generationConfig?.thinkingConfig);
+  assert.ok(!body.generationConfig?.temperature);
+  assert.ok(!body.generationConfig?.topP);
+  assert.ok(!body.generationConfig?.topK);
 });
 
 test('Vercel Function Stop propagates to Gemini upstream fetch AbortSignal', async t => {
