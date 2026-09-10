@@ -174,7 +174,7 @@ svg {
 .model-button svg { width: 16px; color: var(--muted); }
 .model-dot { width: 8px; height: 8px; border-radius: 50%; background: #83d6bc; box-shadow: 0 0 0 4px rgba(131,214,188,.10); }
 .model-menu {
-  position: absolute; top: calc(100% + 6px); left: 0; width: 268px; padding: 7px; display: none;
+  position: absolute; top: calc(100% + 6px); left: 0; width: 268px; max-height: min(70dvh, 520px); padding: 7px; display: none; overflow-y: auto;
   border: 1px solid var(--border-strong); border-radius: 13px; background: var(--surface); box-shadow: var(--shadow);
 }
 .model-menu.open { display: grid; animation: menu-in 140ms ease-out; }
@@ -189,10 +189,6 @@ svg {
 .model-option small { margin-top: 3px; color: var(--muted); font-size: 12px; }
 .model-option > span:last-child { color: var(--accent-strong); }
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-.prototype-badge {
-  padding: 5px 9px; border: 1px solid var(--border); border-radius: 999px;
-  color: var(--muted); background: var(--surface); font-size: 12px; font-weight: 600;
-}
 .sun-icon { display: none; }
 html[data-theme="light"] .sun-icon { display: block; }
 html[data-theme="light"] .moon-icon { display: none; }
@@ -349,7 +345,6 @@ html[data-theme="light"] .moon-icon { display: none; }
 
 @media (max-width: 520px) {
   .topbar { height: 56px; flex-basis: 56px; }
-  .prototype-badge { display: none; }
   .quick-theme { width: 35px; height: 35px; }
   .model-button { padding: 0 7px; }
   .conversation { padding: 18px 14px 205px; }

@@ -6,6 +6,7 @@ import {
   CHAT_DB_NAME,
   CHAT_DB_VERSION,
   CHAT_STORE_NAME,
+  CANONICAL_DEMO_ID,
   loadChats,
   loadOrSeedChats,
   openChatDatabase,
@@ -21,7 +22,7 @@ test('IndexedDB v1 creates the chats store and initializes demo records once', a
   const createSeeds = () => {
     seedCalls++;
     const demo = createChat(FLASH);
-    demo.id = 'demo-stable';
+    demo.id = CANONICAL_DEMO_ID;
     demo.title = 'Demo';
     demo.demo = true;
     return [demo];
@@ -37,7 +38,40 @@ test('IndexedDB v1 creates the chats store and initializes demo records once', a
   assert.equal(seedCalls, 1);
   assert.equal(firstOpen.length, 1);
   assert.equal(secondOpen.length, 1);
-  assert.equal(secondOpen[0].id, 'demo-stable');
+  assert.equal(secondOpen[0].id, CANONICAL_DEMO_ID);
+});
+
+test('legacy demo migration keeps user chats and converges to one canonical demo', async () => {
+  const indexedDB = new IDBFactory();
+  const realChat = createChat(FLASH);
+  realChat.title = 'Never delete me';
+  realChat.messages.push(createMessage('user', 'private history'));
+  await saveChat(realChat, indexedDB);
+  for (let index = 0; index < 6; index++) {
+    const demo = createChat(FLASH);
+    demo.id = `demo-legacy-${index}`;
+    demo.title = `Old demo ${index}`;
+    demo.demo = true;
+    await saveChat(demo, indexedDB);
+  }
+  let seedCalls = 0;
+  const createSeeds = () => {
+    seedCalls++;
+    const welcome = createChat(PRO);
+    welcome.id = CANONICAL_DEMO_ID;
+    welcome.title = 'Welcome to My AI Chat';
+    welcome.demo = true;
+    return [welcome];
+  };
+
+  const migrated = await loadOrSeedChats(createSeeds, indexedDB);
+  const refreshed = await loadOrSeedChats(createSeeds, indexedDB);
+  assert.equal(seedCalls, 1);
+  assert.deepEqual(migrated.filter(chat => chat.demo).map(chat => chat.id), [CANONICAL_DEMO_ID]);
+  assert.deepEqual(refreshed.filter(chat => chat.demo).map(chat => chat.id), [CANONICAL_DEMO_ID]);
+  assert.equal(refreshed.filter(chat => !chat.demo).length, 1);
+  assert.equal(refreshed.find(chat => !chat.demo).title, 'Never delete me');
+  assert.equal(refreshed.find(chat => !chat.demo).messages[0].content, 'private history');
 });
 
 test('chat, message, model and edits survive a database reopen', async () => {
