@@ -100,7 +100,8 @@ test('server rejects invalid known parameters and unsupported thinking levels', 
 
   const user = createMessage('user', 'hello');
   assert.throws(() => validatePayload({ model: PRO, messages: [user], settings: { maxOutputTokens: -1 } }), /INVALID_REQUEST/);
-  assert.deepEqual(MODELS.map(model => model.capabilities.thinkingLevels), [
+  assert.deepEqual(MODELS.filter(model => ['gemini-3.1-pro-preview', 'gemini-3.7-flash'].includes(model.id))
+    .map(model => model.capabilities.thinkingLevels), [
     ['low', 'medium', 'high'], ['low', 'medium', 'high'],
   ]);
 });

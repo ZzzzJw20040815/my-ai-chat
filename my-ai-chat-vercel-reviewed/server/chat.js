@@ -96,6 +96,7 @@ export function validateGenerationSettings(value, modelId) {
       if (key in safety && !SAFETY_THRESHOLDS.includes(safety[key])) invalidRequest();
     }
     if (safety.mode === 'custom') {
+      if (!modelMetadata(modelId)?.capabilities.safetySettings) invalidRequest();
       if (SAFETY_CATEGORIES.some(({ key }) => !SAFETY_THRESHOLDS.includes(safety[key]))) invalidRequest();
       config.safetySettings = SAFETY_CATEGORIES.map(({ key, category }) => ({ category, threshold: safety[key] }));
     }

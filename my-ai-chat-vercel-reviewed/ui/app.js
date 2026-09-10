@@ -3,7 +3,7 @@ import { MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_LEVELS } from 
 import { demoData } from './demo.js';
 import { icons } from './icons.js';
 import { createChat, createMessage, contextFor } from './state.js';
-import { loadOrSeedChats, saveChat } from './storage.js';
+import { CANONICAL_DEMO_ID, loadOrSeedChats, saveChat } from './storage.js';
 import { renderMarkdown } from './markdown.js';
 import { consumeStream } from './stream.js';
 import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from './settings.js';
@@ -13,30 +13,16 @@ const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const escapeHtml = value => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const ACTIVE_CHAT_STORAGE_KEY = 'my-ai-chat-active-chat-id';
 const chats = new Map();
-function demoMarkdown(html) {
-  const doc = new DOMParser().parseFromString(html, 'text/html');
-  function convert(node) {
-    if (node.nodeType === 3) return node.textContent.replace(/\s+/g, ' ');
-    if (node.classList?.contains('code-head')) return '';
-    if (node.tagName === 'PRE') return '\n\n```' + ($('.code-head span', node.parentElement)?.textContent || 'code') + '\n' + node.textContent + '\n```\n\n';
-    if (node.tagName === 'UL') return '\n\n' + [...node.children].map(li => '- ' + li.textContent.trim()).join('\n') + '\n\n';
-    const value = [...node.childNodes].map(convert).join('').trim();
-    if (node.tagName === 'P') return '\n\n' + value + '\n\n';
-    if (node.tagName === 'H3') return '\n\n### ' + value + '\n\n';
-    return value;
-  }
-  return convert(doc.body).trim();
-}
 function createDemoChats() {
   const seedTime = Date.now();
   return Object.entries(demoData).map(([oldId, data], index) => {
     const chat = createChat();
-    chat.id = 'demo-' + oldId;
+    chat.id = oldId === 'welcome' ? CANONICAL_DEMO_ID : 'demo-' + oldId;
     chat.createdAt = new Date(seedTime + index).toISOString();
     chat.updatedAt = chat.createdAt;
     chat.title = data.title; chat.demo = true;
     chat.group = data.subtitle.startsWith('Yesterday') ? 'Yesterday' : 'Today';
-    chat.messages = data.messages.map(item => createMessage(item.role, item.text || demoMarkdown(item.html), DEFAULT_MODEL));
+    chat.messages = data.messages.map(item => createMessage(item.role, item.text, DEFAULT_MODEL));
     return chat;
   });
 }

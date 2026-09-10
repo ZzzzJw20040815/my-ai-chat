@@ -28,7 +28,7 @@ test('missing key is friendly, has no stack and never invokes transport', async 
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { error: { code: 'KEY_MISSING', message: ERROR_TEXT.KEY_MISSING } });
 });
-test('both exact model IDs are allowed; caller URLs, old IDs and arbitrary models are not', async () => {
+test('all configured model IDs are allowed; caller URLs, old IDs and arbitrary models are not', async () => {
   for (const model of MODELS) assert.equal(validatePayload({ ...payload(), model: model.id }).model, model.id);
   for (const model of ['gemini-3-pro-preview','https://evil.example','other',null]) {
     assert.equal((await handleChat(request({ ...payload(), model }), {}, () => assert.fail())).status, 400);

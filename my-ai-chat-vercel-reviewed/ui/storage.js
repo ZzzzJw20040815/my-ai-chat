@@ -3,6 +3,7 @@ import { DEFAULT_MODEL, isAllowedModel } from '../shared/models.js';
 export const CHAT_DB_NAME = 'my-ai-chat';
 export const CHAT_DB_VERSION = 1;
 export const CHAT_STORE_NAME = 'chats';
+export const CANONICAL_DEMO_ID = 'demo-welcome';
 
 let sharedDatabase;
 
@@ -104,9 +105,21 @@ export async function saveChats(chatList, indexedDBApi = globalThis.indexedDB) {
 
 export async function loadOrSeedChats(createSeedChats, indexedDBApi = globalThis.indexedDB) {
   const existing = await loadChats(indexedDBApi);
-  if (existing.length) return existing;
-  const seeds = createSeedChats();
-  await saveChats(seeds, indexedDBApi);
+  const demos = existing.filter(chat => chat.demo === true);
+  if (existing.length && (demos.length === 0 || (demos.length === 1 && demos[0].id === CANONICAL_DEMO_ID))) return existing;
+  const [canonicalDemo] = createSeedChats();
+  if (!canonicalDemo || canonicalDemo.demo !== true || canonicalDemo.id !== CANONICAL_DEMO_ID)
+    throw new Error('Canonical demo seed is invalid');
+  if (!existing.length) {
+    await saveChat(canonicalDemo, indexedDBApi);
+    return loadChats(indexedDBApi);
+  }
+  const database = await openChatDatabase(indexedDBApi);
+  const transaction = database.transaction(CHAT_STORE_NAME, 'readwrite');
+  const store = transaction.objectStore(CHAT_STORE_NAME);
+  for (const demo of demos) store.delete(demo.id);
+  store.put(storedChat(canonicalDemo));
+  await transactionDone(transaction);
   return loadChats(indexedDBApi);
 }
 

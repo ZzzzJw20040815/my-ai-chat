@@ -4,7 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
 import { JSDOM } from 'jsdom';
 import { IDBFactory } from 'fake-indexeddb';
-import { loadChats } from '../ui/storage.js';
+import { MODELS } from '../shared/models.js';
+import { closeChatDatabase, loadChats } from '../ui/storage.js';
 
 const html = await readFile(new URL('../ui/index.html', import.meta.url), 'utf8');
 const waitFor = async (check, timeout = 4000) => {
@@ -105,7 +106,13 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   const storage = createMemoryStorage();
   let dom = installDom(indexedDB, fetchMock, storage);
   await import('../ui/app.js?phase3a-browser=first');
-  assert.equal((await loadChats(indexedDB)).filter(chat => chat.demo).length, 6);
+  assert.equal((await loadChats(indexedDB)).filter(chat => chat.demo).length, 1);
+  document.querySelector('#modelButton').click();
+  assert.deepEqual([...document.querySelectorAll('#modelMenu [data-model]')].map(option => option.dataset.model), MODELS.map(model => model.id));
+  document.querySelector('#modelButton').click();
+  document.querySelector('#settingsButton').click();
+  assert.deepEqual([...document.querySelectorAll('#defaultModelSetting option')].map(option => option.value), MODELS.map(model => model.id));
+  document.querySelector('#settingsDialog').close();
 
   document.querySelector('#settingsButton').click();
   const defaultModel = document.querySelector('#defaultModelSetting');
@@ -194,7 +201,7 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   dom = installDom(indexedDB, fetchMock, storage);
   await import('../ui/app.js?phase3a-browser=reopen');
   const restored = await loadChats(indexedDB);
-  assert.equal(restored.filter(chat => chat.demo).length, 6);
+  assert.equal(restored.filter(chat => chat.demo).length, 1);
   assert.equal(restored.filter(chat => !chat.demo).length, 2);
   const userChat = restored.find(chat => chat.title === '请记住测试代码 7263。');
   assert.equal(userChat.title, '请记住测试代码 7263。');
@@ -217,4 +224,70 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   assert.match(document.querySelector('#conversation').textContent, /刚才让你记住/);
   assert.equal(document.querySelector('#currentModel').textContent, 'Gemini 3.1 Pro');
   dom.window.close();
+  await closeChatDatabase();
+});
+
+test('Edit and resend works for first, middle and last historical user messages', async () => {
+  const indexedDB = new IDBFactory();
+  const { fetchMock, contexts } = createFetchMock();
+  const storage = createMemoryStorage();
+  const dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?history-edit=all-positions');
+  document.querySelector('#newChatButton').click();
+
+  for (const prompt of ['A1', 'A2', 'A3']) {
+    submitMessage(prompt);
+    await waitFor(async () => {
+      const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+      return chat?.messages.at(-1)?.role === 'assistant' && chat.messages.at(-1).status === 'complete'
+        && chat.messages.at(-2)?.content === prompt;
+    });
+  }
+
+  let users = [...document.querySelectorAll('.message.user')];
+  users[1].querySelector('[data-action="edit"]').click();
+  document.querySelector('.edit-area textarea').value = 'cancelled edit';
+  document.querySelector('[data-action="edit-cancel"]').click();
+  assert.deepEqual((await loadChats(indexedDB)).find(item => !item.demo).messages.filter(message => message.role === 'user').map(message => message.content), ['A1', 'A2', 'A3']);
+
+  users = [...document.querySelectorAll('.message.user')];
+  users[1].querySelector('[data-action="edit"]').click();
+  document.querySelector('.edit-area textarea').value = 'A2 revised';
+  document.querySelector('[data-action="edit-save"]').click();
+  let edited = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+    return chat?.messages.length === 4 && chat.messages.at(-1).status === 'complete' ? chat : null;
+  });
+  assert.deepEqual(edited.messages.filter(message => message.role === 'user').map(message => message.content), ['A1', 'A2 revised']);
+  assert.deepEqual(contexts.at(-1), ['A1', '可控回复 1。', 'A2 revised']);
+  assert.ok(!contexts.at(-1).includes('A2'));
+  assert.ok(!contexts.at(-1).includes('A3'));
+
+  users = [...document.querySelectorAll('.message.user')];
+  users[0].querySelector('[data-action="edit"]').click();
+  document.querySelector('.edit-area textarea').value = 'A1 revised';
+  document.querySelector('[data-action="edit-save"]').click();
+  edited = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+    return chat?.messages.length === 2 && chat.messages[0].content === 'A1 revised' && chat.messages.at(-1).status === 'complete' ? chat : null;
+  });
+  assert.deepEqual(contexts.at(-1), ['A1 revised']);
+
+  submitMessage('last user');
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 4);
+  users = [...document.querySelectorAll('.message.user')];
+  users.at(-1).querySelector('[data-action="edit"]').click();
+  document.querySelector('.edit-area textarea').value = 'last user revised';
+  document.querySelector('[data-action="edit-save"]').click();
+  edited = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+    return chat?.messages.length === 4 && chat.messages[2].content === 'last user revised'
+      && chat.messages.at(-1).status === 'complete' ? chat : null;
+  });
+  assert.deepEqual(contexts.at(-1), ['A1 revised', '可控回复 1。', 'last user revised']);
+  assert.ok(!contexts.at(-1).includes('last user'));
+  assert.equal(edited.messages.at(-1).model, edited.model);
+  assert.ok(edited.messages[2].updatedAt);
+  dom.window.close();
+  await closeChatDatabase();
 });
