@@ -320,3 +320,72 @@ test('Edit and resend works for first, middle and last historical user messages'
   dom.window.close();
   await closeChatDatabase();
 });
+
+test('variant switching restores independent descendant branches and persists the visible path', async () => {
+  const indexedDB = new IDBFactory();
+  const { fetchMock, contexts } = createFetchMock();
+  const storage = createMemoryStorage();
+  let dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?branch-aware-variants=first');
+  document.querySelector('#newChatButton').click();
+
+  submitMessage('branch A');
+  await waitFor(async () => {
+    const last = (await loadChats(indexedDB)).find(item => !item.demo)?.messages.at(-1);
+    return last?.role === 'assistant' && last.status === 'complete';
+  });
+  document.querySelector('.message.assistant [data-action="regenerate"]').click();
+  await waitFor(async () => {
+    const turn = (await loadChats(indexedDB)).find(item => !item.demo)?.messages[1];
+    return turn?.variants?.length === 2 && activeAssistantVariant(turn).status === 'complete';
+  });
+
+  document.querySelector('.message.assistant [data-action="variant-prev"]').click();
+  submitMessage('branch C');
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 4);
+  assert.deepEqual(contexts.at(-1), ['branch A', '可控回复 1。', 'branch C']);
+
+  document.querySelector('.message.assistant [data-action="variant-next"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A']);
+  assert.equal((await loadChats(indexedDB)).find(item => !item.demo).messages.length, 4);
+
+  submitMessage('branch C2');
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 6);
+  assert.deepEqual(contexts.at(-1), ['branch A', '可控回复 2。', 'branch C2']);
+
+  document.querySelector('.message.assistant [data-action="variant-prev"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A', 'branch C']);
+  document.querySelector('.message.assistant [data-action="variant-next"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A', 'branch C2']);
+
+  const beforeReload = (await loadChats(indexedDB)).find(item => !item.demo);
+  assert.equal(beforeReload.messages.length, 6);
+  const originalC = beforeReload.messages.find(message => message.content === 'branch C');
+  const originalD = beforeReload.messages.find(message => message.parentUserId === originalC.id);
+  const originalC2 = beforeReload.messages.find(message => message.content === 'branch C2');
+  const originalD2 = beforeReload.messages.find(message => message.parentUserId === originalC2.id);
+  dom.window.close();
+  dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?branch-aware-variants=reopen');
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A', 'branch C2']);
+  assert.equal((await loadChats(indexedDB)).find(item => !item.demo).messages.length, 6);
+
+  document.querySelector('.message.assistant [data-action="variant-prev"]').click();
+  const branchC = [...document.querySelectorAll('.message.user')].at(-1);
+  branchC.querySelector('[data-action="edit"]').click();
+  document.querySelector('.edit-area textarea').value = 'branch C edited';
+  document.querySelector('[data-action="edit-save"]').click();
+  const afterEdit = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+    const editedUser = chat?.messages.find(message => message.content === 'branch C edited');
+    const editedReply = chat?.messages.find(message => message.parentUserId === editedUser?.id);
+    return editedReply?.status === 'complete'
+      && chat.messages.some(message => message.id === originalC2.id)
+      && chat.messages.some(message => message.id === originalD2.id) ? chat : null;
+  });
+  assert.ok(!afterEdit.messages.some(message => message.id === originalD.id));
+  document.querySelector('.message.assistant [data-action="variant-next"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A', 'branch C2']);
+  dom.window.close();
+  await closeChatDatabase();
+});

@@ -9,7 +9,10 @@ import {
   createChat,
   createMessage,
   contextFor,
+  ensureBranchLineage,
   formatLocalChatTitle,
+  removeUserDescendants,
+  visibleConversationPath,
 } from './state.js';
 import { CANONICAL_DEMO_ID, loadOrSeedChats, saveChat } from './storage.js';
 import { renderMarkdown } from './markdown.js';
@@ -98,7 +101,7 @@ function messageHtml(message) {
   const variant = activeAssistantVariant(message);
   const variants = Array.isArray(message.variants) && message.variants.length ? message.variants : [message];
   const variantIndex = Math.max(0, variants.findIndex(item => item.id === variant.id));
-  const latestAssistant = current().messages.filter(m => m.role === 'assistant').at(-1)?.id === message.id;
+  const latestAssistant = visibleConversationPath(current()).filter(m => m.role === 'assistant').at(-1)?.id === message.id;
   const generating = ['sending','generating'].includes(variant.status);
   const status = generating ? '<span class="generation-status">' + (variant.status === 'sending' ? 'Sending…' : 'Generating…') + '</span>' :
     variant.status === 'stopped' ? '<span class="generation-status">Stopped · partial response excluded from context</span>' : '';
@@ -120,7 +123,7 @@ function renderConversation(bottom = false) {
   conversation.innerHTML = '<div class="conversation-inner"><div class="chat-heading"><p class="eyebrow">' +
     escapeHtml(chat.demo ? 'Demo conversation · ' + modelName(chat.model) : chat.group + ' · ' + modelName(chat.model)) +
     '</p><h1>' + escapeHtml(chat.messages.length ? chat.title : 'What would you like to explore?') + '</h1></div><div class="messages"></div></div>';
-  for (const message of chat.messages) {
+  for (const message of visibleConversationPath(chat)) {
     const article = document.createElement('article'); article.className = 'message ' + message.role;
     article.dataset.messageId = message.id; article.innerHTML = messageHtml(message);
     $('.messages').append(article);
@@ -232,7 +235,10 @@ async function generate(chat, user, existingTurn = null, existingVariant = null)
   const assistant = existingTurn || createMessage('assistant', '', chat.model);
   const variant = existingVariant || assistant;
   variant.status = 'sending';
-  if (!existingTurn) chat.messages.push(assistant);
+  if (!existingTurn) {
+    assistant.parentUserId = user.id;
+    chat.messages.push(assistant);
+  }
   const job = { chatId: chat.id, messageId: assistant.id, variantId: variant.id, abort: new AbortController() };
   generation = job; syncComposer(); renderConversation(true);
   let readerResponse;
@@ -280,18 +286,22 @@ function stopGeneration() {
 }
 async function retry(messageId) {
   if (generation) return;
-  const chat = current(), index = chat.messages.findIndex(m => m.id === messageId);
-  if (index < 1 || chat.messages[index].role !== 'assistant' || index !== chat.messages.length - 1) return;
-  const user = chat.messages[index - 1];
+  const chat = current(), path = visibleConversationPath(chat);
+  const message = chat.messages.find(item => item.id === messageId);
+  if (!message || message.role !== 'assistant' || path.filter(item => item.role === 'assistant').at(-1)?.id !== messageId) return;
+  const user = chat.messages.find(item => item.id === message.parentUserId && item.role === 'user');
+  if (!user) return;
   const variantMessage = createMessage('assistant', '', chat.model);
   variantMessage.status = 'sending';
-  const variant = addAssistantVariant(chat.messages[index], variantMessage);
-  renderConversation(true); await persistChat(chat); void generate(chat, user, chat.messages[index], variant);
+  const variant = addAssistantVariant(message, variantMessage);
+  renderConversation(true); await persistChat(chat); void generate(chat, user, message, variant);
 }
 $('#composerForm').addEventListener('submit', async event => {
   event.preventDefault();
   if (generation || editingId || !input.value.trim()) return;
   const chat = current(), user = createMessage('user', input.value.trim());
+  const leafAssistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
+  user.parentVariantId = leafAssistant ? activeAssistantVariant(leafAssistant).id : null;
   chat.messages.push(user);
   if (!chat.demo && chat.titleInitialized === false && chat.messages.length === 1) {
     chat.title = formatLocalChatTitle(user.createdAt);
@@ -404,7 +414,7 @@ conversation.addEventListener('click', async event => {
       const next = index + (button.dataset.action === 'variant-next' ? 1 : -1);
       if (next < 0 || next >= message.variants.length) return;
       message.activeVariantId = message.variants[next].id;
-      updateMessage(chat.id, message); void persistChat(chat); break;
+      renderConversation(); void persistChat(chat); break;
     }
     case 'edit':
       if (generation) return;
@@ -413,9 +423,8 @@ conversation.addEventListener('click', async event => {
     case 'edit-save': {
       if (generation) return;
       const value = $('textarea', article).value.trim(); if (!value) return;
-      const index = chat.messages.findIndex(m => m.id === message.id);
       message.content = value; message.updatedAt = new Date().toISOString();
-      chat.messages.splice(index + 1); editingId = null; renderConversation(true);
+      removeUserDescendants(chat, message.id); editingId = null; renderConversation(true);
       await persistChat(chat); void generate(chat, message); break;
     }
   }
@@ -440,7 +449,7 @@ async function initializeApp() {
     initialChats = createDemoChats();
     setTimeout(() => toast('Local storage is unavailable. This session will remain in memory only.'), 0);
   }
-  for (const chat of initialChats) chats.set(chat.id, chat);
+  for (const chat of initialChats) chats.set(chat.id, ensureBranchLineage(chat));
   let savedActiveChat;
   try { savedActiveChat = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY); } catch {}
   activeChat = savedActiveChat && chats.has(savedActiveChat) ? savedActiveChat : chats.keys().next().value;

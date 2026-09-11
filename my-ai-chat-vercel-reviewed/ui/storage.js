@@ -1,4 +1,5 @@
 import { DEFAULT_MODEL, isAllowedModel } from '../shared/models.js';
+import { ensureBranchLineage } from './state.js';
 
 export const CHAT_DB_NAME = 'my-ai-chat';
 export const CHAT_DB_VERSION = 1;
@@ -83,11 +84,17 @@ function normalizeMessage(message) {
       ? String(message.activeVariantId)
       : normalized.variants[0].id;
   }
+  if (normalized.role === 'user' && Object.hasOwn(message, 'parentVariantId')) {
+    normalized.parentVariantId = message.parentVariantId == null ? null : String(message.parentVariantId);
+  }
+  if (normalized.role === 'assistant' && Object.hasOwn(message, 'parentUserId')) {
+    normalized.parentUserId = message.parentUserId == null ? null : String(message.parentUserId);
+  }
   return normalized;
 }
 
 export function storedChat(chat) {
-  return {
+  const stored = {
     id: String(chat.id),
     title: typeof chat.title === 'string' && chat.title ? chat.title : 'New conversation',
     createdAt: chat.createdAt || new Date().toISOString(),
@@ -100,6 +107,8 @@ export function storedChat(chat) {
     // Records created before timestamp titles have no flag, so their existing title stays locked.
     titleInitialized: chat.titleInitialized === false ? false : true,
   };
+  ensureBranchLineage(stored);
+  return stored;
 }
 
 export async function loadChats(indexedDBApi = globalThis.indexedDB) {
