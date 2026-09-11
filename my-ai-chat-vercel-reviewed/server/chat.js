@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
-import { isAllowedModel, modelMetadata } from '../shared/models.js';
+import { isPersistableModelId, modelMetadata } from '../shared/models.js';
+import { trustedModelMetadata } from './model-catalog.js';
 import {
   MAX_OUTPUT_TOKENS_LIMIT, MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_MODES,
   SAFETY_THRESHOLDS, SAMPLING_LIMITS, THINKING_LEVELS,
@@ -33,8 +34,8 @@ export function classifyError(error) {
   if (error instanceof TypeError) return ['NETWORK_ERROR', 502];
   return ['SERVER_ERROR', 502];
 }
-export function validatePayload(payload) {
-  if (!payload || !isAllowedModel(payload.model) || !Array.isArray(payload.messages) || !payload.messages.length)
+export function validatePayload(payload, authorizedModel = modelMetadata(payload?.model)) {
+  if (!payload || !authorizedModel || authorizedModel.id !== payload.model || !Array.isArray(payload.messages) || !payload.messages.length)
     throw new Error('INVALID_REQUEST');
   if (payload.messages.length > MAX_MESSAGES) throw new Error('CONTEXT_LIMIT');
   const ids = new Set();
@@ -50,13 +51,15 @@ export function validatePayload(payload) {
     return { role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] };
   });
   if (contents.at(-1).role !== 'user') throw new Error('INVALID_REQUEST');
-  return { model: payload.model, contents, config: validateGenerationSettings(payload.settings, payload.model) };
+  return { model: payload.model, contents, config: validateGenerationSettings(payload.settings, authorizedModel) };
 }
 function invalidRequest() { throw new Error('INVALID_REQUEST'); }
 function validNumber(value, limits) {
   return typeof value === 'number' && Number.isFinite(value) && value >= limits.min && value <= limits.max;
 }
-export function validateGenerationSettings(value, modelId) {
+export function validateGenerationSettings(value, modelOrMetadata) {
+  const metadata = typeof modelOrMetadata === 'string' ? modelMetadata(modelOrMetadata) : modelOrMetadata;
+  if (!metadata?.capabilities) invalidRequest();
   if (value === undefined) return {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalidRequest();
   const config = {};
@@ -65,23 +68,27 @@ export function validateGenerationSettings(value, modelId) {
     if (value.systemInstruction.trim()) config.systemInstruction = value.systemInstruction;
   }
   if ('maxOutputTokens' in value && value.maxOutputTokens !== null) {
-    if (!Number.isInteger(value.maxOutputTokens) || value.maxOutputTokens < 1 || value.maxOutputTokens > MAX_OUTPUT_TOKENS_LIMIT) invalidRequest();
+    const modelLimit = Number.isInteger(metadata.capabilities.outputTokenLimit)
+      ? Math.min(MAX_OUTPUT_TOKENS_LIMIT, metadata.capabilities.outputTokenLimit) : MAX_OUTPUT_TOKENS_LIMIT;
+    if (!Number.isInteger(value.maxOutputTokens) || value.maxOutputTokens < 1 || value.maxOutputTokens > modelLimit) invalidRequest();
     config.maxOutputTokens = value.maxOutputTokens;
   }
   if ('thinkingLevel' in value && value.thinkingLevel !== 'default') {
     if (!THINKING_LEVELS.includes(value.thinkingLevel)) invalidRequest();
-    if (!modelMetadata(modelId)?.capabilities.thinkingLevels.includes(value.thinkingLevel)) invalidRequest();
+    if (!metadata.capabilities.thinkingLevels.includes(value.thinkingLevel)) invalidRequest();
     config.thinkingConfig = { thinkingLevel: value.thinkingLevel.toUpperCase() };
   }
   if ('samplingOverrides' in value) {
     const sampling = value.samplingOverrides;
     if (!sampling || typeof sampling !== 'object' || Array.isArray(sampling) || typeof sampling.enabled !== 'boolean') invalidRequest();
     if (sampling.enabled) {
+      if (metadata.capabilities.samplingOverrides !== true) invalidRequest();
       if (!validNumber(sampling.temperature, SAMPLING_LIMITS.temperature)
         || !validNumber(sampling.topP, SAMPLING_LIMITS.topP)) invalidRequest();
+      if (typeof metadata.capabilities.maxTemperature === 'number' && sampling.temperature > metadata.capabilities.maxTemperature) invalidRequest();
       config.temperature = sampling.temperature;
       config.topP = sampling.topP;
-      if (modelMetadata(modelId)?.capabilities.topK) {
+      if (metadata.capabilities.topK) {
         if (!Number.isInteger(sampling.topK) || !validNumber(sampling.topK, SAMPLING_LIMITS.topK)) invalidRequest();
         config.topK = sampling.topK;
       }
@@ -96,7 +103,7 @@ export function validateGenerationSettings(value, modelId) {
       if (key in safety && !SAFETY_THRESHOLDS.includes(safety[key])) invalidRequest();
     }
     if (safety.mode === 'custom') {
-      if (!modelMetadata(modelId)?.capabilities.safetySettings) invalidRequest();
+      if (!metadata.capabilities.safetySettings) invalidRequest();
       if (SAFETY_CATEGORIES.some(({ key }) => !SAFETY_THRESHOLDS.includes(safety[key]))) invalidRequest();
       config.safetySettings = SAFETY_CATEGORIES.map(({ key, category }) => ({ category, threshold: safety[key] }));
     }
@@ -140,18 +147,38 @@ export async function googleStream(apiKey, params, signal) {
   });
 }
 // Injectable transport is only for unit tests; requests cannot select a mock.
-export async function handleChat(request, env, transport = googleStream, timeoutMs = 120000) {
+export async function handleChat(request, env, transport = googleStream, timeoutMs = 120000, catalogOptions = {}) {
   if (request.method !== 'POST') return jsonError('INVALID_REQUEST', 405);
   const origin = request.headers.get('origin');
   if ((origin && origin !== new URL(request.url).origin) || request.headers.get('sec-fetch-site') === 'cross-site')
     return jsonError('INVALID_REQUEST', 403);
   if (!request.headers.get('content-type')?.startsWith('application/json')) return jsonError('INVALID_REQUEST', 415);
-  let params;
-  try { params = validatePayload(await readPayload(request)); }
+  let payload;
+  try {
+    payload = await readPayload(request);
+    if (!isPersistableModelId(payload?.model)) throw new Error('INVALID_REQUEST');
+  }
   catch (error) {
     return jsonError(error.message === 'CONTEXT_LIMIT' ? 'CONTEXT_LIMIT' : 'INVALID_REQUEST', error.message === 'CONTEXT_LIMIT' ? 413 : 400);
   }
+  let params, authorizedModel = modelMetadata(payload.model);
+  try {
+    if (authorizedModel) params = validatePayload(payload, authorizedModel);
+    else if (!env.GEMINI_API_KEY?.trim()) return jsonError('INVALID_REQUEST', 400);
+  } catch (error) {
+    return jsonError(error.message === 'CONTEXT_LIMIT' ? 'CONTEXT_LIMIT' : 'INVALID_REQUEST', error.message === 'CONTEXT_LIMIT' ? 413 : 400);
+  }
   if (!env.GEMINI_API_KEY?.trim()) return jsonError('KEY_MISSING', 503);
+  try {
+    authorizedModel ||= await trustedModelMetadata(payload.model, env.GEMINI_API_KEY, catalogOptions);
+    if (!authorizedModel) return jsonError('MODEL_UNAVAILABLE', 502);
+    params ||= validatePayload(payload, authorizedModel);
+  } catch (error) {
+    if (error.message === 'INVALID_REQUEST' || error.message === 'CONTEXT_LIMIT') {
+      return jsonError(error.message, error.message === 'CONTEXT_LIMIT' ? 413 : 400);
+    }
+    return jsonError('MODEL_UNAVAILABLE', 502);
+  }
   const abort = new AbortController();
   let timedOut = false, cancelled = false;
   const onDisconnect = () => { cancelled = true; abort.abort(); };
@@ -187,7 +214,9 @@ export async function handleChat(request, env, transport = googleStream, timeout
           emit({ type: 'done', notice: finishReason === 'MAX_TOKENS' ? ERROR_TEXT.TRUNCATED : null });
         } catch (error) {
           const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'SAFETY_BLOCKED', 'CONTEXT_LIMIT'].includes(error?.code) ? error.code : classifyError(error)[0];
-          if (!cancelled) emit({ type: 'error', code, message: error?.message || ERROR_TEXT[code] });
+          const safeMessage = code === 'SAFETY_BLOCKED' && error?.message?.startsWith(ERROR_TEXT.SAFETY_BLOCKED)
+            ? error.message : ERROR_TEXT[code];
+          if (!cancelled) emit({ type: 'error', code, message: safeMessage });
         } finally {
           cleanup();
           try { controller.close(); } catch { /* A cancelled reader is already closed. */ }

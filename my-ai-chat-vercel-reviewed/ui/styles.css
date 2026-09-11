@@ -230,6 +230,7 @@ svg {
 .model-option strong { font-size: 14px; }
 .model-option small { margin-top: 3px; color: var(--muted); font-size: 12px; }
 .model-option > span:last-child { color: var(--accent-strong); }
+.model-source-badge { display: inline-block; margin-left: 5px; padding: 1px 5px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-strong); font-size: 9px; font-weight: 720; vertical-align: 1px; }
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .sun-icon { display: none; }
 html[data-theme="light"] .sun-icon { display: block; }
@@ -348,6 +349,9 @@ html[data-theme="light"] .moon-icon { display: none; }
 .settings-section + .settings-section { margin-top: 8px; border-top: 1px solid var(--border-strong); }
 .settings-section-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
 .settings-section-head h3 { margin: 4px 0 0; font-size: 17px; letter-spacing: -.015em; }
+.model-catalog-row { min-width: 0; padding: 10px 0 4px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+.model-catalog-row > span { min-width: 0; overflow-wrap: anywhere; }
+.model-catalog-row .small-button { min-height: 38px; flex: none; }
 .setting-field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(170px, 220px); align-items: center; gap: 20px; padding: 14px 0; border-top: 1px solid var(--border); }
 .setting-field > span:first-child { min-width: 0; }
 .setting-field strong, .toggle-row strong { display: block; font-size: 14px; }

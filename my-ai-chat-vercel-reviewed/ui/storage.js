@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL, isAllowedModel } from '../shared/models.js';
+import { DEFAULT_MODEL, isPersistableModelId } from '../shared/models.js';
 import { ensureBranchLineage } from './state.js';
 
 export const CHAT_DB_NAME = 'my-ai-chat';
@@ -62,7 +62,7 @@ function normalizeAssistantVariant(variant) {
     content: typeof variant.content === 'string' ? variant.content : '',
     createdAt: variant.createdAt || new Date().toISOString(),
     status: typeof variant.status === 'string' ? variant.status : 'complete',
-    model: isAllowedModel(variant.model) ? variant.model : null,
+    model: isPersistableModelId(variant.model) ? variant.model : null,
     feedback: ['like', 'dislike'].includes(variant.feedback) ? variant.feedback : null,
     ...(variant.updatedAt ? { updatedAt: variant.updatedAt } : {}),
     ...(typeof variant.error === 'string' ? { error: variant.error } : {}),
@@ -77,7 +77,7 @@ function normalizeMessage(message) {
     content: typeof message.content === 'string' ? message.content : '',
     createdAt: message.createdAt || new Date().toISOString(),
     status: typeof message.status === 'string' ? message.status : 'complete',
-    model: message.role === 'assistant' && isAllowedModel(message.model) ? message.model : null,
+    model: message.role === 'assistant' && isPersistableModelId(message.model) ? message.model : null,
     feedback: ['like', 'dislike'].includes(message.feedback) ? message.feedback : null,
     ...(message.updatedAt ? { updatedAt: message.updatedAt } : {}),
     ...(typeof message.error === 'string' ? { error: message.error } : {}),
@@ -104,7 +104,7 @@ export function storedChat(chat) {
     title: typeof chat.title === 'string' && chat.title ? chat.title : 'New conversation',
     createdAt: chat.createdAt || new Date().toISOString(),
     updatedAt: chat.updatedAt || chat.createdAt || new Date().toISOString(),
-    model: isAllowedModel(chat.model) ? chat.model : DEFAULT_MODEL,
+    model: isPersistableModelId(chat.model) ? chat.model : DEFAULT_MODEL,
     folderId: chat.folderId == null ? null : String(chat.folderId),
     messages: Array.isArray(chat.messages) ? chat.messages.map(normalizeMessage) : [],
     group: chat.group === 'Yesterday' ? 'Yesterday' : 'Today',

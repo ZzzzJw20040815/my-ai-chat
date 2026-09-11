@@ -6,6 +6,9 @@
     "api/chat.js": {
       "maxDuration": 120,
       "supportsCancellation": true
+    },
+    "api/models.js": {
+      "maxDuration": 30
     }
   }
 }
