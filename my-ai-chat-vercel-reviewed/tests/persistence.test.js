@@ -16,7 +16,7 @@ import {
 const FLASH = 'gemini-3.7-flash';
 const PRO = 'gemini-3.1-pro-preview';
 
-test('IndexedDB v1 creates the chats store and initializes demo records once', async () => {
+test('IndexedDB creates the chats store and initializes demo records once', async () => {
   const indexedDB = new IDBFactory();
   let seedCalls = 0;
   const createSeeds = () => {

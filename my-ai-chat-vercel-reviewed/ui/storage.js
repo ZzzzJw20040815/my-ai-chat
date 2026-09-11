@@ -2,8 +2,10 @@ import { DEFAULT_MODEL, isAllowedModel } from '../shared/models.js';
 import { ensureBranchLineage } from './state.js';
 
 export const CHAT_DB_NAME = 'my-ai-chat';
-export const CHAT_DB_VERSION = 1;
+export const CHAT_DB_VERSION = 2;
 export const CHAT_STORE_NAME = 'chats';
+export const ASSET_STORE_NAME = 'assets';
+export const WALLPAPER_ASSET_ID = 'chat-wallpaper';
 export const CANONICAL_DEMO_ID = 'demo-welcome';
 
 let sharedDatabase;
@@ -34,6 +36,9 @@ export function openChatDatabase(indexedDBApi = globalThis.indexedDB) {
         const store = database.createObjectStore(CHAT_STORE_NAME, { keyPath: 'id' });
         store.createIndex('updatedAt', 'updatedAt');
         store.createIndex('demo', 'demo');
+      }
+      if (!database.objectStoreNames.contains(ASSET_STORE_NAME)) {
+        database.createObjectStore(ASSET_STORE_NAME, { keyPath: 'id' });
       }
     });
     request.addEventListener('success', () => {
@@ -159,6 +164,37 @@ export async function deleteChat(chatId, indexedDBApi = globalThis.indexedDB) {
   const database = await openChatDatabase(indexedDBApi);
   const transaction = database.transaction(CHAT_STORE_NAME, 'readwrite');
   transaction.objectStore(CHAT_STORE_NAME).delete(chatId);
+  await transactionDone(transaction);
+}
+
+export async function loadWallpaperAsset(indexedDBApi = globalThis.indexedDB) {
+  const database = await openChatDatabase(indexedDBApi);
+  const transaction = database.transaction(ASSET_STORE_NAME, 'readonly');
+  const record = await requestResult(transaction.objectStore(ASSET_STORE_NAME).get(WALLPAPER_ASSET_ID));
+  await transactionDone(transaction);
+  return record || null;
+}
+
+export async function saveWallpaperAsset(file, indexedDBApi = globalThis.indexedDB) {
+  const record = {
+    id: WALLPAPER_ASSET_ID,
+    blob: file,
+    name: typeof file.name === 'string' && file.name ? file.name : 'Wallpaper',
+    type: file.type,
+    size: file.size,
+    updatedAt: new Date().toISOString(),
+  };
+  const database = await openChatDatabase(indexedDBApi);
+  const transaction = database.transaction(ASSET_STORE_NAME, 'readwrite');
+  transaction.objectStore(ASSET_STORE_NAME).put(record);
+  await transactionDone(transaction);
+  return record;
+}
+
+export async function deleteWallpaperAsset(indexedDBApi = globalThis.indexedDB) {
+  const database = await openChatDatabase(indexedDBApi);
+  const transaction = database.transaction(ASSET_STORE_NAME, 'readwrite');
+  transaction.objectStore(ASSET_STORE_NAME).delete(WALLPAPER_ASSET_ID);
   await transactionDone(transaction);
 }
 
