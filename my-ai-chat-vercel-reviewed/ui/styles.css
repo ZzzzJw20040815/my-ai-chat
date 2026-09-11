@@ -237,6 +237,10 @@ html[data-theme="light"] .moon-icon { display: none; }
 .action-button svg { width: 15px; height: 15px; }
 .action-button:hover, .action-button.active { color: var(--text); background: var(--surface-2); }
 .action-button.active { color: var(--accent-strong); }
+.variant-nav { display: inline-flex; align-items: center; gap: 2px; margin-left: 2px; color: var(--muted-2); font-size: 12px; }
+.variant-nav button { width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; font-size: 20px; line-height: 1; }
+.variant-nav button:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
+.variant-nav button:disabled { opacity: .35; cursor: default; }
 .edit-area { width: min(86%, 650px); }
 .edit-area textarea { width: 100%; min-height: 90px; resize: vertical; padding: 13px; border: 1px solid var(--accent); border-radius: 12px; outline: 0; background: var(--surface); color: var(--text); line-height: 1.55; }
 .edit-controls { display: flex; justify-content: flex-end; gap: 7px; margin-top: 8px; }
@@ -356,6 +360,8 @@ html[data-theme="light"] .moon-icon { display: none; }
   .message-content { font-size: 16px; line-height: 1.68; }
   .action-button { padding: 0 6px; }
   .action-button .action-label { display: none; }
+  .variant-nav { margin-left: auto; }
+  .variant-nav button { width: 44px; height: 44px; }
   .composer { border-radius: 16px; }
   .composer-actions { gap: 8px; padding: 0 2px 2px; }
   .mode-pill span { display: none; }

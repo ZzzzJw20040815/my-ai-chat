@@ -13,23 +13,128 @@ export function createMessage(role, content = '', model = null) {
   return { id: uniqueId(), role, content, createdAt: new Date().toISOString(),
     status: 'complete', model: role === 'assistant' ? model : null, feedback: null };
 }
+function responseVariant(message) {
+  return {
+    id: message.id,
+    content: message.content,
+    createdAt: message.createdAt,
+    status: message.status,
+    model: message.model,
+    feedback: message.feedback ?? null,
+    ...(message.updatedAt ? { updatedAt: message.updatedAt } : {}),
+    ...(typeof message.error === 'string' ? { error: message.error } : {}),
+    ...(typeof message.notice === 'string' ? { notice: message.notice } : {}),
+  };
+}
+export function activeAssistantVariant(message) {
+  if (message?.role !== 'assistant' || !Array.isArray(message.variants) || !message.variants.length) return message;
+  return message.variants.find(variant => variant.id === message.activeVariantId) || message.variants[0];
+}
+export function ensureAssistantVariants(message) {
+  if (message?.role !== 'assistant') throw new Error('Assistant message required');
+  if (!Array.isArray(message.variants) || !message.variants.length) {
+    const legacyVariant = responseVariant(message);
+    message.variants = [legacyVariant];
+    message.activeVariantId = legacyVariant.id;
+  } else if (!message.variants.some(variant => variant.id === message.activeVariantId)) {
+    message.activeVariantId = message.variants[0].id;
+  }
+  return message.variants;
+}
+export function addAssistantVariant(message, variantMessage) {
+  const variants = ensureAssistantVariants(message);
+  const variant = responseVariant(variantMessage);
+  variants.push(variant);
+  message.activeVariantId = variant.id;
+  return variant;
+}
+export function assistantVariantById(message, variantId) {
+  if (!Array.isArray(message?.variants) || !message.variants.length) return message?.id === variantId ? message : null;
+  return message.variants.find(variant => variant.id === variantId) || null;
+}
+export function assistantVariants(message) {
+  if (message?.role !== 'assistant') return [];
+  return Array.isArray(message.variants) && message.variants.length ? message.variants : [message];
+}
+// Older chats are linear. Missing lineage is inferred from the immediately preceding
+// user/assistant sequence; explicit lineage on branched chats is never overwritten.
+export function ensureBranchLineage(chat) {
+  let precedingUser = null;
+  let precedingVariantId = null;
+  for (const message of chat.messages) {
+    if (message.role === 'user') {
+      if (!Object.hasOwn(message, 'parentVariantId')) message.parentVariantId = precedingVariantId;
+      precedingUser = message;
+      precedingVariantId = null;
+      continue;
+    }
+    if (!Object.hasOwn(message, 'parentUserId')) message.parentUserId = precedingUser?.id || null;
+    precedingVariantId = activeAssistantVariant(message)?.id || null;
+  }
+  return chat;
+}
+export function visibleConversationPath(chat) {
+  ensureBranchLineage(chat);
+  const path = [];
+  let user = chat.messages.find(message => message.role === 'user' && message.parentVariantId == null);
+  const visited = new Set();
+  while (user && !visited.has(user.id)) {
+    visited.add(user.id);
+    path.push(user);
+    const assistant = chat.messages.find(message => message.role === 'assistant' && message.parentUserId === user.id);
+    if (!assistant) break;
+    path.push(assistant);
+    const variantId = activeAssistantVariant(assistant)?.id;
+    user = chat.messages.find(message => message.role === 'user' && message.parentVariantId === variantId);
+  }
+  return path;
+}
+export function removeUserDescendants(chat, userId) {
+  ensureBranchLineage(chat);
+  const removed = new Set();
+  const pendingUsers = [userId];
+  for (let cursor = 0; cursor < pendingUsers.length; cursor++) {
+    const parentUserId = pendingUsers[cursor];
+    const turns = chat.messages.filter(message => message.role === 'assistant' && message.parentUserId === parentUserId);
+    for (const turn of turns) {
+      removed.add(turn.id);
+      const variantIds = new Set(assistantVariants(turn).map(variant => variant.id));
+      for (const child of chat.messages) {
+        if (child.role === 'user' && variantIds.has(child.parentVariantId) && !removed.has(child.id)) {
+          removed.add(child.id);
+          pendingUsers.push(child.id);
+        }
+      }
+    }
+  }
+  chat.messages = chat.messages.filter(message => !removed.has(message.id));
+  return removed;
+}
+export function formatLocalChatTitle(createdAt) {
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return 'New conversation';
+  const part = value => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())} ${part(date.getHours())}:${part(date.getMinutes())}`;
+}
 export function createChat(model = DEFAULT_MODEL) {
   const createdAt = new Date().toISOString();
   return { id: uniqueId(), title: 'New conversation', model, folderId: null, createdAt, updatedAt: createdAt,
-    group: 'Today', messages: [], draft: '', scrollTop: 0, demo: false };
+    group: 'Today', messages: [], draft: '', scrollTop: 0, demo: false, titleInitialized: false };
 }
 // Include complete turns only. Failed/stopped partial responses never masquerade as valid context.
 export function contextFor(chat, userId, contextLimit = 'all') {
-  const end = chat.messages.findIndex(message => message.id === userId && message.role === 'user');
+  const visibleMessages = visibleConversationPath(chat);
+  const end = visibleMessages.findIndex(message => message.id === userId && message.role === 'user');
   if (end < 0) throw new Error('Message not found');
   const result = [];
   for (let index = 0; index <= end; index++) {
-    const user = chat.messages[index];
+    const user = visibleMessages[index];
     if (user.role !== 'user' || user.status !== 'complete') continue;
     if (index === end) { result.push(user); break; }
-    const assistant = chat.messages[index + 1];
-    if (assistant?.role === 'assistant' && assistant.status === 'complete' && assistant.content.trim()) {
-      result.push(user, assistant);
+    const assistant = visibleMessages[index + 1];
+    const activeVariant = activeAssistantVariant(assistant);
+    if (assistant?.role === 'assistant' && activeVariant?.status === 'complete' && activeVariant.content.trim()) {
+      result.push(user, { ...activeVariant, role: 'assistant' });
       index++;
     }
   }

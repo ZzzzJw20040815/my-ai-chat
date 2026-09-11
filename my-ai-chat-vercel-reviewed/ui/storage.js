@@ -1,4 +1,5 @@
 import { DEFAULT_MODEL, isAllowedModel } from '../shared/models.js';
+import { ensureBranchLineage } from './state.js';
 
 export const CHAT_DB_NAME = 'my-ai-chat';
 export const CHAT_DB_VERSION = 1;
@@ -50,8 +51,22 @@ export function openChatDatabase(indexedDBApi = globalThis.indexedDB) {
   return opening;
 }
 
-function normalizeMessage(message) {
+function normalizeAssistantVariant(variant) {
   return {
+    id: String(variant.id),
+    content: typeof variant.content === 'string' ? variant.content : '',
+    createdAt: variant.createdAt || new Date().toISOString(),
+    status: typeof variant.status === 'string' ? variant.status : 'complete',
+    model: isAllowedModel(variant.model) ? variant.model : null,
+    feedback: ['like', 'dislike'].includes(variant.feedback) ? variant.feedback : null,
+    ...(variant.updatedAt ? { updatedAt: variant.updatedAt } : {}),
+    ...(typeof variant.error === 'string' ? { error: variant.error } : {}),
+    ...(typeof variant.notice === 'string' ? { notice: variant.notice } : {}),
+  };
+}
+
+function normalizeMessage(message) {
+  const normalized = {
     id: String(message.id),
     role: message.role === 'assistant' ? 'assistant' : 'user',
     content: typeof message.content === 'string' ? message.content : '',
@@ -63,10 +78,23 @@ function normalizeMessage(message) {
     ...(typeof message.error === 'string' ? { error: message.error } : {}),
     ...(typeof message.notice === 'string' ? { notice: message.notice } : {}),
   };
+  if (normalized.role === 'assistant' && Array.isArray(message.variants) && message.variants.length) {
+    normalized.variants = message.variants.map(normalizeAssistantVariant);
+    normalized.activeVariantId = normalized.variants.some(variant => variant.id === String(message.activeVariantId))
+      ? String(message.activeVariantId)
+      : normalized.variants[0].id;
+  }
+  if (normalized.role === 'user' && Object.hasOwn(message, 'parentVariantId')) {
+    normalized.parentVariantId = message.parentVariantId == null ? null : String(message.parentVariantId);
+  }
+  if (normalized.role === 'assistant' && Object.hasOwn(message, 'parentUserId')) {
+    normalized.parentUserId = message.parentUserId == null ? null : String(message.parentUserId);
+  }
+  return normalized;
 }
 
 export function storedChat(chat) {
-  return {
+  const stored = {
     id: String(chat.id),
     title: typeof chat.title === 'string' && chat.title ? chat.title : 'New conversation',
     createdAt: chat.createdAt || new Date().toISOString(),
@@ -76,7 +104,11 @@ export function storedChat(chat) {
     messages: Array.isArray(chat.messages) ? chat.messages.map(normalizeMessage) : [],
     group: chat.group === 'Yesterday' ? 'Yesterday' : 'Today',
     demo: chat.demo === true,
+    // Records created before timestamp titles have no flag, so their existing title stays locked.
+    titleInitialized: chat.titleInitialized === false ? false : true,
   };
+  ensureBranchLineage(stored);
+  return stored;
 }
 
 export async function loadChats(indexedDBApi = globalThis.indexedDB) {

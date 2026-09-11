@@ -5,6 +5,7 @@ import { webcrypto } from 'node:crypto';
 import { JSDOM } from 'jsdom';
 import { IDBFactory } from 'fake-indexeddb';
 import { MODELS } from '../shared/models.js';
+import { activeAssistantVariant } from '../ui/state.js';
 import { closeChatDatabase, loadChats } from '../ui/storage.js';
 
 const html = await readFile(new URL('../ui/index.html', import.meta.url), 'utf8');
@@ -174,27 +175,52 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   document.querySelector('.message.assistant:last-child [data-action="regenerate"]').click();
   const retriedChat = await waitFor(async () => {
     const chat = (await loadChats(indexedDB)).find(item => !item.demo);
-    return chat?.messages.at(-1)?.status === 'complete' ? chat : null;
+    const turn = chat?.messages.at(-1), active = activeAssistantVariant(turn);
+    return turn?.variants?.length === 2 && active?.status === 'complete' ? chat : null;
   });
-  const retryId = retriedChat.messages.at(-1).id;
+  const retryId = retriedChat.messages.at(-1).activeVariantId;
   document.querySelector('.message.assistant:last-child [data-action="regenerate"]').click();
   const regeneratedChat = await waitFor(async () => {
     const chat = (await loadChats(indexedDB)).find(item => !item.demo);
-    return chat?.messages.at(-1)?.status === 'complete' && chat.messages.at(-1).id !== retryId ? chat : null;
+    const turn = chat?.messages.at(-1), active = activeAssistantVariant(turn);
+    return turn?.variants?.length === 3 && active?.status === 'complete' && turn.activeVariantId !== retryId ? chat : null;
   });
   assert.equal(regeneratedChat.model, 'gemini-3.1-pro-preview');
-  assert.equal(regeneratedChat.messages.at(-1).model, 'gemini-3.1-pro-preview');
+  assert.equal(activeAssistantVariant(regeneratedChat.messages.at(-1)).model, 'gemini-3.1-pro-preview');
+  assert.match(document.querySelector('.variant-nav').textContent, /3\s*\/\s*3/);
+  document.querySelector('[data-action="variant-prev"]').click();
+  const selectedOlder = await waitFor(async () => {
+    const turn = (await loadChats(indexedDB)).find(item => !item.demo)?.messages.at(-1);
+    return turn?.activeVariantId === retryId ? turn : null;
+  });
+  assert.equal(activeAssistantVariant(selectedOlder).content, '可控回复 2。');
+  document.querySelector('[data-action="variant-next"]').click();
+  await waitFor(async () => {
+    const turn = (await loadChats(indexedDB)).find(item => !item.demo)?.messages.at(-1);
+    return activeAssistantVariant(turn)?.content === '可控回复 3。';
+  });
+  document.querySelector('[data-action="variant-prev"]').click();
+  await waitFor(async () => {
+    const turn = (await loadChats(indexedDB)).find(item => !item.demo)?.messages.at(-1);
+    return turn?.activeVariantId === retryId;
+  });
+  submitMessage('只使用当前回复版本');
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 8);
+  assert.ok(contexts.at(-1).includes('可控回复 2。'));
+  assert.ok(!contexts.at(-1).includes('可控回复 3。'));
+  assert.ok(!contexts.at(-1).some(content => content.includes('段落')));
 
+  const firstChat = (await loadChats(indexedDB)).find(item => !item.demo);
   document.querySelector('#newChatButton').click();
   submitMessage('Chat B marker');
-  await waitFor(async () => {
-    const chat = (await loadChats(indexedDB)).find(item => item.title === 'Chat B marker');
-    return chat?.messages.at(-1)?.role === 'assistant' && chat.messages.at(-1).status === 'complete';
+  const chatB = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo && item.messages[0]?.content === 'Chat B marker');
+    return chat?.messages.at(-1)?.role === 'assistant' && chat.messages.at(-1).status === 'complete' ? chat : null;
   });
+  assert.match(chatB.title, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
   const chatButtons = [...document.querySelectorAll('.chat-item')];
-  chatButtons.find(button => button.textContent.includes('请记住测试代码 7263。')).click();
-  chatButtons.find(button => button.textContent.includes('Chat B marker')).click();
-  const chatB = (await loadChats(indexedDB)).find(item => item.title === 'Chat B marker');
+  chatButtons.find(button => button.dataset.chatId === firstChat.id).click();
+  chatButtons.find(button => button.dataset.chatId === chatB.id).click();
   assert.equal(storage.getItem('my-ai-chat-active-chat-id'), chatB.id);
 
   dom.window.close();
@@ -203,11 +229,11 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   const restored = await loadChats(indexedDB);
   assert.equal(restored.filter(chat => chat.demo).length, 1);
   assert.equal(restored.filter(chat => !chat.demo).length, 2);
-  const userChat = restored.find(chat => chat.title === '请记住测试代码 7263。');
-  assert.equal(userChat.title, '请记住测试代码 7263。');
+  const userChat = restored.find(chat => chat.messages.some(message => message.content === '请记住测试代码 7263。'));
+  assert.match(userChat.title, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
   assert.equal(userChat.model, 'gemini-3.1-pro-preview');
   assert.ok(userChat.messages.some(message => message.content.includes('刚才')));
-  assert.equal(document.querySelector('.chat-heading h1').textContent, 'Chat B marker');
+  assert.equal(document.querySelector('.chat-heading h1').textContent, chatB.title);
   assert.equal(document.querySelector('[aria-current="true"]').dataset.chatId, chatB.id);
   document.querySelector('#settingsButton').click();
   assert.equal(document.querySelector('#defaultModelSetting').value, 'gemini-3.7-flash');
@@ -218,7 +244,7 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   assert.equal(document.querySelector('#samplingEnabledSetting').checked, true);
   document.querySelector('#settingsDialog').close();
   const historyButton = [...document.querySelectorAll('.chat-item')]
-    .find(button => button.textContent.includes('请记住测试代码 7263。'));
+    .find(button => button.dataset.chatId === userChat.id);
   assert.ok(historyButton);
   historyButton.click();
   assert.match(document.querySelector('#conversation').textContent, /刚才让你记住/);
@@ -234,6 +260,7 @@ test('Edit and resend works for first, middle and last historical user messages'
   const dom = installDom(indexedDB, fetchMock, storage);
   await import('../ui/app.js?history-edit=all-positions');
   document.querySelector('#newChatButton').click();
+  let stableTitle;
 
   for (const prompt of ['A1', 'A2', 'A3']) {
     submitMessage(prompt);
@@ -242,6 +269,7 @@ test('Edit and resend works for first, middle and last historical user messages'
       return chat?.messages.at(-1)?.role === 'assistant' && chat.messages.at(-1).status === 'complete'
         && chat.messages.at(-2)?.content === prompt;
     });
+    stableTitle ||= (await loadChats(indexedDB)).find(item => !item.demo).title;
   }
 
   let users = [...document.querySelectorAll('.message.user')];
@@ -272,6 +300,7 @@ test('Edit and resend works for first, middle and last historical user messages'
     return chat?.messages.length === 2 && chat.messages[0].content === 'A1 revised' && chat.messages.at(-1).status === 'complete' ? chat : null;
   });
   assert.deepEqual(contexts.at(-1), ['A1 revised']);
+  assert.equal(edited.title, stableTitle);
 
   submitMessage('last user');
   await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 4);
@@ -288,6 +317,75 @@ test('Edit and resend works for first, middle and last historical user messages'
   assert.ok(!contexts.at(-1).includes('last user'));
   assert.equal(edited.messages.at(-1).model, edited.model);
   assert.ok(edited.messages[2].updatedAt);
+  dom.window.close();
+  await closeChatDatabase();
+});
+
+test('variant switching restores independent descendant branches and persists the visible path', async () => {
+  const indexedDB = new IDBFactory();
+  const { fetchMock, contexts } = createFetchMock();
+  const storage = createMemoryStorage();
+  let dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?branch-aware-variants=first');
+  document.querySelector('#newChatButton').click();
+
+  submitMessage('branch A');
+  await waitFor(async () => {
+    const last = (await loadChats(indexedDB)).find(item => !item.demo)?.messages.at(-1);
+    return last?.role === 'assistant' && last.status === 'complete';
+  });
+  document.querySelector('.message.assistant [data-action="regenerate"]').click();
+  await waitFor(async () => {
+    const turn = (await loadChats(indexedDB)).find(item => !item.demo)?.messages[1];
+    return turn?.variants?.length === 2 && activeAssistantVariant(turn).status === 'complete';
+  });
+
+  document.querySelector('.message.assistant [data-action="variant-prev"]').click();
+  submitMessage('branch C');
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 4);
+  assert.deepEqual(contexts.at(-1), ['branch A', '可控回复 1。', 'branch C']);
+
+  document.querySelector('.message.assistant [data-action="variant-next"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A']);
+  assert.equal((await loadChats(indexedDB)).find(item => !item.demo).messages.length, 4);
+
+  submitMessage('branch C2');
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 6);
+  assert.deepEqual(contexts.at(-1), ['branch A', '可控回复 2。', 'branch C2']);
+
+  document.querySelector('.message.assistant [data-action="variant-prev"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A', 'branch C']);
+  document.querySelector('.message.assistant [data-action="variant-next"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A', 'branch C2']);
+
+  const beforeReload = (await loadChats(indexedDB)).find(item => !item.demo);
+  assert.equal(beforeReload.messages.length, 6);
+  const originalC = beforeReload.messages.find(message => message.content === 'branch C');
+  const originalD = beforeReload.messages.find(message => message.parentUserId === originalC.id);
+  const originalC2 = beforeReload.messages.find(message => message.content === 'branch C2');
+  const originalD2 = beforeReload.messages.find(message => message.parentUserId === originalC2.id);
+  dom.window.close();
+  dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?branch-aware-variants=reopen');
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A', 'branch C2']);
+  assert.equal((await loadChats(indexedDB)).find(item => !item.demo).messages.length, 6);
+
+  document.querySelector('.message.assistant [data-action="variant-prev"]').click();
+  const branchC = [...document.querySelectorAll('.message.user')].at(-1);
+  branchC.querySelector('[data-action="edit"]').click();
+  document.querySelector('.edit-area textarea').value = 'branch C edited';
+  document.querySelector('[data-action="edit-save"]').click();
+  const afterEdit = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+    const editedUser = chat?.messages.find(message => message.content === 'branch C edited');
+    const editedReply = chat?.messages.find(message => message.parentUserId === editedUser?.id);
+    return editedReply?.status === 'complete'
+      && chat.messages.some(message => message.id === originalC2.id)
+      && chat.messages.some(message => message.id === originalD2.id) ? chat : null;
+  });
+  assert.ok(!afterEdit.messages.some(message => message.id === originalD.id));
+  document.querySelector('.message.assistant [data-action="variant-next"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A', 'branch C2']);
   dom.window.close();
   await closeChatDatabase();
 });

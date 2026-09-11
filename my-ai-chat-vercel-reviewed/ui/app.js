@@ -2,7 +2,18 @@ import { MODELS, DEFAULT_MODEL, modelName, isAllowedModel, modelMetadata } from 
 import { MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_LEVELS } from '../shared/settings.js';
 import { demoData } from './demo.js';
 import { icons } from './icons.js';
-import { createChat, createMessage, contextFor } from './state.js';
+import {
+  activeAssistantVariant,
+  addAssistantVariant,
+  assistantVariantById,
+  createChat,
+  createMessage,
+  contextFor,
+  ensureBranchLineage,
+  formatLocalChatTitle,
+  removeUserDescendants,
+  visibleConversationPath,
+} from './state.js';
 import { CANONICAL_DEMO_ID, loadOrSeedChats, saveChat } from './storage.js';
 import { renderMarkdown } from './markdown.js';
 import { consumeStream } from './stream.js';
@@ -20,7 +31,7 @@ function createDemoChats() {
     chat.id = oldId === 'welcome' ? CANONICAL_DEMO_ID : 'demo-' + oldId;
     chat.createdAt = new Date(seedTime + index).toISOString();
     chat.updatedAt = chat.createdAt;
-    chat.title = data.title; chat.demo = true;
+    chat.title = data.title; chat.demo = true; chat.titleInitialized = true;
     chat.group = data.subtitle.startsWith('Yesterday') ? 'Yesterday' : 'Today';
     chat.messages = data.messages.map(item => createMessage(item.role, item.text, DEFAULT_MODEL));
     return chat;
@@ -87,26 +98,32 @@ function messageHtml(message) {
     return '<div class="message-bubble"><p>' + escapeHtml(message.content) + '</p></div><div class="message-actions">' +
       action('edit', 'Edit', icons.edit, false, busy) + action('copy', 'Copy', icons.copy) + '</div>';
   }
-  const latestAssistant = current().messages.filter(m => m.role === 'assistant').at(-1)?.id === message.id;
-  const generating = ['sending','generating'].includes(message.status);
-  const status = generating ? '<span class="generation-status">' + (message.status === 'sending' ? 'Sending…' : 'Generating…') + '</span>' :
-    message.status === 'stopped' ? '<span class="generation-status">Stopped · partial response excluded from context</span>' : '';
-  const error = message.error ? '<div class="error-note" role="alert">' + escapeHtml(message.error) + '</div>' : '';
+  const variant = activeAssistantVariant(message);
+  const variants = Array.isArray(message.variants) && message.variants.length ? message.variants : [message];
+  const variantIndex = Math.max(0, variants.findIndex(item => item.id === variant.id));
+  const latestAssistant = visibleConversationPath(current()).filter(m => m.role === 'assistant').at(-1)?.id === message.id;
+  const generating = ['sending','generating'].includes(variant.status);
+  const status = generating ? '<span class="generation-status">' + (variant.status === 'sending' ? 'Sending…' : 'Generating…') + '</span>' :
+    variant.status === 'stopped' ? '<span class="generation-status">Stopped · partial response excluded from context</span>' : '';
+  const error = variant.error ? '<div class="error-note" role="alert">' + escapeHtml(variant.error) + '</div>' : '';
+  const variantNav = variants.length > 1 ? '<span class="variant-nav" aria-label="Response variants"><button data-action="variant-prev" aria-label="Previous response" title="Previous response"' +
+    (busy || variantIndex === 0 ? ' disabled' : '') + '>‹</button><span>' + (variantIndex + 1) + ' / ' + variants.length + '</span><button data-action="variant-next" aria-label="Next response" title="Next response"' +
+    (busy || variantIndex === variants.length - 1 ? ' disabled' : '') + '>›</button></span>' : '';
   return '<div class="assistant-mark" aria-hidden="true">AI</div><div class="assistant-body"><div class="message-content">' +
-    (message.content ? renderMarkdown(message.content) : generating ? '<div class="typing" aria-label="Generating"><i></i><i></i><i></i></div>' : '') +
-    '</div>' + status + error + (message.notice ? '<p class="generation-status">' + escapeHtml(message.notice) + '</p>' : '') +
-    '<div class="message-actions">' + action('copy', 'Copy', icons.copy, false, !message.content) +
-    (latestAssistant ? action('regenerate', message.status === 'error' || message.status === 'stopped' ? 'Retry' : 'Regenerate', icons.redo, false, busy) : '') +
-    action('like', 'Like', icons.like, message.feedback === 'like', generating) +
-    action('dislike', 'Dislike', icons.dislike, message.feedback === 'dislike', generating) +
-    '</div><span class="message-model">' + escapeHtml(modelName(message.model)) + '</span></div>';
+    (variant.content ? renderMarkdown(variant.content) : generating ? '<div class="typing" aria-label="Generating"><i></i><i></i><i></i></div>' : '') +
+    '</div>' + status + error + (variant.notice ? '<p class="generation-status">' + escapeHtml(variant.notice) + '</p>' : '') +
+    '<div class="message-actions">' + action('copy', 'Copy', icons.copy, false, !variant.content) +
+    (latestAssistant ? action('regenerate', variant.status === 'error' || variant.status === 'stopped' ? 'Retry' : 'Regenerate', icons.redo, false, busy) : '') +
+    action('like', 'Like', icons.like, variant.feedback === 'like', generating) +
+    action('dislike', 'Dislike', icons.dislike, variant.feedback === 'dislike', generating) + variantNav +
+    '</div><span class="message-model">' + escapeHtml(modelName(variant.model)) + '</span></div>';
 }
 function renderConversation(bottom = false) {
   const chat = current(), saved = conversation.scrollTop;
   conversation.innerHTML = '<div class="conversation-inner"><div class="chat-heading"><p class="eyebrow">' +
     escapeHtml(chat.demo ? 'Demo conversation · ' + modelName(chat.model) : chat.group + ' · ' + modelName(chat.model)) +
     '</p><h1>' + escapeHtml(chat.messages.length ? chat.title : 'What would you like to explore?') + '</h1></div><div class="messages"></div></div>';
-  for (const message of chat.messages) {
+  for (const message of visibleConversationPath(chat)) {
     const article = document.createElement('article'); article.className = 'message ' + message.role;
     article.dataset.messageId = message.id; article.innerHTML = messageHtml(message);
     $('.messages').append(article);
@@ -213,11 +230,16 @@ function setTheme(theme) {
   $('meta[name="theme-color"]').content = theme === 'dark' ? '#0f1219' : '#f7f8fb';
   $$('[data-theme-choice]').forEach(b => b.classList.toggle('active', b.dataset.themeChoice === theme));
 }
-async function generate(chat, user) {
+async function generate(chat, user, existingTurn = null, existingVariant = null) {
   if (generation) return;
-  const assistant = createMessage('assistant', '', chat.model); assistant.status = 'sending';
-  chat.messages.push(assistant);
-  const job = { chatId: chat.id, messageId: assistant.id, abort: new AbortController() };
+  const assistant = existingTurn || createMessage('assistant', '', chat.model);
+  const variant = existingVariant || assistant;
+  variant.status = 'sending';
+  if (!existingTurn) {
+    assistant.parentUserId = user.id;
+    chat.messages.push(assistant);
+  }
+  const job = { chatId: chat.id, messageId: assistant.id, variantId: variant.id, abort: new AbortController() };
   generation = job; syncComposer(); renderConversation(true);
   let readerResponse;
   try {
@@ -236,15 +258,15 @@ async function generate(chat, user) {
     }
     await consumeStream(readerResponse, event => {
       if (job.abort.signal.aborted) return;
-      if (event.type === 'start') assistant.status = 'generating';
-      if (event.type === 'delta') { assistant.status = 'generating'; assistant.content += event.text; }
-      if (event.type === 'error') { assistant.status = 'error'; assistant.error = event.message; }
-      if (event.type === 'done') { assistant.status = 'complete'; assistant.notice = event.notice; }
+      if (event.type === 'start') variant.status = 'generating';
+      if (event.type === 'delta') { variant.status = 'generating'; variant.content += event.text; }
+      if (event.type === 'error') { variant.status = 'error'; variant.error = event.message; }
+      if (event.type === 'done') { variant.status = 'complete'; variant.notice = event.notice; }
       updateMessage(chat.id, assistant);
     }, job.abort.signal);
   } catch (error) {
-    if (job.abort.signal.aborted) assistant.status = 'stopped';
-    else { assistant.status = 'error'; assistant.error = error instanceof TypeError ? '网络连接失败，请检查网络后重试。' : error.message || '生成失败，请重试。'; }
+    if (job.abort.signal.aborted) variant.status = 'stopped';
+    else { variant.status = 'error'; variant.error = error instanceof TypeError ? '网络连接失败，请检查网络后重试。' : error.message || '生成失败，请重试。'; }
   } finally {
     if (generation === job) generation = null;
     updateMessage(chat.id, assistant);
@@ -258,22 +280,33 @@ function stopGeneration() {
   generation.abort.abort();
   const chat = chats.get(generation.chatId);
   const message = chat.messages.find(m => m.id === generation.messageId);
-  message.status = 'stopped'; updateMessage(chat.id, message); void persistChat(chat);
+  const variant = assistantVariantById(message, generation.variantId);
+  if (variant) variant.status = 'stopped';
+  updateMessage(chat.id, message); void persistChat(chat);
 }
 async function retry(messageId) {
   if (generation) return;
-  const chat = current(), index = chat.messages.findIndex(m => m.id === messageId);
-  if (index < 1 || chat.messages[index].role !== 'assistant' || index !== chat.messages.length - 1) return;
-  const user = chat.messages[index - 1];
-  chat.messages.splice(index);
-  renderConversation(true); await persistChat(chat); void generate(chat, user);
+  const chat = current(), path = visibleConversationPath(chat);
+  const message = chat.messages.find(item => item.id === messageId);
+  if (!message || message.role !== 'assistant' || path.filter(item => item.role === 'assistant').at(-1)?.id !== messageId) return;
+  const user = chat.messages.find(item => item.id === message.parentUserId && item.role === 'user');
+  if (!user) return;
+  const variantMessage = createMessage('assistant', '', chat.model);
+  variantMessage.status = 'sending';
+  const variant = addAssistantVariant(message, variantMessage);
+  renderConversation(true); await persistChat(chat); void generate(chat, user, message, variant);
 }
 $('#composerForm').addEventListener('submit', async event => {
   event.preventDefault();
   if (generation || editingId || !input.value.trim()) return;
   const chat = current(), user = createMessage('user', input.value.trim());
+  const leafAssistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
+  user.parentVariantId = leafAssistant ? activeAssistantVariant(leafAssistant).id : null;
   chat.messages.push(user);
-  if (!chat.demo && chat.messages.length === 1) chat.title = user.content.slice(0, 45);
+  if (!chat.demo && chat.titleInitialized === false && chat.messages.length === 1) {
+    chat.title = formatLocalChatTitle(user.createdAt);
+    chat.titleInitialized = true;
+  }
   chat.draft = ''; input.value = ''; renderHistory(); renderConversation(true); syncComposer();
   await persistChat(chat); void generate(chat, user);
 });
@@ -367,11 +400,22 @@ conversation.addEventListener('click', async event => {
   const chat = current(), message = chat.messages.find(m => m.id === article.dataset.messageId);
   if (!message) return;
   switch (button.dataset.action) {
-    case 'copy': void copy(message.content); break;
+    case 'copy': void copy(message.role === 'assistant' ? activeAssistantVariant(message).content : message.content); break;
     case 'like': case 'dislike':
-      message.feedback = message.feedback === button.dataset.action ? null : button.dataset.action;
+      {
+        const target = message.role === 'assistant' ? activeAssistantVariant(message) : message;
+        target.feedback = target.feedback === button.dataset.action ? null : button.dataset.action;
+      }
       updateMessage(chat.id, message); void persistChat(chat); break;
     case 'regenerate': void retry(message.id); break;
+    case 'variant-prev': case 'variant-next': {
+      if (generation || !Array.isArray(message.variants)) return;
+      const index = message.variants.findIndex(variant => variant.id === message.activeVariantId);
+      const next = index + (button.dataset.action === 'variant-next' ? 1 : -1);
+      if (next < 0 || next >= message.variants.length) return;
+      message.activeVariantId = message.variants[next].id;
+      renderConversation(); void persistChat(chat); break;
+    }
     case 'edit':
       if (generation) return;
       editingId = message.id; syncComposer(); renderConversation(); $('textarea', $('[data-message-id="' + message.id + '"]'))?.focus(); break;
@@ -379,9 +423,8 @@ conversation.addEventListener('click', async event => {
     case 'edit-save': {
       if (generation) return;
       const value = $('textarea', article).value.trim(); if (!value) return;
-      const index = chat.messages.findIndex(m => m.id === message.id);
       message.content = value; message.updatedAt = new Date().toISOString();
-      chat.messages.splice(index + 1); editingId = null; renderConversation(true);
+      removeUserDescendants(chat, message.id); editingId = null; renderConversation(true);
       await persistChat(chat); void generate(chat, message); break;
     }
   }
@@ -406,7 +449,7 @@ async function initializeApp() {
     initialChats = createDemoChats();
     setTimeout(() => toast('Local storage is unavailable. This session will remain in memory only.'), 0);
   }
-  for (const chat of initialChats) chats.set(chat.id, chat);
+  for (const chat of initialChats) chats.set(chat.id, ensureBranchLineage(chat));
   let savedActiveChat;
   try { savedActiveChat = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY); } catch {}
   activeChat = savedActiveChat && chats.has(savedActiveChat) ? savedActiveChat : chats.keys().next().value;
