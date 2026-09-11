@@ -393,6 +393,14 @@ html[data-theme="light"] .moon-icon { display: none; }
 .wallpaper-current span { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .wallpaper-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
 .muted-setting { opacity: .72; }.coming-soon { flex: none; padding: 5px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: 11px; }
+.settings-intro, .backup-privacy { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.local-data-actions { display: flex; align-items: center; gap: 9px; margin-top: 16px; flex-wrap: wrap; }
+.local-data-actions .small-button, .storage-protection .small-button { min-height: 40px; }
+.backup-privacy { margin-top: 12px; }
+.storage-protection { min-width: 0; margin-top: 18px; padding-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-top: 1px solid var(--border); }
+.storage-protection > div { min-width: 0; }
+.storage-protection strong { font-size: 14px; }
+.storage-protection p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 
 .toast { position: fixed; z-index: 100; right: 22px; bottom: 22px; padding: 10px 13px; border: 1px solid var(--glass-border-strong); border-radius: 10px; background: var(--glass-bg-strong); color: var(--text); box-shadow: var(--glass-shadow); font-size: 13px; opacity: 0; pointer-events: none; transform: translateY(7px); transition: opacity 150ms ease, transform 150ms ease; }
 .toast.show { opacity: 1; transform: translateY(0); }
@@ -431,6 +439,10 @@ html[data-theme="light"] .moon-icon { display: none; }
   .setting-row { align-items: flex-start; flex-direction: column; gap: 12px; }
   .wallpaper-controls { width: 100%; justify-items: stretch; }
   .wallpaper-actions { justify-content: flex-start; }
+  .local-data-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .local-data-actions .small-button { min-height: 44px; }
+  .storage-protection { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .storage-protection .small-button { width: 100%; min-height: 44px; }
   .segmented { width: 100%; }.segmented button { flex: 1; }
   .settings-dialog { width: calc(100vw - 20px); }
   .settings-card { max-height: calc(100dvh - max(10px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom))); padding: 18px; }

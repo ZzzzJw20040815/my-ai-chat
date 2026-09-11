@@ -26,6 +26,10 @@ import { renderMarkdown } from './markdown.js';
 import { consumeStream } from './stream.js';
 import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from './settings.js';
 import { createWallpaperPresenter, decodeWallpaperImage, validateWallpaperFile } from './wallpaper.js';
+import {
+  MAX_BACKUP_BYTES, createBackup, downloadBackup, importBackup as mergeBackup, parseBackupText,
+} from './backup.js';
+import { requestStoragePersistence, storagePersistenceStatus } from './storage-persistence.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -47,6 +51,8 @@ function createDemoChats() {
 }
 let activeChat, generation = null, editingId = null, toastTimer, storageWarningShown = false;
 let wallpaperRecord = null, wallpaperBusy = false;
+let dataTransferBusy = false, persistenceRequestBusy = false;
+let persistenceStatus = { state: 'checking', supported: true };
 let globalSettings = loadGlobalSettings();
 const conversation = $('#conversation'), input = $('#messageInput');
 const wallpaperPresenter = createWallpaperPresenter({ conversation, preview: $('#wallpaperPreview') });
@@ -235,6 +241,18 @@ function syncSettingsUi() {
   $('#chooseWallpaper').disabled = wallpaperBusy;
   $('#removeWallpaper').hidden = !hasWallpaper;
   $('#removeWallpaper').disabled = wallpaperBusy;
+  $('#exportBackup').disabled = dataTransferBusy || !!generation;
+  $('#importBackup').disabled = dataTransferBusy || !!generation;
+  const persistenceMessages = {
+    checking: 'Checking storage protection…',
+    unsupported: 'Persistent storage is not supported by this browser.',
+    'best-effort': 'Storage protection: Best effort',
+    persistent: 'Storage protection: Persistent',
+    denied: 'The browser did not grant persistent storage. Your chats are still saved locally and can be backed up manually.',
+  };
+  $('#storageProtectionStatus').textContent = persistenceMessages[persistenceStatus.state] || persistenceMessages['best-effort'];
+  $('#requestStoragePersistence').hidden = !persistenceStatus.supported || persistenceStatus.state === 'persistent';
+  $('#requestStoragePersistence').disabled = persistenceRequestBusy;
 }
 function updateGlobalSettings(patch) {
   globalSettings = saveGlobalSettings({ ...globalSettings, ...patch });
@@ -247,6 +265,10 @@ function setTheme(theme) {
   $('#quickTheme').setAttribute('aria-label', 'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' mode');
   $('meta[name="theme-color"]').content = theme === 'dark' ? '#0f1219' : '#f7f8fb';
   $$('[data-theme-choice]').forEach(b => b.classList.toggle('active', b.dataset.themeChoice === theme));
+}
+async function refreshStoragePersistence() {
+  persistenceStatus = await storagePersistenceStatus();
+  syncSettingsUi();
 }
 async function generate(chat, user, existingTurn = null, existingVariant = null) {
   if (generation) return;
@@ -363,6 +385,66 @@ $('#settingsButton').addEventListener('click', () => { closeSidebar(); syncSetti
 $('#settingsDialog').addEventListener('close', () => { if (mobile.matches) $('#openSidebar').focus(); });
 $('#quickTheme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $$('[data-theme-choice]').forEach(button => button.addEventListener('click', () => setTheme(button.dataset.themeChoice)));
+$('#exportBackup').addEventListener('click', () => {
+  if (dataTransferBusy || generation) return;
+  dataTransferBusy = true; syncSettingsUi();
+  try {
+    const backup = createBackup({
+      chats: [...chats.values()],
+      settings: globalSettings,
+      activeChatId: activeChat,
+      theme: document.documentElement.dataset.theme,
+    });
+    downloadBackup(backup);
+    toast('Backup downloaded');
+  } catch {
+    toast('Backup could not be exported. Please try again.');
+  } finally {
+    dataTransferBusy = false; syncSettingsUi();
+  }
+});
+$('#importBackup').addEventListener('click', () => { if (!dataTransferBusy && !generation) $('#backupInput').click(); });
+$('#backupInput').addEventListener('change', async event => {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (!file || dataTransferBusy || generation) return;
+  dataTransferBusy = true; syncSettingsUi();
+  try {
+    const jsonType = !file.type || file.type === 'application/json' || file.name.toLowerCase().endsWith('.json');
+    if (!jsonType || !file.size || file.size > MAX_BACKUP_BYTES) throw new Error('Invalid backup file');
+    const backup = parseBackupText(await file.text());
+    const exported = new Date(backup.exportedAt).toLocaleString();
+    const confirmed = window.confirm(
+      `Import backup from ${exported}\n${backup.chats.length} chats found.\n\n` +
+      'This will merge the backup with your current chats. Existing newer chats will be kept.'
+    );
+    if (!confirmed) return;
+    const previousActiveChat = activeChat;
+    const result = await mergeBackup(backup);
+    chats.clear();
+    for (const chat of result.chats) chats.set(chat.id, ensureBranchLineage(chat));
+    globalSettings = result.settings;
+    activeChat = result.activeChatId && chats.has(result.activeChatId)
+      ? result.activeChatId
+      : chats.has(previousActiveChat) ? previousActiveChat : chats.keys().next().value;
+    rememberActiveChat(activeChat);
+    if (result.theme) setTheme(result.theme);
+    editingId = null; input.value = current()?.draft || '';
+    syncModel(); renderHistory(); renderConversation(); syncComposer(); syncSettingsUi();
+    $('#settingsDialog').close();
+    toast(`Backup imported · ${result.added} added, ${result.updated} updated`);
+  } catch {
+    toast('This backup file could not be imported.');
+  } finally {
+    dataTransferBusy = false; syncSettingsUi();
+  }
+});
+$('#requestStoragePersistence').addEventListener('click', async () => {
+  if (persistenceRequestBusy) return;
+  persistenceRequestBusy = true; syncSettingsUi();
+  persistenceStatus = await requestStoragePersistence();
+  persistenceRequestBusy = false; syncSettingsUi();
+});
 $('#chooseWallpaper').addEventListener('click', () => { if (!wallpaperBusy) $('#wallpaperInput').click(); });
 $('#wallpaperInput').addEventListener('change', async event => {
   const file = event.target.files?.[0];
@@ -521,6 +603,7 @@ async function initializeApp() {
   }
   setTheme(theme); closeSidebar(); syncModel(); renderHistory(); renderConversation(); syncComposer();
   syncSettingsUi();
+  void refreshStoragePersistence();
 }
 
 await initializeApp();
