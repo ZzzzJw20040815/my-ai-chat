@@ -241,6 +241,20 @@
           <span class="coming-soon">Coming soon</span>
         </div>
         </section>
+        <section class="settings-section local-data-section" aria-labelledby="localDataSettingsTitle">
+          <div class="settings-section-head"><div><p class="eyebrow">Data</p><h3 id="localDataSettingsTitle">Local Data</h3></div></div>
+          <p class="settings-intro">Chat history is stored locally on this device.</p>
+          <div class="local-data-actions">
+            <button class="small-button" type="button" id="exportBackup">Export Backup</button>
+            <button class="small-button" type="button" id="importBackup">Import Backup</button>
+            <input id="backupInput" type="file" accept=".json,application/json" hidden />
+          </div>
+          <p class="backup-privacy">Backup files contain your full chat history. Keep them somewhere private.</p>
+          <div class="storage-protection">
+            <div><strong>Storage protection</strong><p id="storageProtectionStatus" aria-live="polite">Checking storage protection…</p></div>
+            <button class="small-button" type="button" id="requestStoragePersistence" hidden>Request persistent storage</button>
+          </div>
+        </section>
       </form>
     </dialog>
 
