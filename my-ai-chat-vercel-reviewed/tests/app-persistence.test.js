@@ -6,7 +6,7 @@ import { JSDOM } from 'jsdom';
 import { IDBFactory } from 'fake-indexeddb';
 import { MODELS } from '../shared/models.js';
 import { activeAssistantVariant } from '../ui/state.js';
-import { closeChatDatabase, loadChats } from '../ui/storage.js';
+import { closeChatDatabase, loadChats, loadWallpaperAsset } from '../ui/storage.js';
 
 const html = await readFile(new URL('../ui/index.html', import.meta.url), 'utf8');
 const waitFor = async (check, timeout = 4000) => {
@@ -386,6 +386,76 @@ test('variant switching restores independent descendant branches and persists th
   assert.ok(!afterEdit.messages.some(message => message.id === originalD.id));
   document.querySelector('.message.assistant [data-action="variant-next"]').click();
   assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A', 'branch C2']);
+  dom.window.close();
+  await closeChatDatabase();
+});
+
+test('Wallpaper Settings persists, restores, replaces and removes a local Blob', async () => {
+  const indexedDB = new IDBFactory();
+  const { fetchMock } = createFetchMock();
+  const storage = createMemoryStorage();
+  const revoked = [];
+  let urlSequence = 0;
+  globalThis.URL = {
+    createObjectURL: () => `blob:app-wallpaper-${++urlSequence}`,
+    revokeObjectURL: url => revoked.push(url),
+  };
+  globalThis.Image = class {
+    naturalWidth = 2400;
+    naturalHeight = 1600;
+    set src(_) { queueMicrotask(() => this.onload?.()); }
+  };
+  const image = (name, type) => {
+    const blob = new Blob(['valid image bytes'], { type });
+    Object.defineProperty(blob, 'name', { value: name });
+    return blob;
+  };
+  const selectWallpaper = file => {
+    const input = document.querySelector('#wallpaperInput');
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+    input.dispatchEvent(new window.Event('change', { bubbles: true }));
+  };
+
+  let dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?wallpaper=first');
+  document.querySelector('#settingsButton').click();
+  selectWallpaper(image('desktop.jpg', 'image/jpeg'));
+  await waitFor(async () => (await loadWallpaperAsset(indexedDB))?.name === 'desktop.jpg');
+  await waitFor(() => document.querySelector('#chooseWallpaper').textContent === 'Change Image');
+  assert.equal(document.querySelector('#conversation').classList.contains('has-wallpaper'), true);
+  assert.equal(document.querySelector('#chooseWallpaper').textContent, 'Change Image');
+
+  dom.window.dispatchEvent(new dom.window.Event('pagehide'));
+  dom.window.close();
+  dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?wallpaper=reopen');
+  assert.equal(document.querySelector('#conversation').classList.contains('has-wallpaper'), true);
+  document.querySelector('#settingsButton').click();
+  assert.equal(document.querySelector('#wallpaperName').textContent, 'desktop.jpg');
+
+  selectWallpaper({ name: 'notes.txt', type: 'text/plain', size: 20 });
+  await waitFor(() => document.querySelector('#toast').textContent.includes('JPEG, PNG, or WebP'));
+  assert.equal((await loadWallpaperAsset(indexedDB)).name, 'desktop.jpg');
+  await waitFor(() => !document.querySelector('#chooseWallpaper').disabled);
+  selectWallpaper({ name: 'huge.jpg', type: 'image/jpeg', size: 26 * 1024 * 1024 });
+  await waitFor(() => document.querySelector('#toast').textContent.includes('25 MB'));
+  assert.equal((await loadWallpaperAsset(indexedDB)).name, 'desktop.jpg');
+  await waitFor(() => !document.querySelector('#chooseWallpaper').disabled);
+
+  selectWallpaper(image('mobile.webp', 'image/webp'));
+  await waitFor(async () => (await loadWallpaperAsset(indexedDB))?.name === 'mobile.webp');
+  await waitFor(() => document.querySelector('#wallpaperName').textContent === 'mobile.webp');
+  assert.equal(document.querySelector('#wallpaperName').textContent, 'mobile.webp');
+  document.querySelector('#removeWallpaper').click();
+  await waitFor(async () => (await loadWallpaperAsset(indexedDB)) === null);
+  await waitFor(() => !document.querySelector('#conversation').classList.contains('has-wallpaper'));
+  assert.equal(document.querySelector('#conversation').classList.contains('has-wallpaper'), false);
+
+  dom.window.close();
+  dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?wallpaper=removed-reopen');
+  assert.equal(document.querySelector('#conversation').classList.contains('has-wallpaper'), false);
+  assert.ok(revoked.length >= 2);
   dom.window.close();
   await closeChatDatabase();
 });

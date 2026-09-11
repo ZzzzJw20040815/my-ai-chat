@@ -222,6 +222,20 @@
             <button type="button" data-theme-choice="light">Light</button>
           </div>
         </div>
+        <div class="setting-row wallpaper-setting">
+          <div><strong>Chat Wallpaper</strong><p>Stored only on this device. JPEG, PNG, or WebP up to 25 MB.</p></div>
+          <div class="wallpaper-controls">
+            <input id="wallpaperInput" type="file" accept="image/jpeg,image/png,image/webp" hidden />
+            <div class="wallpaper-current" id="wallpaperCurrent" hidden>
+              <img id="wallpaperPreview" alt="Current chat wallpaper preview" />
+              <span id="wallpaperName"></span>
+            </div>
+            <div class="wallpaper-actions">
+              <button class="small-button" type="button" id="chooseWallpaper">Choose Image</button>
+              <button class="text-button danger-text" type="button" id="removeWallpaper" hidden>Remove Wallpaper</button>
+            </div>
+          </div>
+        </div>
         <div class="setting-row muted-setting">
           <div><strong>Sync across devices</strong><p>Planned for a future version.</p></div>
           <span class="coming-soon">Coming soon</span>

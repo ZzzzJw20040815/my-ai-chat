@@ -14,10 +14,18 @@ import {
   removeUserDescendants,
   visibleConversationPath,
 } from './state.js';
-import { CANONICAL_DEMO_ID, loadOrSeedChats, saveChat } from './storage.js';
+import {
+  CANONICAL_DEMO_ID,
+  deleteWallpaperAsset,
+  loadOrSeedChats,
+  loadWallpaperAsset,
+  saveChat,
+  saveWallpaperAsset,
+} from './storage.js';
 import { renderMarkdown } from './markdown.js';
 import { consumeStream } from './stream.js';
 import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from './settings.js';
+import { createWallpaperPresenter, decodeWallpaperImage, validateWallpaperFile } from './wallpaper.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -38,15 +46,18 @@ function createDemoChats() {
   });
 }
 let activeChat, generation = null, editingId = null, toastTimer, storageWarningShown = false;
+let wallpaperRecord = null, wallpaperBusy = false;
 let globalSettings = loadGlobalSettings();
 const conversation = $('#conversation'), input = $('#messageInput');
+const wallpaperPresenter = createWallpaperPresenter({ conversation, preview: $('#wallpaperPreview') });
 const sendIcon = $('#sendButton').innerHTML;
 const mobile = matchMedia('(max-width: 819px)');
 const current = () => chats.get(activeChat);
 
 function toast(message) {
-  $('#toast').textContent = message; $('#toast').classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('show'), 2500);
+  const element = $('#toast');
+  element.textContent = message; element.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => element.classList.remove('show'), 2500);
 }
 function rememberActiveChat(id) {
   try { localStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, id); } catch {}
@@ -217,6 +228,13 @@ function syncSettingsUi() {
       '" data-safety-category="' + key + '" data-safety-threshold="' + threshold + '">' + escapeHtml(shortLabel) + '</button>'
     ).join('') + '</div></div>'
   ).join('');
+  const hasWallpaper = !!wallpaperRecord;
+  $('#wallpaperCurrent').hidden = !hasWallpaper;
+  $('#wallpaperName').textContent = wallpaperRecord?.name || '';
+  $('#chooseWallpaper').textContent = hasWallpaper ? 'Change Image' : 'Choose Image';
+  $('#chooseWallpaper').disabled = wallpaperBusy;
+  $('#removeWallpaper').hidden = !hasWallpaper;
+  $('#removeWallpaper').disabled = wallpaperBusy;
 }
 function updateGlobalSettings(patch) {
   globalSettings = saveGlobalSettings({ ...globalSettings, ...patch });
@@ -345,6 +363,42 @@ $('#settingsButton').addEventListener('click', () => { closeSidebar(); syncSetti
 $('#settingsDialog').addEventListener('close', () => { if (mobile.matches) $('#openSidebar').focus(); });
 $('#quickTheme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $$('[data-theme-choice]').forEach(button => button.addEventListener('click', () => setTheme(button.dataset.themeChoice)));
+$('#chooseWallpaper').addEventListener('click', () => { if (!wallpaperBusy) $('#wallpaperInput').click(); });
+$('#wallpaperInput').addEventListener('change', async event => {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (!file || wallpaperBusy) return;
+  wallpaperBusy = true; syncSettingsUi();
+  try {
+    validateWallpaperFile(file);
+    await decodeWallpaperImage(file);
+    const saved = await saveWallpaperAsset(file);
+    wallpaperPresenter.show(saved);
+    wallpaperRecord = saved;
+    toast('Chat wallpaper updated');
+  } catch (error) {
+    const friendly = error?.message?.startsWith('Choose a ') || error?.message?.startsWith('This image') || error?.message?.startsWith('Wallpaper images')
+      ? error.message
+      : 'Wallpaper could not be saved. Your previous wallpaper is unchanged.';
+    toast(friendly);
+  } finally {
+    wallpaperBusy = false; syncSettingsUi();
+  }
+});
+$('#removeWallpaper').addEventListener('click', async () => {
+  if (!wallpaperRecord || wallpaperBusy) return;
+  wallpaperBusy = true; syncSettingsUi();
+  try {
+    await deleteWallpaperAsset();
+    wallpaperPresenter.clear();
+    wallpaperRecord = null;
+    toast('Chat wallpaper removed');
+  } catch {
+    toast('Wallpaper could not be removed. Please try again.');
+  } finally {
+    wallpaperBusy = false; syncSettingsUi();
+  }
+});
 $('#defaultModelSetting').addEventListener('change', event => updateGlobalSettings({ defaultModel: event.target.value }));
 $('#systemInstructionSetting').addEventListener('input', event => {
   globalSettings = saveGlobalSettings({ ...globalSettings, systemInstruction: event.target.value });
@@ -441,6 +495,7 @@ document.addEventListener('keydown', event => {
 new ResizeObserver(() => {
   conversation.style.paddingBottom = Math.ceil($('.composer-dock').getBoundingClientRect().height + 28) + 'px';
 }).observe($('.composer-dock'));
+window.addEventListener('pagehide', event => { if (!event.persisted) wallpaperPresenter.dispose(); });
 async function initializeApp() {
   let initialChats;
   try { initialChats = await loadOrSeedChats(createDemoChats); }
@@ -455,6 +510,15 @@ async function initializeApp() {
   activeChat = savedActiveChat && chats.has(savedActiveChat) ? savedActiveChat : chats.keys().next().value;
   rememberActiveChat(activeChat);
   let theme = 'dark'; try { theme = localStorage.getItem('my-ai-chat-theme') === 'light' ? 'light' : 'dark'; } catch {}
+  try {
+    const storedWallpaper = await loadWallpaperAsset();
+    if (storedWallpaper?.blob) {
+      wallpaperPresenter.show(storedWallpaper);
+      wallpaperRecord = storedWallpaper;
+    }
+  } catch {
+    setTimeout(() => toast('Wallpaper could not be restored from this device.'), 0);
+  }
   setTheme(theme); closeSidebar(); syncModel(); renderHistory(); renderConversation(); syncComposer();
   syncSettingsUi();
 }
