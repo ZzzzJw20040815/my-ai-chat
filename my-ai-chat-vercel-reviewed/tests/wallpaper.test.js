@@ -111,10 +111,11 @@ test('wallpaper Blob survives reload, replacement and removal', async () => {
   assert.equal(await loadWallpaperAsset(indexedDB), null);
 });
 
-test('presenter targets only Conversation and revokes replaced or removed Object URLs', async () => {
+test('presenter targets chat main panel and Conversation without leaking to body', async () => {
   const html = await readFile(new URL('../ui/index.html', import.meta.url), 'utf8');
   const dom = new JSDOM(html);
   const conversation = dom.window.document.querySelector('#conversation');
+  const mainPanel = dom.window.document.querySelector('.main-panel');
   const preview = dom.window.document.querySelector('#wallpaperPreview');
   const revoked = [];
   let sequence = 0;
@@ -129,12 +130,16 @@ test('presenter targets only Conversation and revokes replaced or removed Object
 
   presenter.show({ blob: namedBlob('first.jpg', 'image/jpeg') });
   assert.equal(conversation.classList.contains('has-wallpaper'), true);
+  assert.equal(mainPanel.classList.contains('has-wallpaper'), true);
   assert.match(conversation.style.getPropertyValue('--chat-wallpaper-image'), /blob:wallpaper-1/);
+  assert.match(mainPanel.style.getPropertyValue('--chat-wallpaper-image'), /blob:wallpaper-1/);
   assert.equal(dom.window.document.body.style.backgroundImage, '');
   presenter.show({ blob: namedBlob('second.webp', 'image/webp') });
   assert.deepEqual(revoked, ['blob:wallpaper-1']);
   presenter.clear();
   assert.equal(conversation.classList.contains('has-wallpaper'), false);
+  assert.equal(mainPanel.classList.contains('has-wallpaper'), false);
+  assert.equal(mainPanel.style.getPropertyValue('--chat-wallpaper-image'), '');
   assert.equal(preview.hasAttribute('src'), false);
   assert.deepEqual(revoked, ['blob:wallpaper-1', 'blob:wallpaper-2']);
   dom.window.close();
@@ -146,7 +151,8 @@ test('Wallpaper UI remains compact and responsive with fixed readability treatme
     readFile(new URL('../ui/styles.css', import.meta.url), 'utf8'),
   ]);
   assert.match(html, /id="wallpaperInput"[^>]*accept="image\/jpeg,image\/png,image\/webp"/);
-  assert.match(css, /\.conversation\.has-wallpaper\s*\{[^}]*background-size:\s*cover;[^}]*background-position:\s*center;[^}]*background-repeat:\s*no-repeat;/s);
+  assert.match(css, /\.main-panel\.has-wallpaper\s*\{[^}]*background-size:\s*cover;[^}]*background-position:\s*center;[^}]*background-repeat:\s*no-repeat;/s);
+  assert.match(css, /\.main-panel\.has-wallpaper \.conversation\s*\{[^}]*background-image:\s*none/);
   assert.match(css, /html\[data-theme="light"\][^{]*\{[^}]*--wallpaper-tint:/s);
   assert.match(css, /@media \(max-width:\s*520px\)[\s\S]*\.wallpaper-controls\s*\{[^}]*width:\s*100%/);
   assert.doesNotMatch(css, /body[^{}]*\{[^}]*chat-wallpaper-image/s);

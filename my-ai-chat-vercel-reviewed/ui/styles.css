@@ -192,6 +192,12 @@ svg {
 .theme-hint { margin-left: auto; color: var(--muted-2); font-size: 12px; }
 
 .main-panel { position: relative; min-width: 0; height: 100dvh; overflow: hidden; flex: 1; display: flex; flex-direction: column; background: var(--bg); }
+.main-panel.has-wallpaper {
+  background-image: linear-gradient(var(--wallpaper-tint), var(--wallpaper-tint)), var(--chat-wallpaper-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
 .topbar {
   z-index: 20; height: 62px; flex: 0 0 62px; padding: 0 20px; display: flex; align-items: center;
   border-bottom: 1px solid var(--glass-border); background: var(--glass-bg);
@@ -239,6 +245,7 @@ html[data-theme="light"] .moon-icon { display: none; }
   background-position: center;
   background-repeat: no-repeat;
 }
+.main-panel.has-wallpaper .conversation { background-image: none; }
 .conversation-inner { width: 100%; max-width: 800px; margin: 0 auto; }
 .chat-heading { margin: 5px 0 42px; }
 .conversation.has-wallpaper .chat-heading { text-shadow: 0 1px 18px color-mix(in srgb, var(--bg) 62%, transparent); }

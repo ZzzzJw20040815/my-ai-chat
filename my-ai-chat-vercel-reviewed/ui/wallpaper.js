@@ -35,13 +35,17 @@ export function decodeWallpaperImage(file, dependencies = {}) {
   });
 }
 
-export function createWallpaperPresenter({ conversation, preview, urlApi = URL }) {
+export function createWallpaperPresenter({ conversation, preview, wallpaperTarget = conversation.closest?.('.main-panel') || conversation, urlApi = URL }) {
   let objectUrl = null;
   return {
     show(record) {
       const nextUrl = urlApi.createObjectURL(record.blob);
       conversation.style.setProperty('--chat-wallpaper-image', `url("${nextUrl}")`);
       conversation.classList.add('has-wallpaper');
+      if (wallpaperTarget !== conversation) {
+        wallpaperTarget.style.setProperty('--chat-wallpaper-image', `url("${nextUrl}")`);
+        wallpaperTarget.classList.add('has-wallpaper');
+      }
       preview.src = nextUrl;
       const previousUrl = objectUrl;
       objectUrl = nextUrl;
@@ -51,6 +55,10 @@ export function createWallpaperPresenter({ conversation, preview, urlApi = URL }
     clear() {
       conversation.classList.remove('has-wallpaper');
       conversation.style.removeProperty('--chat-wallpaper-image');
+      if (wallpaperTarget !== conversation) {
+        wallpaperTarget.classList.remove('has-wallpaper');
+        wallpaperTarget.style.removeProperty('--chat-wallpaper-image');
+      }
       preview.removeAttribute('src');
       if (objectUrl) urlApi.revokeObjectURL(objectUrl);
       objectUrl = null;
