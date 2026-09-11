@@ -1,4 +1,4 @@
-import { isAllowedModel } from '../shared/models.js';
+import { isPersistableModelId } from '../shared/models.js';
 import { normalizeGlobalSettings } from '../shared/settings.js';
 import { loadChats, saveChats, storedChat } from './storage.js';
 import { saveGlobalSettings } from './settings.js';
@@ -21,7 +21,7 @@ function invalid(message = 'This backup file could not be imported.') {
 function validateVariant(variant, variantIds) {
   if (!isRecord(variant) || !validId(variant.id) || variantIds.has(variant.id)) invalid();
   if (typeof variant.content !== 'string' || !isValidDate(variant.createdAt)) invalid();
-  if (!MESSAGE_STATUSES.has(variant.status) || (variant.model != null && !isAllowedModel(variant.model))) invalid();
+  if (!MESSAGE_STATUSES.has(variant.status) || (variant.model != null && !isPersistableModelId(variant.model))) invalid();
   variantIds.add(variant.id);
 }
 
@@ -29,7 +29,7 @@ function validateMessage(message, messageIds, userIds, variantIds) {
   if (!isRecord(message) || !validId(message.id) || messageIds.has(message.id)) invalid();
   if (!['user', 'assistant'].includes(message.role) || typeof message.content !== 'string') invalid();
   if (!isValidDate(message.createdAt) || !MESSAGE_STATUSES.has(message.status)) invalid();
-  if (message.role === 'assistant' && message.model != null && !isAllowedModel(message.model)) invalid();
+  if (message.role === 'assistant' && message.model != null && !isPersistableModelId(message.model)) invalid();
   messageIds.add(message.id);
   if (message.role === 'user') {
     userIds.add(message.id);
@@ -50,7 +50,7 @@ function validateMessage(message, messageIds, userIds, variantIds) {
 function validateChat(chat, chatIds) {
   if (!isRecord(chat) || !validId(chat.id) || chatIds.has(chat.id)) invalid();
   if (typeof chat.title !== 'string' || !chat.title || !isValidDate(chat.createdAt) || !isValidDate(chat.updatedAt)) invalid();
-  if (!isAllowedModel(chat.model) || !Array.isArray(chat.messages)) invalid();
+  if (!isPersistableModelId(chat.model) || !Array.isArray(chat.messages)) invalid();
   if (chat.folderId != null && !validId(chat.folderId)) invalid();
   chatIds.add(chat.id);
   const messageIds = new Set(), userIds = new Set(), variantIds = new Set();

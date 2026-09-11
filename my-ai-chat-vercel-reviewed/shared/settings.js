@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL, isAllowedModel } from './models.js';
+import { DEFAULT_MODEL, isPersistableModelId } from './models.js';
 
 export const GLOBAL_SETTINGS_STORAGE_KEY = 'my-ai-chat-global-settings';
 export const CONTEXT_LIMITS = Object.freeze(['all', '50', '20', '10']);
@@ -56,7 +56,7 @@ export function normalizeGlobalSettings(value) {
     && source.maxOutputTokens > 0 && source.maxOutputTokens <= MAX_OUTPUT_TOKENS_LIMIT
     ? source.maxOutputTokens : null;
   return {
-    defaultModel: isAllowedModel(source.defaultModel) ? source.defaultModel : DEFAULT_GLOBAL_SETTINGS.defaultModel,
+    defaultModel: isPersistableModelId(source.defaultModel) ? source.defaultModel : DEFAULT_GLOBAL_SETTINGS.defaultModel,
     systemInstruction: typeof source.systemInstruction === 'string'
       ? source.systemInstruction.slice(0, MAX_SYSTEM_INSTRUCTION_LENGTH) : '',
     contextLimit: CONTEXT_LIMITS.includes(String(source.contextLimit)) ? String(source.contextLimit) : 'all',

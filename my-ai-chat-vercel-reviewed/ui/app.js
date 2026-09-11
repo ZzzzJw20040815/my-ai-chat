@@ -1,4 +1,4 @@
-import { MODELS, DEFAULT_MODEL, modelName, isAllowedModel, modelMetadata } from '../shared/models.js';
+import { DEFAULT_MODEL, modelDisplayName } from '../shared/models.js';
 import { MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_LEVELS } from '../shared/settings.js';
 import { demoData } from './demo.js';
 import { icons } from './icons.js';
@@ -30,6 +30,7 @@ import {
   MAX_BACKUP_BYTES, createBackup, downloadBackup, importBackup as mergeBackup, parseBackupText,
 } from './backup.js';
 import { requestStoragePersistence, storagePersistenceStatus } from './storage-persistence.js';
+import { availableDefaultModel, createModelCatalog } from './model-catalog.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -52,8 +53,18 @@ function createDemoChats() {
 let activeChat, generation = null, editingId = null, toastTimer, storageWarningShown = false;
 let wallpaperRecord = null, wallpaperBusy = false;
 let dataTransferBusy = false, persistenceRequestBusy = false;
+let modelCatalogBusy = false;
 let persistenceStatus = { state: 'checking', supported: true };
+const modelCatalog = createModelCatalog();
 let globalSettings = loadGlobalSettings();
+function ensureAvailableDefaultModel(confirmed = !!modelCatalog.syncedAt) {
+  const available = availableDefaultModel(globalSettings.defaultModel, modelCatalog);
+  if (confirmed && available !== globalSettings.defaultModel) {
+    globalSettings = saveGlobalSettings({ ...globalSettings, defaultModel: available });
+  }
+}
+ensureAvailableDefaultModel(false);
+const modelName = id => modelCatalog.metadata(id)?.name || modelDisplayName(id);
 const conversation = $('#conversation'), input = $('#messageInput');
 const wallpaperPresenter = createWallpaperPresenter({ conversation, preview: $('#wallpaperPreview') });
 const sendIcon = $('#sendButton').innerHTML;
@@ -167,9 +178,10 @@ function syncComposer() {
 function syncModel() {
   const id = current().model;
   $('#currentModel').textContent = modelName(id); input.placeholder = 'Message ' + modelName(id) + '…';
-  $('#modelMenu').innerHTML = MODELS.map(model => '<button class="model-option' + (id === model.id ? ' selected' : '') +
+  $('#modelMenu').innerHTML = modelCatalog.models.map(model => '<button class="model-option' + (id === model.id ? ' selected' : '') +
     '" role="option" aria-selected="' + (id === model.id) + '" data-model="' + model.id + '"><span><strong>' +
-    model.name + '</strong><small>' + model.description + '</small></span><span>' + (id === model.id ? '✓' : '') + '</span></button>').join('');
+    escapeHtml(model.name) + (model.source === 'discovered' ? ' <span class="model-source-badge">Auto</span>' : '') +
+    '</strong><small>' + escapeHtml(model.description) + '</small></span><span>' + (id === model.id ? '✓' : '') + '</span></button>').join('');
 }
 function setModelMenu(open, focus = false) {
   $('#modelMenu').classList.toggle('open', open); $('#modelButton').setAttribute('aria-expanded', String(open));
@@ -193,18 +205,23 @@ function selectChat(id) {
   conversation.scrollTop = current().scrollTop;
 }
 async function newChat() {
-  const chat = createChat(globalSettings.defaultModel); chats.set(chat.id, chat); $('#chatSearch').value = '';
+  const chat = createChat(availableDefaultModel(globalSettings.defaultModel, modelCatalog)); chats.set(chat.id, chat); $('#chatSearch').value = '';
   selectChat(chat.id); input.focus(); await persistChat(chat);
 }
 function syncSettingsUi() {
-  $('#defaultModelSetting').innerHTML = MODELS.map(model => '<option value="' + model.id + '">' + escapeHtml(model.name) + '</option>').join('');
-  $('#defaultModelSetting').value = globalSettings.defaultModel;
+  $('#defaultModelSetting').innerHTML = modelCatalog.models.map(model => '<option value="' + model.id + '">' + escapeHtml(model.name) +
+    (model.source === 'discovered' ? ' · Auto' : '') + '</option>').join('');
+  $('#defaultModelSetting').value = availableDefaultModel(globalSettings.defaultModel, modelCatalog);
+  $('#refreshModels').disabled = modelCatalogBusy;
+  $('#refreshModels').textContent = modelCatalogBusy ? 'Refreshing…' : 'Refresh Models';
+  $('#modelCatalogSynced').textContent = modelCatalog.syncedAt
+    ? 'Last synced: ' + new Date(modelCatalog.syncedAt).toLocaleString() : 'Last synced: Never';
   $('#systemInstructionSetting').value = globalSettings.systemInstruction;
   $('#systemInstructionCount').textContent = globalSettings.systemInstruction.length + ' / ' + MAX_SYSTEM_INSTRUCTION_LENGTH;
   $('#contextLimitSetting').value = globalSettings.contextLimit;
   $('#maxOutputTokensSetting').value = globalSettings.maxOutputTokens ?? '';
   $('#thinkingLevelSetting').value = globalSettings.thinkingLevel;
-  const capabilities = modelMetadata(globalSettings.defaultModel)?.capabilities;
+  const capabilities = modelCatalog.metadata(globalSettings.defaultModel)?.capabilities;
   for (const option of $('#thinkingLevelSetting').options) {
     option.disabled = option.value !== 'default' && !capabilities?.thinkingLevels.includes(option.value);
   }
@@ -212,7 +229,9 @@ function syncSettingsUi() {
     globalSettings = saveGlobalSettings({ ...globalSettings, thinkingLevel: 'default' });
     $('#thinkingLevelSetting').value = 'default';
   }
-  $('#samplingEnabledSetting').checked = globalSettings.samplingOverrides.enabled;
+  const samplingSupported = capabilities?.samplingOverrides === true;
+  $('#samplingEnabledSetting').checked = samplingSupported && globalSettings.samplingOverrides.enabled;
+  $('#samplingEnabledSetting').disabled = !samplingSupported;
   $('#temperatureSetting').value = globalSettings.samplingOverrides.temperature;
   $('#topPSetting').value = globalSettings.samplingOverrides.topP;
   $('#topKSetting').value = globalSettings.samplingOverrides.topK;
@@ -220,11 +239,13 @@ function syncSettingsUi() {
   $('#topKSetting').disabled = !globalSettings.samplingOverrides.enabled || !topKSupported;
   $('#topKField').classList.toggle('unsupported', !topKSupported);
   $('#topKSupport').textContent = topKSupported ? '' : 'Not supported by the selected model.';
-  $('#advancedFields').disabled = !globalSettings.samplingOverrides.enabled;
+  $('#advancedFields').disabled = !samplingSupported || !globalSettings.samplingOverrides.enabled;
   // A fieldset disables all descendants, then Top K adds its model capability constraint.
-  if (globalSettings.samplingOverrides.enabled) $('#topKSetting').disabled = !topKSupported;
-  $('#safetyModeSetting').value = globalSettings.safetySettings.mode;
-  const customSafety = globalSettings.safetySettings.mode === 'custom';
+  if (samplingSupported && globalSettings.samplingOverrides.enabled) $('#topKSetting').disabled = !topKSupported;
+  const safetySupported = capabilities?.safetySettings === true;
+  $('#safetyModeSetting').disabled = !safetySupported;
+  $('#safetyModeSetting').value = safetySupported ? globalSettings.safetySettings.mode : 'default';
+  const customSafety = safetySupported && globalSettings.safetySettings.mode === 'custom';
   $('#safetyCustomFields').hidden = !customSafety;
   $('#safetyCustomFields').innerHTML = SAFETY_CATEGORIES.map(({ key, label }) =>
     '<div class="safety-category-row"><strong>' + escapeHtml(label) + '</strong><div class="safety-levels" role="radiogroup" aria-label="' +
@@ -288,7 +309,9 @@ async function generate(chat, user, existingTurn = null, existingVariant = null)
       body: JSON.stringify({
         model: chat.model,
         messages: contextFor(chat, user.id, globalSettings.contextLimit),
-        settings: requestSettings(globalSettings),
+        settings: requestSettings(globalSettings, modelCatalog.metadata(chat.model) || {
+          source: 'discovered', capabilities: { thinkingLevels: [], samplingOverrides: false, safetySettings: false },
+        }),
       }),
       signal: job.abort.signal,
     });
@@ -367,7 +390,7 @@ $$('.folder-item').forEach(b => b.addEventListener('click', () => toast('Demo fo
 $('#modelButton').addEventListener('click', () => setModelMenu(!$('#modelMenu').classList.contains('open'), true));
 $('#modelMenu').addEventListener('click', event => {
   const option = event.target.closest('[data-model]');
-  if (!option || generation || !isAllowedModel(option.dataset.model)) return;
+  if (!option || generation || !modelCatalog.has(option.dataset.model)) return;
   current().model = option.dataset.model; void persistChat(current());
   syncModel(); setModelMenu(false); renderConversation(); $('#modelButton').focus();
 });
@@ -482,6 +505,20 @@ $('#removeWallpaper').addEventListener('click', async () => {
   }
 });
 $('#defaultModelSetting').addEventListener('change', event => updateGlobalSettings({ defaultModel: event.target.value }));
+$('#refreshModels').addEventListener('click', async () => {
+  if (modelCatalogBusy) return;
+  modelCatalogBusy = true; syncSettingsUi();
+  try {
+    await modelCatalog.refresh({ force: true });
+    ensureAvailableDefaultModel(true);
+    syncModel(); syncSettingsUi();
+    toast('Models updated.');
+  } catch {
+    toast('Could not refresh models. Existing models are still available.');
+  } finally {
+    modelCatalogBusy = false; syncSettingsUi();
+  }
+});
 $('#systemInstructionSetting').addEventListener('input', event => {
   globalSettings = saveGlobalSettings({ ...globalSettings, systemInstruction: event.target.value });
   $('#systemInstructionCount').textContent = globalSettings.systemInstruction.length + ' / ' + MAX_SYSTEM_INSTRUCTION_LENGTH;
@@ -604,6 +641,11 @@ async function initializeApp() {
   setTheme(theme); closeSidebar(); syncModel(); renderHistory(); renderConversation(); syncComposer();
   syncSettingsUi();
   void refreshStoragePersistence();
+  void modelCatalog.autoRefresh().then(result => {
+    if (!result.ok) return;
+    ensureAvailableDefaultModel(true);
+    syncModel(); syncSettingsUi();
+  });
 }
 
 await initializeApp();

@@ -21,13 +21,23 @@ export function resetGlobalSettings(storage = localStorage) {
   return saveGlobalSettings(DEFAULT_GLOBAL_SETTINGS, storage);
 }
 
-export function requestSettings(settings) {
+export function requestSettings(settings, model = null) {
   const normalized = normalizeGlobalSettings(settings);
+  const capabilities = model?.capabilities;
+  const conservative = model?.source === 'discovered';
+  const thinkingLevel = capabilities && !capabilities.thinkingLevels.includes(normalized.thinkingLevel)
+    ? 'default' : normalized.thinkingLevel;
+  const samplingEnabled = capabilities
+    ? normalized.samplingOverrides.enabled && capabilities.samplingOverrides === true
+    : normalized.samplingOverrides.enabled;
+  const safetyMode = capabilities && capabilities.safetySettings !== true ? 'default' : normalized.safetySettings.mode;
+  const maxOutputTokens = capabilities?.outputTokenLimit && normalized.maxOutputTokens > capabilities.outputTokenLimit
+    ? null : normalized.maxOutputTokens;
   return {
     systemInstruction: normalized.systemInstruction,
-    maxOutputTokens: normalized.maxOutputTokens,
-    thinkingLevel: normalized.thinkingLevel,
-    samplingOverrides: { ...normalized.samplingOverrides },
-    safetySettings: { ...normalized.safetySettings },
+    maxOutputTokens,
+    thinkingLevel: conservative && !capabilities ? 'default' : thinkingLevel,
+    samplingOverrides: { ...normalized.samplingOverrides, enabled: samplingEnabled },
+    safetySettings: { ...normalized.safetySettings, mode: safetyMode },
   };
 }
