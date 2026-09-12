@@ -217,6 +217,14 @@
             <p class="safety-note">Safety settings control adjustable Gemini filters only. Built-in core safety protections still apply.</p>
           </div>
         </section>
+        <section class="settings-section" aria-labelledby="styleReferenceSettingsTitle">
+          <div class="settings-section-head">
+            <div><p class="eyebrow">Writing</p><h3 id="styleReferenceSettingsTitle">风格参考</h3></div>
+            <span class="style-reference-count" id="styleReferenceCount">已保存 0 / 5</span>
+          </div>
+          <p class="settings-intro">你保存的优秀回复会作为后续生成的写作风格参考。</p>
+          <div class="style-reference-list" id="styleReferenceList"></div>
+        </section>
         <section class="settings-section" aria-labelledby="appearanceSettingsTitle">
           <div class="settings-section-head"><div><p class="eyebrow">General</p><h3 id="appearanceSettingsTitle">Appearance</h3></div></div>
         <div class="setting-row">
@@ -261,6 +269,8 @@
         </section>
       </form>
     </dialog>
+
+    <div class="regenerate-menu" id="regenerateMenu" role="menu" aria-label="重新生成" hidden></div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script type="module" src="./app.js"></script>

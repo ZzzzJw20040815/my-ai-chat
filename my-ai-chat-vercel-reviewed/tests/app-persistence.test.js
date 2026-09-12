@@ -6,7 +6,7 @@ import { JSDOM } from 'jsdom';
 import { IDBFactory } from 'fake-indexeddb';
 import { MODELS } from '../shared/models.js';
 import { activeAssistantVariant } from '../ui/state.js';
-import { closeChatDatabase, loadChats, loadStoryMemories, loadWallpaperAsset } from '../ui/storage.js';
+import { closeChatDatabase, loadChats, loadStoryMemories, loadStyleReferences, loadWallpaperAsset } from '../ui/storage.js';
 
 const html = await readFile(new URL('../ui/index.html', import.meta.url), 'utf8');
 const waitFor = async (check, timeout = 4000) => {
@@ -233,6 +233,7 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   });
   const retryId = retriedChat.messages.at(-1).activeVariantId;
   document.querySelector('.message.assistant:last-child [data-action="regenerate"]').click();
+  document.querySelector('[data-regeneration-reason="try_again"]').click();
   const regeneratedChat = await waitFor(async () => {
     const chat = (await loadChats(indexedDB)).find(item => !item.demo);
     const turn = chat?.messages.at(-1), active = activeAssistantVariant(turn);
@@ -388,6 +389,7 @@ test('variant switching restores independent descendant branches and persists th
     return last?.role === 'assistant' && last.status === 'complete';
   });
   document.querySelector('.message.assistant [data-action="regenerate"]').click();
+  document.querySelector('[data-regeneration-reason="try_again"]').click();
   await waitFor(async () => {
     const turn = (await loadChats(indexedDB)).find(item => !item.demo)?.messages[1];
     return turn?.variants?.length === 2 && activeAssistantVariant(turn).status === 'complete';
@@ -511,4 +513,51 @@ test('Wallpaper Settings persists, restores, replaces and removes a local Blob',
   assert.ok(revoked.length >= 2);
   dom.window.close();
   await closeChatDatabase();
+});
+
+test('保存风格与带原因重新生成使用 active variant，并且反馈只随一次请求发送', async () => {
+  const indexedDB = new IDBFactory(); const storage = createMemoryStorage();
+  const { fetchMock, payloads } = createFetchMock();
+  const dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?response-quality=ui');
+  document.querySelector('#newChatButton').click();
+  submitMessage('风格来源');
+  await waitFor(async () => (await loadChats(indexedDB)).find(chat => !chat.demo)?.messages.at(-1)?.status === 'complete');
+
+  document.querySelector('.message.assistant [data-action="save-style"]').click();
+  const saved = await waitFor(async () => (await loadStyleReferences(indexedDB))[0]);
+  const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+  const turn = chat.messages.at(-1);
+  assert.equal(saved.content, activeAssistantVariant(turn).content);
+  assert.equal(saved.sourceVariantId, activeAssistantVariant(turn).id);
+  assert.ok(!saved.content.includes('风格来源'));
+  document.querySelector('.message.assistant [data-action="save-style"]').click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal((await loadStyleReferences(indexedDB)).length, 1);
+
+  document.querySelector('#settingsButton').click();
+  assert.match(document.querySelector('#styleReferenceList').textContent, /可控回复/);
+  assert.match(document.querySelector('#styleReferenceCount').textContent, /1 \/ 5/);
+  document.querySelector('#settingsDialog').close();
+
+  document.querySelector('.message.assistant [data-action="regenerate"]').click();
+  assert.equal(document.querySelector('#regenerateMenu').hidden, false);
+  document.querySelector('[data-regeneration-reason="too_repetitive"]').click();
+  const regenerated = await waitFor(async () => {
+    const item = (await loadChats(indexedDB)).find(value => !value.demo);
+    return item?.messages.at(-1)?.variants?.length === 2 && activeAssistantVariant(item.messages.at(-1)).status === 'complete' ? item : null;
+  });
+  assert.equal(regenerated.messages.at(-1).variants.length, 2);
+  assert.equal(payloads.at(-1).regenerationReason, 'too_repetitive');
+  assert.equal(payloads.at(-1).styleReferences[0].id, saved.id);
+
+  submitMessage('后续普通发送');
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 4);
+  assert.equal(Object.hasOwn(payloads.at(-1), 'regenerationReason'), false);
+
+  document.querySelector('#settingsButton').click();
+  document.querySelector('[data-delete-style-reference]').click();
+  await waitFor(async () => (await loadStyleReferences(indexedDB)).length === 0);
+  assert.match(document.querySelector('#styleReferenceList').textContent, /暂未保存风格参考/);
+  dom.window.close(); await closeChatDatabase();
 });
