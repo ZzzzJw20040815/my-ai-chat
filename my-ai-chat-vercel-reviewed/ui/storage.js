@@ -3,10 +3,11 @@ import { ensureBranchLineage } from './state.js';
 import { validateStoryMemory, STORY_MEMORY_SCHEMA_VERSION } from '../shared/story-memory.js';
 
 export const CHAT_DB_NAME = 'my-ai-chat';
-export const CHAT_DB_VERSION = 3;
+export const CHAT_DB_VERSION = 4;
 export const CHAT_STORE_NAME = 'chats';
 export const ASSET_STORE_NAME = 'assets';
 export const STORY_MEMORY_STORE_NAME = 'storyMemories';
+export const STYLE_REFERENCE_STORE_NAME = 'styleReferences';
 export const WALLPAPER_ASSET_ID = 'chat-wallpaper';
 export const CANONICAL_DEMO_ID = 'demo-welcome';
 
@@ -47,6 +48,11 @@ export function openChatDatabase(indexedDBApi = globalThis.indexedDB) {
         store.createIndex('chatId', 'chatId');
         store.createIndex('anchorId', 'anchorId');
         store.createIndex('updatedAt', 'updatedAt');
+      }
+      if (!database.objectStoreNames.contains(STYLE_REFERENCE_STORE_NAME)) {
+        const store = database.createObjectStore(STYLE_REFERENCE_STORE_NAME, { keyPath: 'id' });
+        store.createIndex('createdAt', 'createdAt');
+        store.createIndex('sourceVariantId', 'sourceVariantId', { unique: true });
       }
     });
     request.addEventListener('success', () => {
@@ -238,6 +244,61 @@ export async function deleteStoryMemoriesForChat(chatId, indexedDBApi = globalTh
   const store = transaction.objectStore(STORY_MEMORY_STORE_NAME);
   const records = await requestResult(store.index('chatId').getAll(String(chatId)));
   for (const item of records) store.delete(item.id);
+  await transactionDone(transaction);
+}
+
+function storedStyleReference(reference) {
+  const requiredIds = ['id', 'sourceChatId', 'sourceAssistantTurnId', 'sourceVariantId'];
+  if (!reference || typeof reference !== 'object' || Array.isArray(reference)
+    || requiredIds.some(key => typeof reference[key] !== 'string' || !reference[key] || reference[key].length > 256)
+    || typeof reference.content !== 'string' || !reference.content.trim() || reference.content.length > 50000
+    || !isPersistableModelId(reference.sourceModel)
+    || !Number.isFinite(Date.parse(reference.createdAt))) {
+    throw new Error('Invalid style reference');
+  }
+  return {
+    id: reference.id,
+    content: reference.content.trim(),
+    createdAt: new Date(reference.createdAt).toISOString(),
+    sourceModel: reference.sourceModel,
+    sourceChatId: reference.sourceChatId,
+    sourceAssistantTurnId: reference.sourceAssistantTurnId,
+    sourceVariantId: reference.sourceVariantId,
+  };
+}
+
+export async function loadStyleReferences(indexedDBApi = globalThis.indexedDB) {
+  const database = await openChatDatabase(indexedDBApi);
+  const transaction = database.transaction(STYLE_REFERENCE_STORE_NAME, 'readonly');
+  const records = await requestResult(transaction.objectStore(STYLE_REFERENCE_STORE_NAME).getAll());
+  await transactionDone(transaction);
+  return records.map(storedStyleReference).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+export async function saveStyleReference(reference, indexedDBApi = globalThis.indexedDB) {
+  const record = storedStyleReference(reference);
+  const database = await openChatDatabase(indexedDBApi);
+  const transaction = database.transaction(STYLE_REFERENCE_STORE_NAME, 'readwrite');
+  const store = transaction.objectStore(STYLE_REFERENCE_STORE_NAME);
+  const duplicate = await requestResult(store.index('sourceVariantId').get(record.sourceVariantId));
+  if (duplicate) {
+    await transactionDone(transaction);
+    return { status: 'duplicate', reference: storedStyleReference(duplicate) };
+  }
+  const count = await requestResult(store.count());
+  if (count >= 5) {
+    await transactionDone(transaction);
+    return { status: 'limit', reference: null };
+  }
+  store.add(record);
+  await transactionDone(transaction);
+  return { status: 'saved', reference: record };
+}
+
+export async function deleteStyleReference(referenceId, indexedDBApi = globalThis.indexedDB) {
+  const database = await openChatDatabase(indexedDBApi);
+  const transaction = database.transaction(STYLE_REFERENCE_STORE_NAME, 'readwrite');
+  transaction.objectStore(STYLE_REFERENCE_STORE_NAME).delete(String(referenceId));
   await transactionDone(transaction);
 }
 

@@ -6,6 +6,10 @@ import {
   SAFETY_THRESHOLDS, SAMPLING_LIMITS, THINKING_LEVELS,
 } from '../shared/settings.js';
 import { storyMemorySystemInstruction, validateStoryMemory } from '../shared/story-memory.js';
+import {
+  isRegenerationReason, responseQualitySystemInstruction, STYLE_REFERENCE_LIMIT,
+  STYLE_REFERENCE_TOTAL_CHARACTERS,
+} from '../shared/response-quality.js';
 
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_MESSAGES = 100;
@@ -38,6 +42,8 @@ export function classifyError(error) {
 export function validatePayload(payload, authorizedModel = modelMetadata(payload?.model)) {
   if (!payload || !authorizedModel || authorizedModel.id !== payload.model || !Array.isArray(payload.messages) || !payload.messages.length)
     throw new Error('INVALID_REQUEST');
+  const allowedPayloadKeys = new Set(['model', 'messages', 'settings', 'storyMemory', 'styleReferences', 'regenerationReason']);
+  if (Object.keys(payload).some(key => !allowedPayloadKeys.has(key))) throw new Error('INVALID_REQUEST');
   if (payload.messages.length > MAX_MESSAGES) throw new Error('CONTEXT_LIMIT');
   const ids = new Set();
   let total = 0;
@@ -57,9 +63,31 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
     const memory = validateStoryMemory(payload.storyMemory);
     config.systemInstruction = storyMemorySystemInstruction(config.systemInstruction || '', memory);
   }
+  const styleReferences = validateStyleReferences(payload.styleReferences);
+  const regenerationReason = payload.regenerationReason == null ? null : payload.regenerationReason;
+  if (regenerationReason !== null && !isRegenerationReason(regenerationReason)) throw new Error('INVALID_REQUEST');
+  const systemInstruction = responseQualitySystemInstruction(config.systemInstruction || '', styleReferences, regenerationReason);
+  if (systemInstruction) config.systemInstruction = systemInstruction;
+  else delete config.systemInstruction;
   return { model: payload.model, contents, config };
 }
 function invalidRequest() { throw new Error('INVALID_REQUEST'); }
+function validateStyleReferences(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > STYLE_REFERENCE_LIMIT) invalidRequest();
+  const ids = new Set();
+  let total = 0;
+  return value.map(reference => {
+    if (!reference || typeof reference !== 'object' || Array.isArray(reference)
+      || Object.keys(reference).length !== 2 || !Object.hasOwn(reference, 'id') || !Object.hasOwn(reference, 'content')
+      || typeof reference.id !== 'string' || !reference.id || reference.id.length > 256 || ids.has(reference.id)
+      || typeof reference.content !== 'string' || !reference.content.trim()) invalidRequest();
+    ids.add(reference.id);
+    total += reference.content.length;
+    if (total > STYLE_REFERENCE_TOTAL_CHARACTERS) invalidRequest();
+    return { id: reference.id, content: reference.content.trim() };
+  });
+}
 function validNumber(value, limits) {
   return typeof value === 'number' && Number.isFinite(value) && value >= limits.min && value <= limits.max;
 }

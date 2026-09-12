@@ -426,6 +426,22 @@ html[data-theme="light"] .moon-icon { display: none; }
 .storage-protection > div { min-width: 0; }
 .storage-protection strong { font-size: 14px; }
 .storage-protection p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.style-reference-count { flex: none; color: var(--muted); font-size: 12px; }
+.style-reference-list { min-width: 0; margin-top: 13px; display: grid; gap: 9px; }
+.style-reference-item { min-width: 0; padding: 12px; border: 1px solid var(--glass-border); border-radius: 10px; background: var(--glass-bg-soft); }
+.style-reference-item p { margin: 0; overflow: hidden; color: var(--text); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.style-reference-item div { min-width: 0; margin-top: 8px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.style-reference-item span { min-width: 0; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.style-reference-empty { margin: 0; padding: 14px 0 2px; color: var(--muted); font-size: 13px; }
+
+.regenerate-menu {
+  position: fixed; z-index: 90; width: min(250px, calc(100vw - 20px)); max-height: min(360px, calc(100dvh - 20px));
+  padding: 8px; overflow-y: auto; overflow-x: hidden; border: 1px solid var(--glass-border-strong); border-radius: 13px;
+  background: var(--glass-bg-strong); box-shadow: var(--glass-shadow); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(115%); backdrop-filter: blur(var(--glass-blur)) saturate(115%);
+}
+.regenerate-menu > strong { display: block; padding: 8px 10px 6px; color: var(--muted); font-size: 12px; }
+.regenerate-menu button { width: 100%; min-height: 42px; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; text-align: left; font-size: 13px; }
+.regenerate-menu button:hover, .regenerate-menu button:focus-visible { background: var(--control-glass-bg); }
 
 .toast { position: fixed; z-index: 100; right: 22px; bottom: 22px; padding: 10px 13px; border: 1px solid var(--glass-border-strong); border-radius: 10px; background: var(--glass-bg-strong); color: var(--text); box-shadow: var(--glass-shadow); font-size: 13px; opacity: 0; pointer-events: none; transform: translateY(7px); transition: opacity 150ms ease, transform 150ms ease; }
 .toast.show { opacity: 1; transform: translateY(0); }
@@ -461,7 +477,7 @@ html[data-theme="light"] .moon-icon { display: none; }
   .message.assistant { grid-template-columns: 27px minmax(0,1fr); gap: 10px; }
   .assistant-mark { width: 27px; height: 27px; border-radius: 8px; }
   .message-content { font-size: 16px; line-height: 1.68; }
-  .action-button { padding: 0 6px; }
+  .action-button { height: 44px; padding: 0 6px; }
   .action-button .action-label { display: none; }
   .variant-nav { margin-left: auto; }
   .variant-nav button { width: 44px; height: 44px; }
@@ -477,6 +493,7 @@ html[data-theme="light"] .moon-icon { display: none; }
   .local-data-actions .small-button { min-height: 44px; }
   .storage-protection { align-items: flex-start; flex-direction: column; gap: 12px; }
   .storage-protection .small-button { width: 100%; min-height: 44px; }
+  .style-reference-item .text-button { min-width: 44px; min-height: 44px; }
   .segmented { width: 100%; }.segmented button { flex: 1; }
   .settings-dialog { width: calc(100vw - 20px); }
   .settings-card { max-height: calc(100dvh - max(10px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom))); padding: 18px; }
@@ -488,6 +505,8 @@ html[data-theme="light"] .moon-icon { display: none; }
   .compact-field:last-child { grid-column: 1 / -1; }
   .safety-category-row { grid-template-columns: 1fr; gap: 8px; }
   .safety-levels button { min-height: 44px; font-size: 10px; }
+  .regenerate-menu { right: 10px; bottom: max(10px, env(safe-area-inset-bottom)); left: 10px !important; top: auto !important; width: auto; max-height: calc(100dvh - max(20px, env(safe-area-inset-top)) - max(20px, env(safe-area-inset-bottom))); border-radius: 16px; }
+  .regenerate-menu button { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -12,16 +12,20 @@ import {
   ensureBranchLineage,
   formatLocalChatTitle,
   removeUserDescendants,
+  uniqueId,
   visibleConversationPath,
 } from './state.js';
 import {
   CANONICAL_DEMO_ID,
   deleteStoryMemoriesByAnchors,
+  deleteStyleReference,
   deleteWallpaperAsset,
   loadOrSeedChats,
   loadStoryMemories,
+  loadStyleReferences,
   loadWallpaperAsset,
   saveChat,
+  saveStyleReference,
   saveWallpaperAsset,
   replaceStoryMemorySnapshot,
 } from './storage.js';
@@ -45,6 +49,7 @@ import {
   storySubtreeAnchorIds,
 } from './story-memory.js';
 import { storyPanelView } from './story-panel.js';
+import { REGENERATION_REASON_OPTIONS, styleReferenceRequestItems } from '../shared/response-quality.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -69,6 +74,7 @@ let wallpaperRecord = null, wallpaperBusy = false;
 let dataTransferBusy = false, persistenceRequestBusy = false;
 let modelCatalogBusy = false;
 let storyMemoryBusy = false, storyMemoryLoaded = false, storyMemorySnapshots = [];
+let styleReferences = [];
 let persistenceStatus = { state: 'checking', supported: true };
 const modelCatalog = createModelCatalog();
 let globalSettings = loadGlobalSettings();
@@ -147,6 +153,7 @@ function messageHtml(message) {
   const variantIndex = Math.max(0, variants.findIndex(item => item.id === variant.id));
   const latestAssistant = visibleConversationPath(current()).filter(m => m.role === 'assistant').at(-1)?.id === message.id;
   const generating = ['sending','generating'].includes(variant.status);
+  const styleSaved = styleReferences.some(reference => reference.sourceVariantId === variant.id);
   const status = generating ? '<span class="generation-status">' + (variant.status === 'sending' ? 'Sending…' : 'Generating…') + '</span>' :
     variant.status === 'stopped' ? '<span class="generation-status">Stopped · partial response excluded from context</span>' : '';
   const error = variant.error ? '<div class="error-note" role="alert">' + escapeHtml(variant.error) + '</div>' : '';
@@ -157,7 +164,8 @@ function messageHtml(message) {
     (variant.content ? renderMarkdown(variant.content) : generating ? '<div class="typing" aria-label="Generating"><i></i><i></i><i></i></div>' : '') +
     '</div>' + status + error + (variant.notice ? '<p class="generation-status">' + escapeHtml(variant.notice) + '</p>' : '') +
     '<div class="message-actions">' + action('copy', 'Copy', icons.copy, false, !variant.content) +
-    (latestAssistant ? action('regenerate', variant.status === 'error' || variant.status === 'stopped' ? 'Retry' : 'Regenerate', icons.redo, false, busy) : '') +
+    (latestAssistant ? action('regenerate', variant.status === 'error' || variant.status === 'stopped' ? 'Retry' : '重新生成', icons.redo, false, busy) : '') +
+    action('save-style', styleSaved ? '已保存' : '保存风格', icons.bookmark, styleSaved, generating || !variant.content) +
     action('like', 'Like', icons.like, variant.feedback === 'like', generating) +
     action('dislike', 'Dislike', icons.dislike, variant.feedback === 'dislike', generating) + variantNav +
     '</div><span class="message-model">' + escapeHtml(modelName(variant.model)) + '</span></div>';
@@ -285,6 +293,7 @@ function openSidebar() {
 function selectChat(id) {
   current().draft = input.value; current().scrollTop = conversation.scrollTop;
   activeChat = id; editingId = null; input.value = current().draft;
+  closeRegenerateMenu();
   rememberActiveChat(activeChat);
   closeSidebar(); syncModel(); syncComposer(); renderHistory(); renderConversation();
   conversation.scrollTop = current().scrollTop;
@@ -359,6 +368,13 @@ function syncSettingsUi() {
   $('#storageProtectionStatus').textContent = persistenceMessages[persistenceStatus.state] || persistenceMessages['best-effort'];
   $('#requestStoragePersistence').hidden = !persistenceStatus.supported || persistenceStatus.state === 'persistent';
   $('#requestStoragePersistence').disabled = persistenceRequestBusy;
+  $('#styleReferenceCount').textContent = '已保存 ' + styleReferences.length + ' / 5';
+  $('#styleReferenceList').innerHTML = styleReferences.length ? styleReferences.map(reference => {
+    const preview = reference.content.length > 180 ? reference.content.slice(0, 180).trimEnd() + '…' : reference.content;
+    return '<article class="style-reference-item" data-style-reference-id="' + escapeHtml(reference.id) + '">' +
+      '<p>' + escapeHtml(preview) + '</p><div><span>' + escapeHtml(modelName(reference.sourceModel)) + '</span>' +
+      '<button class="text-button danger-text" type="button" data-delete-style-reference="' + escapeHtml(reference.id) + '">删除</button></div></article>';
+  }).join('') : '<p class="style-reference-empty">暂未保存风格参考。</p>';
 }
 function updateGlobalSettings(patch) {
   globalSettings = saveGlobalSettings({ ...globalSettings, ...patch });
@@ -376,7 +392,7 @@ async function refreshStoragePersistence() {
   persistenceStatus = await storagePersistenceStatus();
   syncSettingsUi();
 }
-async function generate(chat, user, existingTurn = null, existingVariant = null) {
+async function generate(chat, user, existingTurn = null, existingVariant = null, regenerationReason = null) {
   if (generation) return;
   const assistant = existingTurn || createMessage('assistant', '', chat.model);
   const variant = existingVariant || assistant;
@@ -395,6 +411,8 @@ async function generate(chat, user, existingTurn = null, existingVariant = null)
         model: chat.model,
         messages: contextFor(chat, user.id, globalSettings.contextLimit),
         storyMemory: applicableStoryMemory(chat, storyMemorySnapshots)?.memory || null,
+        styleReferences: styleReferenceRequestItems(styleReferences),
+        ...(regenerationReason ? { regenerationReason } : {}),
         settings: requestSettings(globalSettings, modelCatalog.metadata(chat.model) || {
           source: 'discovered', capabilities: { thinkingLevels: [], samplingOverrides: false, safetySettings: false },
         }),
@@ -433,7 +451,7 @@ function stopGeneration() {
   if (variant) variant.status = 'stopped';
   updateMessage(chat.id, message); void persistChat(chat);
 }
-async function retry(messageId) {
+async function retry(messageId, regenerationReason = null) {
   if (generation) return;
   const chat = current(), path = visibleConversationPath(chat);
   const message = chat.messages.find(item => item.id === messageId);
@@ -443,7 +461,48 @@ async function retry(messageId) {
   const variantMessage = createMessage('assistant', '', chat.model);
   variantMessage.status = 'sending';
   const variant = addAssistantVariant(message, variantMessage);
-  renderConversation(true); await persistChat(chat); void generate(chat, user, message, variant);
+  renderConversation(true); await persistChat(chat); void generate(chat, user, message, variant, regenerationReason);
+}
+
+function closeRegenerateMenu(restoreFocus = false) {
+  const menu = $('#regenerateMenu');
+  const messageId = menu.dataset.messageId;
+  menu.hidden = true; menu.removeAttribute('data-message-id');
+  menu.style.left = ''; menu.style.top = '';
+  if (restoreFocus && messageId) $('[data-message-id="' + messageId + '"] [data-action="regenerate"]')?.focus();
+}
+function openRegenerateMenu(messageId, anchor) {
+  const menu = $('#regenerateMenu');
+  menu.innerHTML = '<strong>重新生成</strong>' + REGENERATION_REASON_OPTIONS.map(option =>
+    '<button type="button" role="menuitem" data-regeneration-reason="' + option.id + '">' + escapeHtml(option.label) + '</button>'
+  ).join('');
+  menu.dataset.messageId = messageId; menu.hidden = false;
+  if (!mobile.matches) {
+    const rect = anchor.getBoundingClientRect(), width = Math.min(250, window.innerWidth - 20);
+    const height = menu.getBoundingClientRect().height || 310;
+    menu.style.left = Math.max(10, Math.min(rect.left, window.innerWidth - width - 10)) + 'px';
+    menu.style.top = (rect.top >= height + 10 ? rect.top - height - 6 : Math.min(rect.bottom + 6, window.innerHeight - height - 10)) + 'px';
+  }
+  menu.querySelector('button')?.focus();
+}
+
+async function saveActiveStyleReference(chat, message) {
+  const variant = activeAssistantVariant(message);
+  if (!variant?.content || ['sending', 'generating'].includes(variant.status)) return;
+  if (styleReferences.some(reference => reference.sourceVariantId === variant.id)) {
+    toast('这条回复已经保存为风格参考。'); return;
+  }
+  const reference = {
+    id: uniqueId(), content: variant.content, createdAt: new Date().toISOString(), sourceModel: variant.model || chat.model,
+    sourceChatId: chat.id, sourceAssistantTurnId: message.id, sourceVariantId: variant.id,
+  };
+  try {
+    const result = await saveStyleReference(reference);
+    if (result.status === 'limit') { toast('最多可以保存 5 条风格参考。请先删除一条再继续保存。'); return; }
+    if (result.status === 'duplicate') { toast('这条回复已经保存为风格参考。'); return; }
+    styleReferences.push(result.reference); styleReferences.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    renderConversation(); syncSettingsUi(); toast('已保存为风格参考');
+  } catch { toast('保存失败，请稍后重试。'); }
 }
 $('#composerForm').addEventListener('submit', async event => {
   event.preventDefault();
@@ -485,14 +544,17 @@ $('#modelMenu').addEventListener('keydown', event => {
   event.preventDefault(); const options = $$('.model-option'), index = options.indexOf(document.activeElement);
   options[event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length].focus();
 });
-document.addEventListener('click', event => { if (!event.target.closest('.model-wrap')) setModelMenu(false); });
+document.addEventListener('click', event => {
+  if (!event.target.closest('.model-wrap')) setModelMenu(false);
+  if (!event.target.closest('#regenerateMenu') && !event.target.closest('[data-action="regenerate"]')) closeRegenerateMenu();
+});
 $('#openSidebar').addEventListener('click', openSidebar);
 $('#closeSidebar').addEventListener('click', () => closeSidebar(true));
 $('#mobileScrim').addEventListener('click', () => closeSidebar(true));
 mobile.addEventListener('change', event => {
-  closeSidebar(); storyPanelExpanded = !event.matches; renderConversation();
+  closeSidebar(); closeRegenerateMenu(); storyPanelExpanded = !event.matches; renderConversation();
 });
-$('#settingsButton').addEventListener('click', () => { closeSidebar(); syncSettingsUi(); $('#settingsDialog').showModal(); });
+$('#settingsButton').addEventListener('click', () => { closeSidebar(); closeRegenerateMenu(); syncSettingsUi(); $('#settingsDialog').showModal(); });
 $('#settingsDialog').addEventListener('close', () => { if (mobile.matches) $('#openSidebar').focus(); });
 $('#quickTheme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $$('[data-theme-choice]').forEach(button => button.addEventListener('click', () => setTheme(button.dataset.themeChoice)));
@@ -555,6 +617,19 @@ $('#requestStoragePersistence').addEventListener('click', async () => {
   persistenceRequestBusy = true; syncSettingsUi();
   persistenceStatus = await requestStoragePersistence();
   persistenceRequestBusy = false; syncSettingsUi();
+});
+$('#styleReferenceList').addEventListener('click', async event => {
+  const button = event.target.closest('[data-delete-style-reference]');
+  if (!button) return;
+  const id = button.dataset.deleteStyleReference;
+  button.disabled = true;
+  try {
+    await deleteStyleReference(id);
+    styleReferences = styleReferences.filter(reference => reference.id !== id);
+    syncSettingsUi(); renderConversation();
+  } catch {
+    button.disabled = false; toast('删除失败，请稍后重试。');
+  }
 });
 $('#chooseWallpaper').addEventListener('click', () => { if (!wallpaperBusy) $('#wallpaperInput').click(); });
 $('#wallpaperInput').addEventListener('change', async event => {
@@ -672,7 +747,13 @@ conversation.addEventListener('click', async event => {
         target.feedback = target.feedback === button.dataset.action ? null : button.dataset.action;
       }
       updateMessage(chat.id, message); void persistChat(chat); break;
-    case 'regenerate': void retry(message.id); break;
+    case 'regenerate': {
+      const variant = activeAssistantVariant(message);
+      if (variant.status === 'error' || variant.status === 'stopped') void retry(message.id);
+      else openRegenerateMenu(message.id, button);
+      break;
+    }
+    case 'save-style': void saveActiveStyleReference(chat, message); break;
     case 'variant-prev': case 'variant-next': {
       if (generation || !Array.isArray(message.variants)) return;
       const index = message.variants.findIndex(variant => variant.id === message.activeVariantId);
@@ -703,12 +784,20 @@ conversation.addEventListener('click', async event => {
 });
 document.addEventListener('keydown', event => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && !$('#settingsDialog').open) { event.preventDefault(); void newChat(); }
-  if (event.key === 'Escape') { closeSidebar(true); setModelMenu(false); }
+  if (event.key === 'Escape') { closeSidebar(true); setModelMenu(false); closeRegenerateMenu(true); }
   if (event.key === 'Tab' && mobile.matches && $('#sidebar').classList.contains('open')) {
     const controls = $$('button:not([disabled]),input', $('#sidebar')).filter(el => el.getClientRects().length);
     if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
     else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
   }
+});
+$('#regenerateMenu').addEventListener('click', event => {
+  const option = event.target.closest('[data-regeneration-reason]');
+  if (!option) return;
+  const messageId = $('#regenerateMenu').dataset.messageId;
+  const reason = option.dataset.regenerationReason;
+  closeRegenerateMenu();
+  if (messageId) void retry(messageId, reason);
 });
 new ResizeObserver(() => {
   conversation.style.paddingBottom = Math.ceil($('.composer-dock').getBoundingClientRect().height + 28) + 'px';
@@ -725,6 +814,11 @@ async function initializeApp() {
   for (const chat of initialChats) chats.set(chat.id, ensureBranchLineage(chat));
   try { storyMemorySnapshots = await loadStoryMemories(); storyMemoryLoaded = true; }
   catch { storyMemorySnapshots = []; storyMemoryLoaded = false; }
+  try { styleReferences = await loadStyleReferences(); }
+  catch {
+    styleReferences = [];
+    setTimeout(() => toast('无法读取风格参考，但不影响正常聊天。'), 0);
+  }
   let savedActiveChat;
   try { savedActiveChat = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY); } catch {}
   activeChat = savedActiveChat && chats.has(savedActiveChat) ? savedActiveChat : chats.keys().next().value;
