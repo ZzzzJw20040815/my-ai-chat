@@ -6,15 +6,16 @@ import { JSDOM } from 'jsdom';
 import { IDBFactory } from 'fake-indexeddb';
 import { MODELS } from '../shared/models.js';
 import { activeAssistantVariant } from '../ui/state.js';
-import { closeChatDatabase, loadChats, loadWallpaperAsset } from '../ui/storage.js';
+import { closeChatDatabase, loadChats, loadStoryMemories, loadWallpaperAsset } from '../ui/storage.js';
 
 const html = await readFile(new URL('../ui/index.html', import.meta.url), 'utf8');
 const waitFor = async (check, timeout = 4000) => {
   const started = Date.now();
+  await new Promise(resolve => setTimeout(resolve, 100));
   while (Date.now() - started < timeout) {
     const value = await check();
     if (value) return value;
-    await new Promise(resolve => setTimeout(resolve, 15));
+    await new Promise(resolve => setTimeout(resolve, 30));
   }
   throw new Error('Timed out waiting for persisted app state');
 };
@@ -100,6 +101,43 @@ function submitMessage(text) {
   input.dispatchEvent(new window.Event('input', { bubbles: true }));
   document.querySelector('#composerForm').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
 }
+
+const storyMemoryFixture = () => ({
+  version: 1,
+  scene: { location: null, time: null, presentCharacters: [], relativePositions: [], environmentState: [], importantObjects: [] },
+  characters: [], relationship: { summary: '', establishedChanges: [], sharedHistory: [], unresolvedTension: [] },
+  importantEvents: [], knownFacts: ['The code is 7263.'], unknownOrUnconfirmed: [], unresolvedThreads: [],
+});
+
+test('manual Story Memory update persists and becomes supplemental context after reload', async () => {
+  const indexedDB = new IDBFactory(); const storage = createMemoryStorage();
+  const chatFetch = createFetchMock(); let extractionPayload;
+  const fetchMock = async (url, init) => {
+    if (String(url).includes('/api/story-memory')) {
+      extractionPayload = JSON.parse(init.body);
+      return Response.json({ memory: storyMemoryFixture() });
+    }
+    return chatFetch.fetchMock(url, init);
+  };
+  let dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?story-memory=first');
+  document.querySelector('#newChatButton').click(); submitMessage('Remember code 7263.');
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.at(-1)?.status === 'complete');
+  document.querySelector('[data-update-story-memory]').click();
+  const snapshot = await waitFor(async () => (await loadStoryMemories(null, indexedDB))[0]);
+  assert.equal(snapshot.anchorId, extractionPayload.messages.at(-1).id);
+  assert.deepEqual(extractionPayload.messages.map(item => item.content), ['Remember code 7263.', '可控回复 1。']);
+  assert.match(document.querySelector('.story-memory-control').textContent, /updated/i);
+  submitMessage('What is the code?');
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 4);
+  assert.deepEqual(chatFetch.payloads.at(-1).storyMemory.knownFacts, ['The code is 7263.']);
+
+  dom.window.close(); dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?story-memory=reopen');
+  assert.match(document.querySelector('.story-memory-control').textContent, /updated/i);
+  assert.equal((await loadStoryMemories(null, indexedDB)).length, 1);
+  dom.window.close(); await closeChatDatabase();
+});
 
 test('new chat lifecycle persists across refresh/reopen without duplicating demos', async () => {
   const indexedDB = new IDBFactory();

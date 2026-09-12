@@ -9,6 +9,10 @@
     },
     "api/models.js": {
       "maxDuration": 30
+    },
+    "api/story-memory.js": {
+      "maxDuration": 90,
+      "supportsCancellation": true
     }
   }
 }

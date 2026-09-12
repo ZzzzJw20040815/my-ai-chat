@@ -252,6 +252,8 @@ html[data-theme="light"] .moon-icon { display: none; }
 .conversation.has-wallpaper .chat-heading { text-shadow: 0 1px 18px color-mix(in srgb, var(--bg) 62%, transparent); }
 .chat-heading .eyebrow { color: var(--muted); }
 .chat-heading h1 { margin: 6px 0 0; font-size: clamp(23px, 2.3vw, 30px); letter-spacing: -.035em; line-height: 1.2; }
+.story-memory-control { display: flex; align-items: center; gap: 10px; margin-top: 13px; color: var(--muted); font-size: 12px; }
+.story-memory-control .small-button { min-height: 34px; background: var(--glass-bg); }
 .eyebrow { margin: 0; color: var(--muted-2); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 
 .message { margin: 0 0 38px; }

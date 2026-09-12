@@ -16,11 +16,14 @@ import {
 } from './state.js';
 import {
   CANONICAL_DEMO_ID,
+  deleteStoryMemoriesByAnchors,
   deleteWallpaperAsset,
   loadOrSeedChats,
+  loadStoryMemories,
   loadWallpaperAsset,
   saveChat,
   saveWallpaperAsset,
+  replaceStoryMemorySnapshot,
 } from './storage.js';
 import { renderMarkdown } from './markdown.js';
 import { consumeStream } from './stream.js';
@@ -31,6 +34,16 @@ import {
 } from './backup.js';
 import { requestStoragePersistence, storagePersistenceStatus } from './storage-persistence.js';
 import { availableDefaultModel, createModelCatalog } from './model-catalog.js';
+import {
+  allStoryAnchors,
+  applicableStoryMemory,
+  commitStoryMemoryUpdate,
+  createStoryMemorySnapshot,
+  currentStoryAnchor,
+  memoryStatusText,
+  storyMemoryConversation,
+  storySubtreeAnchorIds,
+} from './story-memory.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -54,6 +67,7 @@ let activeChat, generation = null, editingId = null, toastTimer, storageWarningS
 let wallpaperRecord = null, wallpaperBusy = false;
 let dataTransferBusy = false, persistenceRequestBusy = false;
 let modelCatalogBusy = false;
+let storyMemoryBusy = false, storyMemoryLoaded = false, storyMemorySnapshots = [];
 let persistenceStatus = { state: 'checking', supported: true };
 const modelCatalog = createModelCatalog();
 let globalSettings = loadGlobalSettings();
@@ -148,15 +162,51 @@ function messageHtml(message) {
 }
 function renderConversation(bottom = false) {
   const chat = current(), saved = conversation.scrollTop;
+  const memory = applicableStoryMemory(chat, storyMemorySnapshots);
+  const memoryDisabled = storyMemoryBusy || !!generation || !currentStoryAnchor(chat);
   conversation.innerHTML = '<div class="conversation-inner"><div class="chat-heading"><p class="eyebrow">' +
     escapeHtml(chat.demo ? 'Demo conversation · ' + modelName(chat.model) : chat.group + ' · ' + modelName(chat.model)) +
-    '</p><h1>' + escapeHtml(chat.messages.length ? chat.title : 'What would you like to explore?') + '</h1></div><div class="messages"></div></div>';
+    '</p><h1>' + escapeHtml(chat.messages.length ? chat.title : 'What would you like to explore?') +
+    '</h1><div class="story-memory-control"><span>' + escapeHtml(memoryStatusText(memory)) +
+    '</span><button class="small-button" type="button" data-update-story-memory' + (memoryDisabled ? ' disabled' : '') + '>' +
+    (storyMemoryBusy ? 'Updating…' : 'Update Memory') + '</button></div></div><div class="messages"></div></div>';
   for (const message of visibleConversationPath(chat)) {
     const article = document.createElement('article'); article.className = 'message ' + message.role;
     article.dataset.messageId = message.id; article.innerHTML = messageHtml(message);
     $('.messages').append(article);
   }
   conversation.scrollTop = bottom ? conversation.scrollHeight : saved;
+}
+
+async function updateStoryMemory() {
+  const chat = current();
+  if (storyMemoryBusy || generation || !chat) return;
+  const anchorId = currentStoryAnchor(chat);
+  if (!anchorId) return;
+  const applicable = applicableStoryMemory(chat, storyMemorySnapshots);
+  storyMemoryBusy = true; renderConversation();
+  try {
+    const response = await fetch('/api/story-memory', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: chat.model, chatId: chat.id, anchorId,
+        messages: storyMemoryConversation(chat), existingMemory: applicable?.memory || null,
+      }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.memory) throw new Error('Story memory request failed');
+    if (!allStoryAnchors(chat).has(anchorId)) throw new Error('Story branch changed');
+    const snapshot = createStoryMemorySnapshot({ chatId: chat.id, anchorId, memory: payload.memory });
+    storyMemorySnapshots = await commitStoryMemoryUpdate(
+      storyMemorySnapshots, snapshot, item => replaceStoryMemorySnapshot(item),
+    );
+    toast('Memory updated.');
+  } catch {
+    toast('Could not update story memory. Your chat was not changed.');
+  } finally {
+    storyMemoryBusy = false;
+    if (current()?.id === chat.id) renderConversation();
+  }
 }
 function updateMessage(chatId, message) {
   if (activeChat !== chatId) return;
@@ -309,6 +359,7 @@ async function generate(chat, user, existingTurn = null, existingVariant = null)
       body: JSON.stringify({
         model: chat.model,
         messages: contextFor(chat, user.id, globalSettings.contextLimit),
+        storyMemory: applicableStoryMemory(chat, storyMemorySnapshots)?.memory || null,
         settings: requestSettings(globalSettings, modelCatalog.metadata(chat.model) || {
           source: 'discovered', capabilities: { thinkingLevels: [], samplingOverrides: false, safetySettings: false },
         }),
@@ -565,6 +616,7 @@ async function copy(text) {
   catch { toast('Clipboard unavailable. Please select and copy the text.'); }
 }
 conversation.addEventListener('click', async event => {
+  if (event.target.closest('[data-update-story-memory]')) { void updateStoryMemory(); return; }
   const codeCopy = event.target.closest('[data-code-copy]');
   if (codeCopy) { void copy($('code', codeCopy.closest('.code-block')).textContent); return; }
   const button = event.target.closest('[data-action]');
@@ -596,6 +648,13 @@ conversation.addEventListener('click', async event => {
     case 'edit-save': {
       if (generation) return;
       const value = $('textarea', article).value.trim(); if (!value) return;
+      const prunedAnchors = storySubtreeAnchorIds(chat, message.id);
+      const hasStoredMemory = storyMemorySnapshots.some(snapshot => snapshot.chatId === chat.id && prunedAnchors.has(snapshot.anchorId));
+      if (!storyMemoryLoaded || hasStoredMemory) {
+        try { await deleteStoryMemoriesByAnchors(chat.id, prunedAnchors); }
+        catch { toast('Could not revise this branch because local memory cleanup failed.'); return; }
+      }
+      storyMemorySnapshots = storyMemorySnapshots.filter(snapshot => snapshot.chatId !== chat.id || !prunedAnchors.has(snapshot.anchorId));
       message.content = value; message.updatedAt = new Date().toISOString();
       removeUserDescendants(chat, message.id); editingId = null; renderConversation(true);
       await persistChat(chat); void generate(chat, message); break;
@@ -624,6 +683,8 @@ async function initializeApp() {
     setTimeout(() => toast('Local storage is unavailable. This session will remain in memory only.'), 0);
   }
   for (const chat of initialChats) chats.set(chat.id, ensureBranchLineage(chat));
+  try { storyMemorySnapshots = await loadStoryMemories(); storyMemoryLoaded = true; }
+  catch { storyMemorySnapshots = []; storyMemoryLoaded = false; }
   let savedActiveChat;
   try { savedActiveChat = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY); } catch {}
   activeChat = savedActiveChat && chats.has(savedActiveChat) ? savedActiveChat : chats.keys().next().value;
