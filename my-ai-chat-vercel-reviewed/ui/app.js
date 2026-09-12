@@ -50,6 +50,10 @@ import {
 } from './story-memory.js';
 import { storyPanelView } from './story-panel.js';
 import { REGENERATION_REASON_OPTIONS, styleReferenceRequestItems } from '../shared/response-quality.js';
+import {
+  createRuntimeControl, isRuntimeControlMessage, pruneStoryRuntimeTransitions,
+  setStoryRuntimeMode, storyRuntimeState,
+} from './story-runtime.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -205,6 +209,17 @@ function storyPanelHtml(snapshot, disabled) {
     (summary.length ? '<div class="story-panel-summary">' + summary.map(item => '<span>' + escapeHtml(item) + '</span>').join('') + '</div>' : '') +
     (storyPanelExpanded ? '<div class="story-panel-grid">' + sections + '</div>' : '') + '</section>';
 }
+function storyRuntimeHtml(chat) {
+  const runtime = storyRuntimeState(chat);
+  const assistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
+  const ready = assistant && activeAssistantVariant(assistant)?.status === 'complete' && !generation;
+  if (!runtime.enabled) return '<div class="story-runtime-control"><button class="small-button" type="button" data-story-runtime-action="prepare_story"' +
+    (generation ? ' disabled' : '') + '>准备故事</button></div>';
+  if (runtime.mode === 'setup') return '<div class="story-runtime-control"><span class="story-runtime-status"><i></i>资料收集中</span>' +
+    '<button class="small-button primary" type="button" data-story-runtime-action="start_writing"' + (ready ? '' : ' disabled') + '>开始正文</button></div>';
+  return '<div class="story-runtime-control"><span class="story-runtime-status"><i></i>正文中</span>' +
+    '<button class="small-button" type="button" data-open-runtime-menu' + (ready ? '' : ' disabled') + ' aria-haspopup="menu" aria-expanded="false">故事操作</button></div>';
+}
 function renderConversation(bottom = false) {
   const chat = current(), saved = conversation.scrollTop;
   const memory = applicableStoryMemory(chat, storyMemorySnapshots);
@@ -212,8 +227,8 @@ function renderConversation(bottom = false) {
   conversation.innerHTML = '<div class="conversation-inner"><div class="chat-heading"><p class="eyebrow">' +
     escapeHtml(chat.demo ? 'Demo conversation · ' + modelName(chat.model) : chat.group + ' · ' + modelName(chat.model)) +
     '</p><h1>' + escapeHtml(chat.messages.length ? chat.title : 'What would you like to explore?') +
-    '</h1>' + storyPanelHtml(memory, memoryDisabled) + '</div><div class="messages"></div></div>';
-  for (const message of visibleConversationPath(chat)) {
+    '</h1>' + storyRuntimeHtml(chat) + storyPanelHtml(memory, memoryDisabled) + '</div><div class="messages"></div></div>';
+  for (const message of visibleConversationPath(chat).filter(message => !isRuntimeControlMessage(message))) {
     const article = document.createElement('article'); article.className = 'message ' + message.role;
     article.dataset.messageId = message.id; article.innerHTML = messageHtml(message);
     $('.messages').append(article);
@@ -293,7 +308,7 @@ function openSidebar() {
 function selectChat(id) {
   current().draft = input.value; current().scrollTop = conversation.scrollTop;
   activeChat = id; editingId = null; input.value = current().draft;
-  closeRegenerateMenu();
+  closeRegenerateMenu(); closeRuntimeMenu();
   rememberActiveChat(activeChat);
   closeSidebar(); syncModel(); syncComposer(); renderHistory(); renderConversation();
   conversation.scrollTop = current().scrollTop;
@@ -392,7 +407,7 @@ async function refreshStoragePersistence() {
   persistenceStatus = await storagePersistenceStatus();
   syncSettingsUi();
 }
-async function generate(chat, user, existingTurn = null, existingVariant = null, regenerationReason = null) {
+async function generate(chat, user, existingTurn = null, existingVariant = null, regenerationReason = null, runtimeAction = null) {
   if (generation) return;
   const assistant = existingTurn || createMessage('assistant', '', chat.model);
   const variant = existingVariant || assistant;
@@ -413,6 +428,9 @@ async function generate(chat, user, existingTurn = null, existingVariant = null,
         storyMemory: applicableStoryMemory(chat, storyMemorySnapshots)?.memory || null,
         styleReferences: styleReferenceRequestItems(styleReferences),
         ...(regenerationReason ? { regenerationReason } : {}),
+        ...(storyRuntimeState(chat).enabled ? { storyRuntime: {
+          mode: storyRuntimeState(chat).mode, ...(runtimeAction ? { action: runtimeAction } : {}),
+        } } : {}),
         settings: requestSettings(globalSettings, modelCatalog.metadata(chat.model) || {
           source: 'discovered', capabilities: { thinkingLevels: [], samplingOverrides: false, safetySettings: false },
         }),
@@ -461,7 +479,8 @@ async function retry(messageId, regenerationReason = null) {
   const variantMessage = createMessage('assistant', '', chat.model);
   variantMessage.status = 'sending';
   const variant = addAssistantVariant(message, variantMessage);
-  renderConversation(true); await persistChat(chat); void generate(chat, user, message, variant, regenerationReason);
+  renderConversation(true); await persistChat(chat);
+  void generate(chat, user, message, variant, regenerationReason, isRuntimeControlMessage(user) ? user.runtimeAction : null);
 }
 
 function closeRegenerateMenu(restoreFocus = false) {
@@ -484,6 +503,44 @@ function openRegenerateMenu(messageId, anchor) {
     menu.style.top = (rect.top >= height + 10 ? rect.top - height - 6 : Math.min(rect.bottom + 6, window.innerHeight - height - 10)) + 'px';
   }
   menu.querySelector('button')?.focus();
+}
+function closeRuntimeMenu(restoreFocus = false) {
+  const menu = $('#runtimeMenu');
+  menu.hidden = true; menu.style.left = ''; menu.style.top = '';
+  const trigger = $('[data-open-runtime-menu]');
+  trigger?.setAttribute('aria-expanded', 'false');
+  if (restoreFocus) trigger?.focus();
+}
+function openRuntimeMenu(anchor) {
+  closeRegenerateMenu();
+  const menu = $('#runtimeMenu');
+  menu.hidden = false; anchor.setAttribute('aria-expanded', 'true');
+  if (!mobile.matches) {
+    const rect = anchor.getBoundingClientRect(), width = Math.min(220, window.innerWidth - 20);
+    const height = menu.getBoundingClientRect().height || 120;
+    menu.style.left = Math.max(10, Math.min(rect.left, window.innerWidth - width - 10)) + 'px';
+    menu.style.top = (rect.top >= height + 10 ? rect.top - height - 6 : rect.bottom + 6) + 'px';
+  }
+  menu.querySelector('button')?.focus();
+}
+async function runStoryRuntimeAction(actionId) {
+  if (generation) return;
+  const chat = current(), runtime = storyRuntimeState(chat);
+  if (actionId === 'prepare_story') {
+    if (runtime.enabled) return;
+    setStoryRuntimeMode(chat, 'setup', actionId); renderConversation(); await persistChat(chat); toast('已进入资料收集模式'); return;
+  }
+  if ((actionId === 'start_writing' && runtime.mode !== 'setup')
+    || !['start_writing', 'continue_story', 'continue_incomplete'].includes(actionId)
+    || (actionId !== 'start_writing' && runtime.mode !== 'writing')) return;
+  const assistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
+  const variant = activeAssistantVariant(assistant);
+  if (!assistant || variant?.status !== 'complete') return;
+  const control = createRuntimeControl(actionId, variant.id);
+  chat.messages.push(control);
+  if (actionId === 'start_writing') setStoryRuntimeMode(chat, 'writing', actionId, control.id);
+  closeRuntimeMenu(); renderConversation(true); await persistChat(chat);
+  void generate(chat, control, null, null, null, actionId);
 }
 
 async function saveActiveStyleReference(chat, message) {
@@ -547,14 +604,15 @@ $('#modelMenu').addEventListener('keydown', event => {
 document.addEventListener('click', event => {
   if (!event.target.closest('.model-wrap')) setModelMenu(false);
   if (!event.target.closest('#regenerateMenu') && !event.target.closest('[data-action="regenerate"]')) closeRegenerateMenu();
+  if (!event.target.closest('#runtimeMenu') && !event.target.closest('[data-open-runtime-menu]')) closeRuntimeMenu();
 });
 $('#openSidebar').addEventListener('click', openSidebar);
 $('#closeSidebar').addEventListener('click', () => closeSidebar(true));
 $('#mobileScrim').addEventListener('click', () => closeSidebar(true));
 mobile.addEventListener('change', event => {
-  closeSidebar(); closeRegenerateMenu(); storyPanelExpanded = !event.matches; renderConversation();
+  closeSidebar(); closeRegenerateMenu(); closeRuntimeMenu(); storyPanelExpanded = !event.matches; renderConversation();
 });
-$('#settingsButton').addEventListener('click', () => { closeSidebar(); closeRegenerateMenu(); syncSettingsUi(); $('#settingsDialog').showModal(); });
+$('#settingsButton').addEventListener('click', () => { closeSidebar(); closeRegenerateMenu(); closeRuntimeMenu(); syncSettingsUi(); $('#settingsDialog').showModal(); });
 $('#settingsDialog').addEventListener('close', () => { if (mobile.matches) $('#openSidebar').focus(); });
 $('#quickTheme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $$('[data-theme-choice]').forEach(button => button.addEventListener('click', () => setTheme(button.dataset.themeChoice)));
@@ -728,6 +786,10 @@ async function copy(text) {
   catch { toast('Clipboard unavailable. Please select and copy the text.'); }
 }
 conversation.addEventListener('click', async event => {
+  const runtimeAction = event.target.closest('[data-story-runtime-action]');
+  if (runtimeAction) { void runStoryRuntimeAction(runtimeAction.dataset.storyRuntimeAction); return; }
+  const runtimeMenuTrigger = event.target.closest('[data-open-runtime-menu]');
+  if (runtimeMenuTrigger) { openRuntimeMenu(runtimeMenuTrigger); return; }
   if (event.target.closest('[data-toggle-story-panel]')) {
     storyPanelExpanded = !storyPanelExpanded; renderConversation(); return;
   }
@@ -776,6 +838,7 @@ conversation.addEventListener('click', async event => {
         catch { toast('Could not revise this branch because local memory cleanup failed.'); return; }
       }
       storyMemorySnapshots = storyMemorySnapshots.filter(snapshot => snapshot.chatId !== chat.id || !prunedAnchors.has(snapshot.anchorId));
+      pruneStoryRuntimeTransitions(chat, prunedAnchors);
       message.content = value; message.updatedAt = new Date().toISOString();
       removeUserDescendants(chat, message.id); editingId = null; renderConversation(true);
       await persistChat(chat); void generate(chat, message); break;
@@ -784,7 +847,7 @@ conversation.addEventListener('click', async event => {
 });
 document.addEventListener('keydown', event => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && !$('#settingsDialog').open) { event.preventDefault(); void newChat(); }
-  if (event.key === 'Escape') { closeSidebar(true); setModelMenu(false); closeRegenerateMenu(true); }
+  if (event.key === 'Escape') { closeSidebar(true); setModelMenu(false); closeRegenerateMenu(true); closeRuntimeMenu(true); }
   if (event.key === 'Tab' && mobile.matches && $('#sidebar').classList.contains('open')) {
     const controls = $$('button:not([disabled]),input', $('#sidebar')).filter(el => el.getClientRects().length);
     if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
@@ -798,6 +861,10 @@ $('#regenerateMenu').addEventListener('click', event => {
   const reason = option.dataset.regenerationReason;
   closeRegenerateMenu();
   if (messageId) void retry(messageId, reason);
+});
+$('#runtimeMenu').addEventListener('click', event => {
+  const option = event.target.closest('[data-story-runtime-action]');
+  if (option) void runStoryRuntimeAction(option.dataset.storyRuntimeAction);
 });
 new ResizeObserver(() => {
   conversation.style.paddingBottom = Math.ceil($('.composer-dock').getBoundingClientRect().height + 28) + 'px';

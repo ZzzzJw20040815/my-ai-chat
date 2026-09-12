@@ -252,6 +252,10 @@ html[data-theme="light"] .moon-icon { display: none; }
 .conversation.has-wallpaper .chat-heading { text-shadow: 0 1px 18px color-mix(in srgb, var(--bg) 62%, transparent); }
 .chat-heading .eyebrow { color: var(--muted); }
 .chat-heading h1 { margin: 6px 0 0; font-size: clamp(23px, 2.3vw, 30px); letter-spacing: -.035em; line-height: 1.2; }
+.story-runtime-control { min-width: 0; margin-top: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.story-runtime-control .small-button { min-height: 38px; background: var(--glass-bg-strong); }
+.story-runtime-status { min-height: 38px; padding: 0 11px; display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--glass-border); border-radius: 10px; background: var(--glass-bg-soft); color: var(--text); font-size: 12px; box-shadow: var(--glass-shadow-soft); }
+.story-runtime-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-strong); box-shadow: 0 0 0 3px var(--accent-soft); }
 .story-panel {
   max-width: 100%; margin-top: 18px; padding: 13px 14px; overflow: hidden; border: 1px solid var(--glass-border);
   border-radius: 15px; background: var(--glass-bg); box-shadow: var(--glass-shadow-soft); color: var(--text);
@@ -442,6 +446,14 @@ html[data-theme="light"] .moon-icon { display: none; }
 .regenerate-menu > strong { display: block; padding: 8px 10px 6px; color: var(--muted); font-size: 12px; }
 .regenerate-menu button { width: 100%; min-height: 42px; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; text-align: left; font-size: 13px; }
 .regenerate-menu button:hover, .regenerate-menu button:focus-visible { background: var(--control-glass-bg); }
+.runtime-menu {
+  position: fixed; z-index: 90; width: min(220px, calc(100vw - 20px)); max-height: min(180px, calc(100dvh - 20px));
+  padding: 8px; overflow-y: auto; overflow-x: hidden; border: 1px solid var(--glass-border-strong); border-radius: 13px;
+  background: var(--glass-bg-strong); box-shadow: var(--glass-shadow); -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(115%); backdrop-filter: blur(var(--glass-blur)) saturate(115%);
+}
+.runtime-menu > strong { display: block; padding: 8px 10px 6px; color: var(--muted); font-size: 12px; }
+.runtime-menu button { width: 100%; min-height: 44px; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; text-align: left; font-size: 13px; }
+.runtime-menu button:hover, .runtime-menu button:focus-visible { background: var(--control-glass-bg); }
 
 .toast { position: fixed; z-index: 100; right: 22px; bottom: 22px; padding: 10px 13px; border: 1px solid var(--glass-border-strong); border-radius: 10px; background: var(--glass-bg-strong); color: var(--text); box-shadow: var(--glass-shadow); font-size: 13px; opacity: 0; pointer-events: none; transform: translateY(7px); transition: opacity 150ms ease, transform 150ms ease; }
 .toast.show { opacity: 1; transform: translateY(0); }
@@ -505,8 +517,10 @@ html[data-theme="light"] .moon-icon { display: none; }
   .compact-field:last-child { grid-column: 1 / -1; }
   .safety-category-row { grid-template-columns: 1fr; gap: 8px; }
   .safety-levels button { min-height: 44px; font-size: 10px; }
+  .story-runtime-control .small-button, .story-runtime-status { min-height: 44px; }
   .regenerate-menu { right: 10px; bottom: max(10px, env(safe-area-inset-bottom)); left: 10px !important; top: auto !important; width: auto; max-height: calc(100dvh - max(20px, env(safe-area-inset-top)) - max(20px, env(safe-area-inset-bottom))); border-radius: 16px; }
   .regenerate-menu button { min-height: 44px; }
+  .runtime-menu { right: 10px; bottom: max(10px, env(safe-area-inset-bottom)); left: 10px !important; top: auto !important; width: auto; max-height: calc(100dvh - max(20px, env(safe-area-inset-top)) - max(20px, env(safe-area-inset-bottom))); border-radius: 16px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

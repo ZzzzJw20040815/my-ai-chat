@@ -26,7 +26,7 @@ export function applicableStoryMemory(chat, snapshots = []) {
 }
 
 export function storyMemoryConversation(chat) {
-  return visibleConversationPath(chat).map(message => {
+  return visibleConversationPath(chat).filter(message => message.kind !== 'runtime-control').map(message => {
     const source = message.role === 'assistant' ? activeAssistantVariant(message) : message;
     return {
       id: source.id,

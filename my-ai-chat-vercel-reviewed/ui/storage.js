@@ -1,6 +1,7 @@
 import { DEFAULT_MODEL, isPersistableModelId } from '../shared/models.js';
 import { ensureBranchLineage } from './state.js';
 import { validateStoryMemory, STORY_MEMORY_SCHEMA_VERSION } from '../shared/story-memory.js';
+import { isStoryRuntimeAction, normalizeStoryRuntime } from '../shared/story-runtime.js';
 
 export const CHAT_DB_NAME = 'my-ai-chat';
 export const CHAT_DB_VERSION = 4;
@@ -106,6 +107,11 @@ function normalizeMessage(message) {
   if (normalized.role === 'user' && Object.hasOwn(message, 'parentVariantId')) {
     normalized.parentVariantId = message.parentVariantId == null ? null : String(message.parentVariantId);
   }
+  if (normalized.role === 'user' && message.kind === 'runtime-control' && isStoryRuntimeAction(message.runtimeAction)) {
+    normalized.kind = 'runtime-control';
+    normalized.runtimeAction = message.runtimeAction;
+    normalized.content = '';
+  }
   if (normalized.role === 'assistant' && Object.hasOwn(message, 'parentUserId')) {
     normalized.parentUserId = message.parentUserId == null ? null : String(message.parentUserId);
   }
@@ -125,6 +131,7 @@ export function storedChat(chat) {
     demo: chat.demo === true,
     // Records created before timestamp titles have no flag, so their existing title stays locked.
     titleInitialized: chat.titleInitialized === false ? false : true,
+    storyRuntime: normalizeStoryRuntime(chat.storyRuntime),
   };
   ensureBranchLineage(stored);
   return stored;

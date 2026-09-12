@@ -271,6 +271,11 @@
     </dialog>
 
     <div class="regenerate-menu" id="regenerateMenu" role="menu" aria-label="重新生成" hidden></div>
+    <div class="runtime-menu" id="runtimeMenu" role="menu" aria-label="故事操作" hidden>
+      <strong>故事操作</strong>
+      <button type="button" role="menuitem" data-story-runtime-action="continue_story">继续故事</button>
+      <button type="button" role="menuitem" data-story-runtime-action="continue_incomplete">继续未完成</button>
+    </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script type="module" src="./app.js"></script>
