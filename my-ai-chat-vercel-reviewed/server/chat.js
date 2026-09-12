@@ -5,6 +5,7 @@ import {
   MAX_OUTPUT_TOKENS_LIMIT, MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_MODES,
   SAFETY_THRESHOLDS, SAMPLING_LIMITS, THINKING_LEVELS,
 } from '../shared/settings.js';
+import { storyMemorySystemInstruction, validateStoryMemory } from '../shared/story-memory.js';
 
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_MESSAGES = 100;
@@ -51,7 +52,12 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
     return { role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] };
   });
   if (contents.at(-1).role !== 'user') throw new Error('INVALID_REQUEST');
-  return { model: payload.model, contents, config: validateGenerationSettings(payload.settings, authorizedModel) };
+  const config = validateGenerationSettings(payload.settings, authorizedModel);
+  if (payload.storyMemory != null) {
+    const memory = validateStoryMemory(payload.storyMemory);
+    config.systemInstruction = storyMemorySystemInstruction(config.systemInstruction || '', memory);
+  }
+  return { model: payload.model, contents, config };
 }
 function invalidRequest() { throw new Error('INVALID_REQUEST'); }
 function validNumber(value, limits) {
@@ -123,7 +129,7 @@ function safetyBlockedFeedback(chunk) {
     ? ` Category: ${SAFETY_LABELS[rating.category]}. Probability: ${rating.probability}.` : '';
   return ERROR_TEXT.SAFETY_BLOCKED + detail;
 }
-async function readPayload(request) {
+export async function readPayload(request, maxBytes = MAX_BODY_BYTES) {
   const reader = request.body?.getReader();
   if (!reader) throw new Error('INVALID_REQUEST');
   let bytes = 0, text = '';
@@ -133,7 +139,7 @@ async function readPayload(request) {
       const { done, value } = await reader.read();
       if (done) break;
       bytes += value.byteLength;
-      if (bytes > MAX_BODY_BYTES) { await reader.cancel(); throw new Error('CONTEXT_LIMIT'); }
+      if (bytes > maxBytes) { await reader.cancel(); throw new Error('CONTEXT_LIMIT'); }
       text += decoder.decode(value, { stream: true });
     }
     return JSON.parse(text + decoder.decode());

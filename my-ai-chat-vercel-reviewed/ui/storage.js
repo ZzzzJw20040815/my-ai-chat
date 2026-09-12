@@ -1,10 +1,12 @@
 import { DEFAULT_MODEL, isPersistableModelId } from '../shared/models.js';
 import { ensureBranchLineage } from './state.js';
+import { validateStoryMemory, STORY_MEMORY_SCHEMA_VERSION } from '../shared/story-memory.js';
 
 export const CHAT_DB_NAME = 'my-ai-chat';
-export const CHAT_DB_VERSION = 2;
+export const CHAT_DB_VERSION = 3;
 export const CHAT_STORE_NAME = 'chats';
 export const ASSET_STORE_NAME = 'assets';
+export const STORY_MEMORY_STORE_NAME = 'storyMemories';
 export const WALLPAPER_ASSET_ID = 'chat-wallpaper';
 export const CANONICAL_DEMO_ID = 'demo-welcome';
 
@@ -39,6 +41,12 @@ export function openChatDatabase(indexedDBApi = globalThis.indexedDB) {
       }
       if (!database.objectStoreNames.contains(ASSET_STORE_NAME)) {
         database.createObjectStore(ASSET_STORE_NAME, { keyPath: 'id' });
+      }
+      if (!database.objectStoreNames.contains(STORY_MEMORY_STORE_NAME)) {
+        const store = database.createObjectStore(STORY_MEMORY_STORE_NAME, { keyPath: 'id' });
+        store.createIndex('chatId', 'chatId');
+        store.createIndex('anchorId', 'anchorId');
+        store.createIndex('updatedAt', 'updatedAt');
       }
     });
     request.addEventListener('success', () => {
@@ -162,8 +170,74 @@ export async function loadOrSeedChats(createSeedChats, indexedDBApi = globalThis
 
 export async function deleteChat(chatId, indexedDBApi = globalThis.indexedDB) {
   const database = await openChatDatabase(indexedDBApi);
-  const transaction = database.transaction(CHAT_STORE_NAME, 'readwrite');
+  const transaction = database.transaction([CHAT_STORE_NAME, STORY_MEMORY_STORE_NAME], 'readwrite');
   transaction.objectStore(CHAT_STORE_NAME).delete(chatId);
+  const memoryStore = transaction.objectStore(STORY_MEMORY_STORE_NAME);
+  const cursor = memoryStore.index('chatId').openCursor(String(chatId));
+  cursor.addEventListener('success', () => {
+    const item = cursor.result;
+    if (!item) return;
+    item.delete();
+    item.continue();
+  });
+  await transactionDone(transaction);
+}
+
+function storedStoryMemory(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || snapshot.schemaVersion !== STORY_MEMORY_SCHEMA_VERSION
+    || typeof snapshot.id !== 'string' || !snapshot.id || snapshot.id.length > 256
+    || typeof snapshot.chatId !== 'string' || !snapshot.chatId || snapshot.chatId.length > 256
+    || typeof snapshot.anchorId !== 'string' || !snapshot.anchorId || snapshot.anchorId.length > 256
+    || !Number.isFinite(Date.parse(snapshot.createdAt)) || !Number.isFinite(Date.parse(snapshot.updatedAt))) {
+    throw new Error('Invalid story memory snapshot');
+  }
+  return {
+    id: snapshot.id, chatId: snapshot.chatId, anchorId: snapshot.anchorId,
+    schemaVersion: STORY_MEMORY_SCHEMA_VERSION,
+    createdAt: new Date(snapshot.createdAt).toISOString(),
+    updatedAt: new Date(snapshot.updatedAt).toISOString(),
+    memory: validateStoryMemory(snapshot.memory),
+  };
+}
+
+export async function loadStoryMemories(chatId = null, indexedDBApi = globalThis.indexedDB) {
+  const database = await openChatDatabase(indexedDBApi);
+  const transaction = database.transaction(STORY_MEMORY_STORE_NAME, 'readonly');
+  const store = transaction.objectStore(STORY_MEMORY_STORE_NAME);
+  const records = await requestResult(chatId == null ? store.getAll() : store.index('chatId').getAll(String(chatId)));
+  await transactionDone(transaction);
+  return records.map(storedStoryMemory).sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
+}
+
+export async function replaceStoryMemorySnapshot(snapshot, indexedDBApi = globalThis.indexedDB) {
+  const record = storedStoryMemory(snapshot);
+  const database = await openChatDatabase(indexedDBApi);
+  const transaction = database.transaction(STORY_MEMORY_STORE_NAME, 'readwrite');
+  const store = transaction.objectStore(STORY_MEMORY_STORE_NAME);
+  const existing = await requestResult(store.index('anchorId').getAll(record.anchorId));
+  for (const item of existing) if (item.chatId === record.chatId) store.delete(item.id);
+  store.put(record);
+  await transactionDone(transaction);
+  return record;
+}
+
+export async function deleteStoryMemoriesByAnchors(chatId, anchorIds, indexedDBApi = globalThis.indexedDB) {
+  const ids = new Set(anchorIds || []);
+  if (!ids.size) return;
+  const database = await openChatDatabase(indexedDBApi);
+  const transaction = database.transaction(STORY_MEMORY_STORE_NAME, 'readwrite');
+  const store = transaction.objectStore(STORY_MEMORY_STORE_NAME);
+  const records = await requestResult(store.index('chatId').getAll(String(chatId)));
+  for (const item of records) if (ids.has(item.anchorId)) store.delete(item.id);
+  await transactionDone(transaction);
+}
+
+export async function deleteStoryMemoriesForChat(chatId, indexedDBApi = globalThis.indexedDB) {
+  const database = await openChatDatabase(indexedDBApi);
+  const transaction = database.transaction(STORY_MEMORY_STORE_NAME, 'readwrite');
+  const store = transaction.objectStore(STORY_MEMORY_STORE_NAME);
+  const records = await requestResult(store.index('chatId').getAll(String(chatId)));
+  for (const item of records) store.delete(item.id);
   await transactionDone(transaction);
 }
 
