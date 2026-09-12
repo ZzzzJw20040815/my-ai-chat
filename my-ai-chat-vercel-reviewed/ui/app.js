@@ -44,6 +44,7 @@ import {
   storyMemoryConversation,
   storySubtreeAnchorIds,
 } from './story-memory.js';
+import { storyPanelView } from './story-panel.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -83,6 +84,7 @@ const conversation = $('#conversation'), input = $('#messageInput');
 const wallpaperPresenter = createWallpaperPresenter({ conversation, preview: $('#wallpaperPreview') });
 const sendIcon = $('#sendButton').innerHTML;
 const mobile = matchMedia('(max-width: 819px)');
+let storyPanelExpanded = !mobile.matches;
 const current = () => chats.get(activeChat);
 
 function toast(message) {
@@ -160,6 +162,41 @@ function messageHtml(message) {
     action('dislike', 'Dislike', icons.dislike, variant.feedback === 'dislike', generating) + variantNav +
     '</div><span class="message-model">' + escapeHtml(modelName(variant.model)) + '</span></div>';
 }
+function panelList(title, items) {
+  if (!items.length) return '';
+  return '<section class="story-panel-section"><h3>' + escapeHtml(title) + '</h3><ul>' +
+    items.map(item => '<li>' + escapeHtml(item) + '</li>').join('') + '</ul></section>';
+}
+function storyPanelHtml(snapshot, disabled) {
+  const view = storyPanelView(snapshot);
+  const update = '<button class="small-button" type="button" data-update-story-memory' + (disabled ? ' disabled' : '') + '>' +
+    (storyMemoryBusy ? 'Updating…' : 'Update Memory') + '</button>';
+  if (!view) return '<section class="story-memory-control story-panel empty" aria-label="Story Memory"><div><strong>Story Memory</strong>' +
+    '<p>Story Memory not created yet.</p></div>' + update + '</section>';
+  const summary = [view.centralCharacter, [view.location, view.time].filter(Boolean).join(' · '), view.relationshipSummary].filter(Boolean);
+  const sceneFacts = [
+    ...(view.location ? ['Location: ' + view.location] : []),
+    ...(view.time ? ['Time: ' + view.time] : []),
+    ...view.sceneState,
+  ];
+  const sections = [
+    panelList('Central Character', view.centralCharacter ? [view.centralCharacter] : []),
+    panelList('Scene', sceneFacts),
+    panelList('Relationship', [view.relationshipSummary, ...view.relationshipChanges].filter(Boolean)),
+    panelList('Current State', view.currentState),
+    panelList('Clothing / Appearance', view.appearance),
+    panelList('Important Memories', view.importantMemories),
+    panelList('Unresolved Threads', view.unresolvedThreads),
+    panelList('Other Characters', view.otherCharacters),
+  ].filter(Boolean).join('');
+  return '<section class="story-memory-control story-panel' + (storyPanelExpanded ? ' expanded' : ' collapsed') + '" aria-label="Story Memory">' +
+    '<header class="story-panel-head"><div><strong>Story Memory</strong><span>' + escapeHtml(memoryStatusText(snapshot)) + '</span></div>' +
+    '<div class="story-panel-actions">' + update + '<button class="story-panel-toggle" type="button" data-toggle-story-panel aria-expanded="' +
+    storyPanelExpanded + '" aria-label="' + (storyPanelExpanded ? 'Collapse Story Memory' : 'Expand Story Memory') + '">' +
+    (storyPanelExpanded ? '⌃' : '⌄') + '</button></div></header>' +
+    (summary.length ? '<div class="story-panel-summary">' + summary.map(item => '<span>' + escapeHtml(item) + '</span>').join('') + '</div>' : '') +
+    (storyPanelExpanded ? '<div class="story-panel-grid">' + sections + '</div>' : '') + '</section>';
+}
 function renderConversation(bottom = false) {
   const chat = current(), saved = conversation.scrollTop;
   const memory = applicableStoryMemory(chat, storyMemorySnapshots);
@@ -167,9 +204,7 @@ function renderConversation(bottom = false) {
   conversation.innerHTML = '<div class="conversation-inner"><div class="chat-heading"><p class="eyebrow">' +
     escapeHtml(chat.demo ? 'Demo conversation · ' + modelName(chat.model) : chat.group + ' · ' + modelName(chat.model)) +
     '</p><h1>' + escapeHtml(chat.messages.length ? chat.title : 'What would you like to explore?') +
-    '</h1><div class="story-memory-control"><span>' + escapeHtml(memoryStatusText(memory)) +
-    '</span><button class="small-button" type="button" data-update-story-memory' + (memoryDisabled ? ' disabled' : '') + '>' +
-    (storyMemoryBusy ? 'Updating…' : 'Update Memory') + '</button></div></div><div class="messages"></div></div>';
+    '</h1>' + storyPanelHtml(memory, memoryDisabled) + '</div><div class="messages"></div></div>';
   for (const message of visibleConversationPath(chat)) {
     const article = document.createElement('article'); article.className = 'message ' + message.role;
     article.dataset.messageId = message.id; article.innerHTML = messageHtml(message);
@@ -454,7 +489,9 @@ document.addEventListener('click', event => { if (!event.target.closest('.model-
 $('#openSidebar').addEventListener('click', openSidebar);
 $('#closeSidebar').addEventListener('click', () => closeSidebar(true));
 $('#mobileScrim').addEventListener('click', () => closeSidebar(true));
-mobile.addEventListener('change', () => closeSidebar());
+mobile.addEventListener('change', event => {
+  closeSidebar(); storyPanelExpanded = !event.matches; renderConversation();
+});
 $('#settingsButton').addEventListener('click', () => { closeSidebar(); syncSettingsUi(); $('#settingsDialog').showModal(); });
 $('#settingsDialog').addEventListener('close', () => { if (mobile.matches) $('#openSidebar').focus(); });
 $('#quickTheme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
@@ -616,6 +653,9 @@ async function copy(text) {
   catch { toast('Clipboard unavailable. Please select and copy the text.'); }
 }
 conversation.addEventListener('click', async event => {
+  if (event.target.closest('[data-toggle-story-panel]')) {
+    storyPanelExpanded = !storyPanelExpanded; renderConversation(); return;
+  }
   if (event.target.closest('[data-update-story-memory]')) { void updateStoryMemory(); return; }
   const codeCopy = event.target.closest('[data-code-copy]');
   if (codeCopy) { void copy($('code', codeCopy.closest('.code-block')).textContent); return; }

@@ -104,9 +104,14 @@ function submitMessage(text) {
 
 const storyMemoryFixture = () => ({
   version: 1,
-  scene: { location: null, time: null, presentCharacters: [], relativePositions: [], environmentState: [], importantObjects: [] },
-  characters: [], relationship: { summary: '', establishedChanges: [], sharedHistory: [], unresolvedTension: [] },
-  importantEvents: [], knownFacts: ['The code is 7263.'], unknownOrUnconfirmed: [], unresolvedThreads: [],
+  scene: { location: 'Riverside library', time: 'Late evening', presentCharacters: ['Mira'], relativePositions: [], environmentState: ['Rain at the windows'], importantObjects: [] },
+  characters: [{
+    idOrName: 'Mira', name: 'Mira', identity: [], visualAnchors: ['Silver hairpin'], publicPersona: [],
+    observedDisposition: ['Careful and observant'], speechFingerprint: [], behavioralTells: [], knownPreferences: [],
+    knownBoundaries: [], currentState: ['Tired'], currentClothing: ['Dark wool coat'], relationshipToProtagonist: [],
+  }],
+  relationship: { summary: 'Private trust is growing.', establishedChanges: [], sharedHistory: [], unresolvedTension: [] },
+  importantEvents: [], knownFacts: ['The code is 7263.'], unknownOrUnconfirmed: [], unresolvedThreads: ['Who left the letter?'],
 });
 
 test('manual Story Memory update persists and becomes supplemental context after reload', async () => {
@@ -121,13 +126,22 @@ test('manual Story Memory update persists and becomes supplemental context after
   };
   let dom = installDom(indexedDB, fetchMock, storage);
   await import('../ui/app.js?story-memory=first');
-  document.querySelector('#newChatButton').click(); submitMessage('Remember code 7263.');
+  document.querySelector('#newChatButton').click();
+  assert.match(document.querySelector('.story-panel').textContent, /Story Memory not created yet/);
+  submitMessage('Remember code 7263.');
   await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.at(-1)?.status === 'complete');
   document.querySelector('[data-update-story-memory]').click();
   const snapshot = await waitFor(async () => (await loadStoryMemories(null, indexedDB))[0]);
   assert.equal(snapshot.anchorId, extractionPayload.messages.at(-1).id);
   assert.deepEqual(extractionPayload.messages.map(item => item.content), ['Remember code 7263.', '可控回复 1。']);
   assert.match(document.querySelector('.story-memory-control').textContent, /updated/i);
+  assert.match(document.querySelector('.story-panel').textContent, /Mira/);
+  assert.match(document.querySelector('.story-panel').textContent, /Riverside library/);
+  assert.match(document.querySelector('.story-panel').textContent, /Who left the letter/);
+  document.querySelector('[data-toggle-story-panel]').click();
+  assert.equal(document.querySelector('.story-panel-grid'), null);
+  document.querySelector('[data-toggle-story-panel]').click();
+  assert.ok(document.querySelector('.story-panel-grid'));
   submitMessage('What is the code?');
   await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 4);
   assert.deepEqual(chatFetch.payloads.at(-1).storyMemory.knownFacts, ['The code is 7263.']);
@@ -135,6 +149,7 @@ test('manual Story Memory update persists and becomes supplemental context after
   dom.window.close(); dom = installDom(indexedDB, fetchMock, storage);
   await import('../ui/app.js?story-memory=reopen');
   assert.match(document.querySelector('.story-memory-control').textContent, /updated/i);
+  assert.match(document.querySelector('.story-panel').textContent, /Private trust is growing/);
   assert.equal((await loadStoryMemories(null, indexedDB)).length, 1);
   dom.window.close(); await closeChatDatabase();
 });
