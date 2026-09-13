@@ -61,6 +61,23 @@ test('runtime transitions are branch-aware and deepest applicable state wins', (
   assert.equal(storyRuntimeState(chat).mode, 'setup');
 });
 
+test('exit_story disables only the active branch and survives persistence', async () => {
+  const { chat, turn, b2, d } = branchChat();
+  setStoryRuntimeMode(chat, 'setup', 'prepare_story', null, new Date('2026-09-12T01:00:00Z'));
+  setStoryRuntimeMode(chat, 'writing', 'start_writing', activeAssistantVariant(d).id, new Date('2026-09-12T01:01:00Z'));
+  setStoryRuntimeMode(chat, 'disabled', 'exit_story', activeAssistantVariant(d).id, new Date('2026-09-12T01:02:00Z'));
+  assert.equal(storyRuntimeState(chat).enabled, false);
+  assert.equal(storyRuntimeState(chat).transition.action, 'exit_story');
+  turn.activeVariantId = b2.id;
+  assert.equal(storyRuntimeState(chat).mode, 'setup');
+  turn.activeVariantId = turn.variants[0].id;
+  const indexedDB = new IDBFactory();
+  await saveChat(chat, indexedDB);
+  const restored = (await loadChats(indexedDB))[0];
+  assert.equal(storyRuntimeState(restored).enabled, false);
+  assert.equal(storyRuntimeState(restored).transition.action, 'exit_story');
+});
+
 test('control nodes preserve response variants but never become visible prompt or Story Memory facts', () => {
   const chat = createChat(MODEL), user = createMessage('user', 'Premise');
   const reply = createMessage('assistant', 'Understood.', MODEL); reply.parentUserId = user.id;
@@ -117,6 +134,8 @@ test('writing rules preserve agency, limited POV, continuity and one-call action
 
 test('normalization ignores malformed runtime transitions without damaging chat data', () => {
   assert.deepEqual(normalizeStoryRuntime({ transitions: [{ id: 'bad', anchorId: null, mode: 'writing', action: 'prepare_story', createdAt: 'bad' }] }), { version: 1, transitions: [] });
+  const exited = normalizeStoryRuntime({ transitions: [{ id: 'exit', anchorId: 'branch', mode: 'disabled', action: 'exit_story', createdAt: '2026-09-12T01:00:00Z' }] });
+  assert.equal(exited.transitions[0].action, 'exit_story');
 });
 
 test('runtime UI is Chinese, compact, mobile-safe, and preserves Phase 4C reasons', async () => {
@@ -126,10 +145,10 @@ test('runtime UI is Chinese, compact, mobile-safe, and preserves Phase 4C reason
     readFile(new URL('../ui/styles.css', import.meta.url), 'utf8'),
     import('../shared/response-quality.js'),
   ]);
-  for (const label of ['准备故事', '资料收集中', '开始正文', '正文中', '继续故事', '继续未完成']) assert.match(html + app, new RegExp(label));
+  for (const label of ['故事', '准备故事', '资料收集中', '开始正文', '正文中', '继续故事', '继续未完成', '退出故事模式']) assert.match(html + app, new RegExp(label));
   assert.deepEqual(quality.REGENERATION_REASON_OPTIONS.map(item => item.id), ['try_again', 'character_off', 'too_repetitive', 'too_fast', 'acted_for_me', 'continuity_issue']);
-  assert.match(css, /\.runtime-menu\s*\{[^}]*position:\s*fixed[^}]*max-height:/s);
-  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.runtime-menu\s*\{[^}]*bottom:\s*max\(10px, env\(safe-area-inset-bottom\)\)/);
+  assert.match(css, /\.surface-menu\s*\{[^}]*position:\s*fixed[^}]*max-height|\.runtime-menu\s*\{[^}]*max-height:/s);
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.surface-menu\s*\{[^}]*env\(safe-area-inset-bottom\)/);
   assert.match(css, /\.runtime-menu button\s*\{[^}]*min-height:\s*44px/s);
   assert.match(css, /\.story-runtime-control \.(?:small-button|small-button, \.story-runtime-status)[^}]*min-height:\s*44px/s);
 });

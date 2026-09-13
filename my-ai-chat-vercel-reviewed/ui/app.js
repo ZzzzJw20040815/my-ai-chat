@@ -44,11 +44,14 @@ import {
   commitStoryMemoryUpdate,
   createStoryMemorySnapshot,
   currentStoryAnchor,
+  classifyStoryMemoryUpdateError,
   memoryStatusText,
+  StoryMemoryUpdateError,
   storyMemoryConversation,
   storySubtreeAnchorIds,
 } from './story-memory.js';
 import { storyPanelView } from './story-panel.js';
+import { clearMobileSheetPosition, positionMobileSheet } from './mobile-sheet.js';
 import { REGENERATION_REASON_OPTIONS, styleReferenceRequestItems } from '../shared/response-quality.js';
 import {
   createRuntimeControl, isRuntimeControlMessage, pruneStoryRuntimeTransitions,
@@ -80,6 +83,7 @@ let modelCatalogBusy = false;
 let storyMemoryBusy = false, storyMemoryLoaded = false, storyMemorySnapshots = [];
 let styleReferences = [];
 let persistenceStatus = { state: 'checking', supported: true };
+let activeSurfaceMenu = null;
 const modelCatalog = createModelCatalog();
 let globalSettings = loadGlobalSettings();
 function ensureAvailableDefaultModel(confirmed = !!modelCatalog.syncedAt) {
@@ -179,6 +183,11 @@ function panelList(title, items) {
   return '<section class="story-panel-section"><h3>' + escapeHtml(title) + '</h3><ul>' +
     items.map(item => '<li>' + escapeHtml(item) + '</li>').join('') + '</ul></section>';
 }
+function mobilePanelList(title, items) {
+  if (!items.length) return '';
+  return '<section class="story-panel-section"><h3>' + escapeHtml(title) + '</h3><ul>' +
+    items.map(item => '<li>' + escapeHtml(item) + '</li>').join('') + '</ul></section>';
+}
 function storyPanelHtml(snapshot, disabled) {
   const view = storyPanelView(snapshot);
   const update = '<button class="small-button" type="button" data-update-story-memory' + (disabled ? ' disabled' : '') + '>' +
@@ -216,7 +225,8 @@ function storyRuntimeHtml(chat) {
   if (!runtime.enabled) return '<div class="story-runtime-control"><button class="small-button" type="button" data-story-runtime-action="prepare_story"' +
     (generation ? ' disabled' : '') + '>准备故事</button></div>';
   if (runtime.mode === 'setup') return '<div class="story-runtime-control"><span class="story-runtime-status"><i></i>资料收集中</span>' +
-    '<button class="small-button primary" type="button" data-story-runtime-action="start_writing"' + (ready ? '' : ' disabled') + '>开始正文</button></div>';
+    '<button class="small-button primary" type="button" data-story-runtime-action="start_writing"' + (ready ? '' : ' disabled') + '>开始正文</button>' +
+    '<button class="small-button" type="button" data-story-runtime-action="exit_story">退出故事模式</button></div>';
   return '<div class="story-runtime-control"><span class="story-runtime-status"><i></i>正文中</span>' +
     '<button class="small-button" type="button" data-open-runtime-menu' + (ready ? '' : ' disabled') + ' aria-haspopup="menu" aria-expanded="false">故事操作</button></div>';
 }
@@ -239,31 +249,57 @@ function renderConversation(bottom = false) {
 async function updateStoryMemory() {
   const chat = current();
   if (storyMemoryBusy || generation || !chat) return;
+  let stage = 'anchor';
   const anchorId = currentStoryAnchor(chat);
-  if (!anchorId) return;
+  const messages = storyMemoryConversation(chat);
+  if (!anchorId || !messages.some(message => message.id === anchorId)) {
+    const error = new StoryMemoryUpdateError('MEMORY_INVALID_ANCHOR');
+    console.error('[StoryMemoryUpdate]', { code: error.code, stage });
+    toast('暂时无法更新故事记忆，对话未受影响。');
+    return;
+  }
   const applicable = applicableStoryMemory(chat, storyMemorySnapshots);
   storyMemoryBusy = true; renderConversation();
+  if (!$('#storyMenu').hidden) renderStoryMenu($('#storyMenu').dataset.view || 'overview');
   try {
+    stage = 'extraction';
     const response = await fetch('/api/story-memory', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: chat.model, chatId: chat.id, anchorId,
-        messages: storyMemoryConversation(chat), existingMemory: applicable?.memory || null,
+        messages, existingMemory: applicable?.memory || null,
       }),
     });
     const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.memory) throw new Error('Story memory request failed');
-    if (!allStoryAnchors(chat).has(anchorId)) throw new Error('Story branch changed');
-    const snapshot = createStoryMemorySnapshot({ chatId: chat.id, anchorId, memory: payload.memory });
+    if (!response.ok) {
+      const serverCode = payload?.error?.code;
+      throw new StoryMemoryUpdateError(serverCode === 'MEMORY_INVALID' ? 'MEMORY_INVALID_JSON' : 'MEMORY_EXTRACTION_FAILED', {
+        serverCode: typeof serverCode === 'string' ? serverCode : null, status: response.status,
+      });
+    }
+    if (!payload?.memory) throw new StoryMemoryUpdateError('MEMORY_INVALID_JSON');
+    stage = 'validation';
+    let snapshot;
+    try { snapshot = createStoryMemorySnapshot({ chatId: chat.id, anchorId, memory: payload.memory }); }
+    catch { throw new StoryMemoryUpdateError('MEMORY_INVALID_JSON'); }
+    stage = 'anchor';
+    if (!allStoryAnchors(chat).has(anchorId)) throw new StoryMemoryUpdateError('MEMORY_INVALID_ANCHOR');
+    stage = 'storage';
     storyMemorySnapshots = await commitStoryMemoryUpdate(
       storyMemorySnapshots, snapshot, item => replaceStoryMemorySnapshot(item),
     );
-    toast('Memory updated.');
-  } catch {
-    toast('Could not update story memory. Your chat was not changed.');
+    toast('故事记忆已更新');
+  } catch (error) {
+    const code = classifyStoryMemoryUpdateError(error, stage);
+    console.error('[StoryMemoryUpdate]', {
+      code, stage, serverCode: error?.details?.serverCode || null,
+      status: error?.details?.status || null, name: error?.name || 'Error',
+    });
+    toast('无法更新故事记忆，对话未受影响。');
   } finally {
     storyMemoryBusy = false;
     if (current()?.id === chat.id) renderConversation();
+    if (!$('#storyMenu').hidden) renderStoryMenu($('#storyMenu').dataset.view || 'overview');
   }
 }
 function updateMessage(chatId, message) {
@@ -308,7 +344,7 @@ function openSidebar() {
 function selectChat(id) {
   current().draft = input.value; current().scrollTop = conversation.scrollTop;
   activeChat = id; editingId = null; input.value = current().draft;
-  closeRegenerateMenu(); closeRuntimeMenu();
+  closeRegenerateMenu(); closeRuntimeMenu(); closeStoryMenu();
   rememberActiveChat(activeChat);
   closeSidebar(); syncModel(); syncComposer(); renderHistory(); renderConversation();
   conversation.scrollTop = current().scrollTop;
@@ -483,11 +519,31 @@ async function retry(messageId, regenerationReason = null) {
   void generate(chat, user, message, variant, regenerationReason, isRuntimeControlMessage(user) ? user.runtimeAction : null);
 }
 
+function hideSurfaceMenu(menu) {
+  if (!menu) return;
+  menu.hidden = true;
+  clearMobileSheetPosition(menu, $('#sheetScrim'));
+  if (menu.id === 'storyMenu') $('#mobileStoryButton').setAttribute('aria-expanded', 'false');
+  if (menu.id === 'runtimeMenu') $('[data-open-runtime-menu]')?.setAttribute('aria-expanded', 'false');
+  if (activeSurfaceMenu === menu) activeSurfaceMenu = null;
+  if (!activeSurfaceMenu) $('#sheetScrim').hidden = true;
+}
+function showSurfaceMenu(menu) {
+  for (const other of $$('.surface-menu')) if (other !== menu) hideSurfaceMenu(other);
+  menu.hidden = false; activeSurfaceMenu = menu;
+  if (mobile.matches) {
+    $('#sheetScrim').hidden = false;
+    positionMobileSheet(menu, $('#sheetScrim'));
+  } else $('#sheetScrim').hidden = true;
+}
+function repositionActiveSurfaceMenu() {
+  if (mobile.matches && activeSurfaceMenu && !activeSurfaceMenu.hidden) {
+    positionMobileSheet(activeSurfaceMenu, $('#sheetScrim'));
+  }
+}
 function closeRegenerateMenu(restoreFocus = false) {
-  const menu = $('#regenerateMenu');
-  const messageId = menu.dataset.messageId;
-  menu.hidden = true; menu.removeAttribute('data-message-id');
-  menu.style.left = ''; menu.style.top = '';
+  const menu = $('#regenerateMenu'), messageId = menu.dataset.messageId;
+  hideSurfaceMenu(menu); menu.removeAttribute('data-message-id');
   if (restoreFocus && messageId) $('[data-message-id="' + messageId + '"] [data-action="regenerate"]')?.focus();
 }
 function openRegenerateMenu(messageId, anchor) {
@@ -495,18 +551,18 @@ function openRegenerateMenu(messageId, anchor) {
   menu.innerHTML = '<strong>重新生成</strong>' + REGENERATION_REASON_OPTIONS.map(option =>
     '<button type="button" role="menuitem" data-regeneration-reason="' + option.id + '">' + escapeHtml(option.label) + '</button>'
   ).join('');
-  menu.dataset.messageId = messageId; menu.hidden = false;
+  menu.dataset.messageId = messageId; showSurfaceMenu(menu);
   if (!mobile.matches) {
     const rect = anchor.getBoundingClientRect(), width = Math.min(250, window.innerWidth - 20);
     const height = menu.getBoundingClientRect().height || 310;
     menu.style.left = Math.max(10, Math.min(rect.left, window.innerWidth - width - 10)) + 'px';
     menu.style.top = (rect.top >= height + 10 ? rect.top - height - 6 : Math.min(rect.bottom + 6, window.innerHeight - height - 10)) + 'px';
   }
-  menu.querySelector('button')?.focus();
+  if (!mobile.matches) menu.querySelector('button')?.focus();
 }
 function closeRuntimeMenu(restoreFocus = false) {
   const menu = $('#runtimeMenu');
-  menu.hidden = true; menu.style.left = ''; menu.style.top = '';
+  hideSurfaceMenu(menu);
   const trigger = $('[data-open-runtime-menu]');
   trigger?.setAttribute('aria-expanded', 'false');
   if (restoreFocus) trigger?.focus();
@@ -514,21 +570,96 @@ function closeRuntimeMenu(restoreFocus = false) {
 function openRuntimeMenu(anchor) {
   closeRegenerateMenu();
   const menu = $('#runtimeMenu');
-  menu.hidden = false; anchor.setAttribute('aria-expanded', 'true');
+  menu.innerHTML = '<strong>故事操作</strong>' +
+    '<button type="button" role="menuitem" data-story-runtime-action="continue_story">继续故事</button>' +
+    '<button type="button" role="menuitem" data-story-runtime-action="continue_incomplete">继续未完成</button>' +
+    '<button type="button" role="menuitem" data-story-runtime-action="exit_story">退出故事模式</button>';
+  showSurfaceMenu(menu); anchor.setAttribute('aria-expanded', 'true');
   if (!mobile.matches) {
     const rect = anchor.getBoundingClientRect(), width = Math.min(220, window.innerWidth - 20);
-    const height = menu.getBoundingClientRect().height || 120;
+    const height = menu.getBoundingClientRect().height || 180;
     menu.style.left = Math.max(10, Math.min(rect.left, window.innerWidth - width - 10)) + 'px';
     menu.style.top = (rect.top >= height + 10 ? rect.top - height - 6 : rect.bottom + 6) + 'px';
   }
-  menu.querySelector('button')?.focus();
+  if (!mobile.matches) menu.querySelector('button')?.focus();
+}
+function closeStoryMenu(restoreFocus = false) {
+  hideSurfaceMenu($('#storyMenu'));
+  $('#mobileStoryButton').setAttribute('aria-expanded', 'false');
+  if (restoreFocus) $('#mobileStoryButton').focus();
+}
+function storyAction(actionId, label, { primary = false, disabled = false, detail = '' } = {}) {
+  return '<button class="story-menu-action' + (primary ? ' primary' : '') + '" type="button" data-story-runtime-action="' + actionId + '"' +
+    (disabled ? ' disabled' : '') + '><span>' + escapeHtml(label) + '</span>' + (detail ? '<small>' + escapeHtml(detail) + '</small>' : '') + '</button>';
+}
+function storyStateContent(snapshot) {
+  const view = storyPanelView(snapshot);
+  if (!view) return '<div class="story-state-empty"><strong>尚未生成故事记忆</strong><p>更新记忆后，这里会显示当前分支中已经明确发生的故事状态。</p></div>';
+  const sceneFacts = [
+    ...(view.location ? ['地点：' + view.location] : []), ...(view.time ? ['时间：' + view.time] : []), ...view.sceneState,
+  ];
+  return '<div class="story-state-grid">' + [
+    mobilePanelList('核心角色', view.centralCharacter ? [view.centralCharacter] : []),
+    mobilePanelList('场景', sceneFacts),
+    mobilePanelList('关系', [view.relationshipSummary, ...view.relationshipChanges].filter(Boolean)),
+    mobilePanelList('当前状态', view.currentState),
+    mobilePanelList('衣着与外观', view.appearance),
+    mobilePanelList('重要记忆', view.importantMemories),
+    mobilePanelList('未解决线索', view.unresolvedThreads),
+    mobilePanelList('其他角色', view.otherCharacters),
+  ].filter(Boolean).join('') + '</div>';
+}
+function renderStoryMenu(viewName = 'overview') {
+  const menu = $('#storyMenu'), chat = current();
+  if (!chat) return;
+  const runtime = storyRuntimeState(chat);
+  const status = runtime.mode === 'setup' ? '资料收集中' : runtime.mode === 'writing' ? '正文中' : '未启用';
+  const messages = storyMemoryConversation(chat);
+  const canUpdate = !!currentStoryAnchor(chat) && messages.some(message => message.content.trim()) && !generation;
+  const memory = applicableStoryMemory(chat, storyMemorySnapshots);
+  menu.dataset.view = viewName;
+  if (viewName === 'state') {
+    menu.innerHTML = '<header class="story-menu-head"><button class="story-menu-back" type="button" data-story-menu-back aria-label="返回">‹</button>' +
+      '<div><strong>故事状态</strong><span>当前分支</span></div><button class="story-menu-close" type="button" data-close-story-menu aria-label="关闭">×</button></header>' +
+      storyStateContent(memory) + '<div class="story-menu-actions">' +
+      (canUpdate ? '<button class="story-menu-action primary" type="button" data-update-story-memory' + (storyMemoryBusy ? ' disabled' : '') +
+        '><span>' + (storyMemoryBusy ? '正在更新…' : '更新记忆') + '</span></button>' : '') + '</div>';
+  } else {
+    const assistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
+    const ready = assistant && activeAssistantVariant(assistant)?.status === 'complete' && !generation;
+    let actions = '';
+    if (!runtime.enabled) actions = storyAction('prepare_story', '准备故事', { primary: true, disabled: !!generation });
+    if (runtime.mode === 'setup') actions =
+      '<button class="story-menu-action" type="button" data-open-story-state><span>故事状态</span><small>' + (memory ? '查看当前状态' : '尚未生成记忆') + '</small></button>' +
+      (canUpdate ? '<button class="story-menu-action" type="button" data-update-story-memory' + (storyMemoryBusy ? ' disabled' : '') + '><span>' + (storyMemoryBusy ? '正在更新…' : '更新记忆') + '</span></button>' : '') +
+      storyAction('start_writing', '开始正文', { primary: true, disabled: !ready }) + storyAction('exit_story', '退出故事模式');
+    if (runtime.mode === 'writing') actions =
+      '<button class="story-menu-action" type="button" data-open-story-state><span>故事状态</span><small>' + (memory ? '查看当前状态' : '尚未生成记忆') + '</small></button>' +
+      (canUpdate ? '<button class="story-menu-action" type="button" data-update-story-memory' + (storyMemoryBusy ? ' disabled' : '') + '><span>' + (storyMemoryBusy ? '正在更新…' : '更新记忆') + '</span></button>' : '') +
+      storyAction('continue_story', '继续故事', { primary: true, disabled: !ready }) +
+      storyAction('continue_incomplete', '继续未完成', { disabled: !ready }) + storyAction('exit_story', '退出故事模式');
+    menu.innerHTML = '<header class="story-menu-head"><div><strong>故事</strong><span>状态：' + status + '</span></div>' +
+      '<button class="story-menu-close" type="button" data-close-story-menu aria-label="关闭">×</button></header><div class="story-menu-actions">' + actions + '</div>';
+  }
+  repositionActiveSurfaceMenu();
+}
+function openStoryMenu() {
+  renderStoryMenu('overview'); showSurfaceMenu($('#storyMenu'));
+  $('#mobileStoryButton').setAttribute('aria-expanded', 'true');
 }
 async function runStoryRuntimeAction(actionId) {
   if (generation) return;
   const chat = current(), runtime = storyRuntimeState(chat);
+  if (actionId === 'exit_story') {
+    if (!runtime.enabled) return;
+    setStoryRuntimeMode(chat, 'disabled', actionId);
+    closeRuntimeMenu(); closeStoryMenu(); renderConversation(); await persistChat(chat); toast('已退出故事模式'); return;
+  }
   if (actionId === 'prepare_story') {
     if (runtime.enabled) return;
-    setStoryRuntimeMode(chat, 'setup', actionId); renderConversation(); await persistChat(chat); toast('已进入资料收集模式'); return;
+    setStoryRuntimeMode(chat, 'setup', actionId); renderConversation(); await persistChat(chat);
+    if (!$('#storyMenu').hidden) renderStoryMenu();
+    toast('已进入资料收集模式'); return;
   }
   if ((actionId === 'start_writing' && runtime.mode !== 'setup')
     || !['start_writing', 'continue_story', 'continue_incomplete'].includes(actionId)
@@ -539,7 +670,7 @@ async function runStoryRuntimeAction(actionId) {
   const control = createRuntimeControl(actionId, variant.id);
   chat.messages.push(control);
   if (actionId === 'start_writing') setStoryRuntimeMode(chat, 'writing', actionId, control.id);
-  closeRuntimeMenu(); renderConversation(true); await persistChat(chat);
+  closeRuntimeMenu(); closeStoryMenu(); renderConversation(true); await persistChat(chat);
   void generate(chat, control, null, null, null, actionId);
 }
 
@@ -603,16 +734,16 @@ $('#modelMenu').addEventListener('keydown', event => {
 });
 document.addEventListener('click', event => {
   if (!event.target.closest('.model-wrap')) setModelMenu(false);
-  if (!event.target.closest('#regenerateMenu') && !event.target.closest('[data-action="regenerate"]')) closeRegenerateMenu();
-  if (!event.target.closest('#runtimeMenu') && !event.target.closest('[data-open-runtime-menu]')) closeRuntimeMenu();
+  if (!mobile.matches && !event.target.closest('#regenerateMenu') && !event.target.closest('[data-action="regenerate"]')) closeRegenerateMenu();
+  if (!mobile.matches && !event.target.closest('#runtimeMenu') && !event.target.closest('[data-open-runtime-menu]')) closeRuntimeMenu();
 });
 $('#openSidebar').addEventListener('click', openSidebar);
 $('#closeSidebar').addEventListener('click', () => closeSidebar(true));
 $('#mobileScrim').addEventListener('click', () => closeSidebar(true));
 mobile.addEventListener('change', event => {
-  closeSidebar(); closeRegenerateMenu(); closeRuntimeMenu(); storyPanelExpanded = !event.matches; renderConversation();
+  closeSidebar(); closeRegenerateMenu(); closeRuntimeMenu(); closeStoryMenu(); storyPanelExpanded = !event.matches; renderConversation();
 });
-$('#settingsButton').addEventListener('click', () => { closeSidebar(); closeRegenerateMenu(); closeRuntimeMenu(); syncSettingsUi(); $('#settingsDialog').showModal(); });
+$('#settingsButton').addEventListener('click', () => { closeSidebar(); closeRegenerateMenu(); closeRuntimeMenu(); closeStoryMenu(); syncSettingsUi(); $('#settingsDialog').showModal(); });
 $('#settingsDialog').addEventListener('close', () => { if (mobile.matches) $('#openSidebar').focus(); });
 $('#quickTheme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $$('[data-theme-choice]').forEach(button => button.addEventListener('click', () => setTheme(button.dataset.themeChoice)));
@@ -847,7 +978,7 @@ conversation.addEventListener('click', async event => {
 });
 document.addEventListener('keydown', event => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && !$('#settingsDialog').open) { event.preventDefault(); void newChat(); }
-  if (event.key === 'Escape') { closeSidebar(true); setModelMenu(false); closeRegenerateMenu(true); closeRuntimeMenu(true); }
+  if (event.key === 'Escape') { closeSidebar(true); setModelMenu(false); closeRegenerateMenu(true); closeRuntimeMenu(true); closeStoryMenu(true); }
   if (event.key === 'Tab' && mobile.matches && $('#sidebar').classList.contains('open')) {
     const controls = $$('button:not([disabled]),input', $('#sidebar')).filter(el => el.getClientRects().length);
     if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
@@ -866,6 +997,24 @@ $('#runtimeMenu').addEventListener('click', event => {
   const option = event.target.closest('[data-story-runtime-action]');
   if (option) void runStoryRuntimeAction(option.dataset.storyRuntimeAction);
 });
+$('#mobileStoryButton').addEventListener('click', () => {
+  if ($('#storyMenu').hidden) openStoryMenu(); else closeStoryMenu(true);
+});
+$('#storyMenu').addEventListener('click', event => {
+  if (event.target.closest('[data-close-story-menu]')) { closeStoryMenu(true); return; }
+  if (event.target.closest('[data-story-menu-back]')) { renderStoryMenu('overview'); return; }
+  if (event.target.closest('[data-open-story-state]')) { renderStoryMenu('state'); return; }
+  if (event.target.closest('[data-update-story-memory]')) { void updateStoryMemory(); return; }
+  const actionButton = event.target.closest('[data-story-runtime-action]');
+  if (actionButton) void runStoryRuntimeAction(actionButton.dataset.storyRuntimeAction);
+});
+$('#sheetScrim').addEventListener('click', () => {
+  closeRegenerateMenu(); closeRuntimeMenu(); closeStoryMenu();
+});
+window.addEventListener('resize', repositionActiveSurfaceMenu);
+window.addEventListener('orientationchange', repositionActiveSurfaceMenu);
+window.visualViewport?.addEventListener('resize', repositionActiveSurfaceMenu);
+window.visualViewport?.addEventListener('scroll', repositionActiveSurfaceMenu);
 new ResizeObserver(() => {
   conversation.style.paddingBottom = Math.ceil($('.composer-dock').getBoundingClientRect().height + 28) + 'px';
 }).observe($('.composer-dock'));

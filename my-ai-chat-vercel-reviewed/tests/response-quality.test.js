@@ -125,6 +125,8 @@ test('new response-quality UI is Chinese and mobile-safe without changing Retry 
   assert.deepEqual(REGENERATION_REASON_OPTIONS.map(item => item.label), ['再试一次', '角色有点跑偏', '太重复了', '节奏太快', '替我做决定了', '连贯性有问题']);
   assert.match(app, /variant\.status === 'error' \|\| variant\.status === 'stopped'\) void retry\(message\.id\)/);
   assert.match(app, /styleReferenceRequestItems\(styleReferences\)/);
-  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.regenerate-menu\s*\{[^}]*bottom:\s*max\(10px, env\(safe-area-inset-bottom\)\);[^}]*left:\s*10px !important/);
+  assert.match(css, /\.surface-menu\s*\{[^}]*position:\s*fixed[^}]*z-index:\s*90/s);
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.surface-menu\s*\{[^}]*env\(safe-area-inset-bottom\)/);
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.regenerate-menu\s*\{[^}]*right:\s*10px;[^}]*left:\s*10px/);
   assert.match(css, /\.regenerate-menu button\s*\{[^}]*min-height:\s*44px/s);
 });

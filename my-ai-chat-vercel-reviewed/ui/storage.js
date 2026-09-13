@@ -227,10 +227,21 @@ export async function replaceStoryMemorySnapshot(snapshot, indexedDBApi = global
   const database = await openChatDatabase(indexedDBApi);
   const transaction = database.transaction(STORY_MEMORY_STORE_NAME, 'readwrite');
   const store = transaction.objectStore(STORY_MEMORY_STORE_NAME);
-  const existing = await requestResult(store.index('anchorId').getAll(record.anchorId));
-  for (const item of existing) if (item.chatId === record.chatId) store.delete(item.id);
-  store.put(record);
-  await transactionDone(transaction);
+  const lookup = store.index('anchorId').getAll(record.anchorId);
+  const done = transactionDone(transaction);
+  // Queue every write synchronously from the IDB success event. Safari may auto-commit
+  // a readwrite transaction before an async continuation resumes.
+  const writesQueued = new Promise((resolve, reject) => {
+    lookup.addEventListener('success', () => {
+      try {
+        for (const item of lookup.result) if (item.chatId === record.chatId) store.delete(item.id);
+        store.put(record);
+        resolve();
+      } catch (error) { reject(error); }
+    }, { once: true });
+    lookup.addEventListener('error', () => reject(lookup.error || new Error('IndexedDB request failed')), { once: true });
+  });
+  await Promise.all([writesQueued, done]);
   return record;
 }
 

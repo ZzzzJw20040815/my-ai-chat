@@ -3,10 +3,13 @@ export const STORY_RUNTIME_MODES = Object.freeze(['setup', 'writing']);
 export const STORY_RUNTIME_ACTIONS = Object.freeze([
   'prepare_story', 'start_writing', 'continue_story', 'continue_incomplete',
 ]);
+export const STORY_RUNTIME_TRANSITION_MODES = Object.freeze([...STORY_RUNTIME_MODES, 'disabled']);
+export const STORY_RUNTIME_TRANSITION_ACTIONS = Object.freeze(['prepare_story', 'start_writing', 'exit_story']);
 
 const modeSet = new Set(STORY_RUNTIME_MODES);
 const actionSet = new Set(STORY_RUNTIME_ACTIONS);
-const transitionActions = new Set(['prepare_story', 'start_writing']);
+const transitionModeSet = new Set(STORY_RUNTIME_TRANSITION_MODES);
+const transitionActions = new Set(STORY_RUNTIME_TRANSITION_ACTIONS);
 
 export const isStoryRuntimeMode = value => modeSet.has(value);
 export const isStoryRuntimeAction = value => actionSet.has(value);
@@ -18,9 +21,10 @@ export function normalizeStoryRuntime(value) {
       if (!item || typeof item !== 'object' || Array.isArray(item)
         || typeof item.id !== 'string' || !item.id || item.id.length > 256
         || (item.anchorId != null && (typeof item.anchorId !== 'string' || !item.anchorId || item.anchorId.length > 256))
-        || !isStoryRuntimeMode(item.mode) || !transitionActions.has(item.action)
+        || !transitionModeSet.has(item.mode) || !transitionActions.has(item.action)
         || (item.action === 'prepare_story' && item.mode !== 'setup')
         || (item.action === 'start_writing' && item.mode !== 'writing')
+        || (item.action === 'exit_story' && item.mode !== 'disabled')
         || !Number.isFinite(Date.parse(item.createdAt))) continue;
       transitions.push({
         id: item.id, anchorId: item.anchorId ?? null, mode: item.mode, action: item.action,

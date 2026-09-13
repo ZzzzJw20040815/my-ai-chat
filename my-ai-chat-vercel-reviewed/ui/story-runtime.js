@@ -12,7 +12,10 @@ export function storyRuntimeState(chat) {
   const transition = runtime.transitions.filter(item => depths.has(item.anchorId))
     .sort((left, right) => depths.get(right.anchorId) - depths.get(left.anchorId)
       || right.createdAt.localeCompare(left.createdAt))[0] || null;
-  return transition ? { enabled: true, mode: transition.mode, transition } : { enabled: false, mode: null, transition: null };
+  if (!transition) return { enabled: false, mode: null, transition: null };
+  return transition.mode === 'disabled'
+    ? { enabled: false, mode: null, transition }
+    : { enabled: true, mode: transition.mode, transition };
 }
 
 export function currentRuntimeAnchor(chat) {
