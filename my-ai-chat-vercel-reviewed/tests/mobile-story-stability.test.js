@@ -222,6 +222,8 @@ test('shared mobile sheet CSS stays above composer, uses safe area, and avoids h
   assert.match(css, /\.surface-menu\s*\{[^}]*overflow-x:\s*hidden/s);
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.surface-menu\s*\{[^}]*env\(safe-area-inset-bottom\)/);
   assert.match(css, /\.mobile-story-button\s*\{[^}]*min-height:\s*44px/s);
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.mobile-story-button\s*\{[^}]*display:\s*inline-flex/);
   assert.match(css, /\.chat-heading > \.story-runtime-control, \.chat-heading > \.story-panel\s*\{\s*display:\s*none/);
   assert.match(css, /\.mobile-story-button\s*\{[^}]*border-radius:\s*999px/);
+  assert.match(css, /\.mobile-story-button\s*\{[^}]*max-width:\s*150px/);
 });

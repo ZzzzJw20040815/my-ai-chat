@@ -408,6 +408,67 @@ test('Edit and resend works for first, middle and last historical user messages'
   await closeChatDatabase();
 });
 
+test('Historical Edit draft survives model switch and saves with the newly selected model', async () => {
+  const indexedDB = new IDBFactory();
+  const { fetchMock, payloads } = createFetchMock();
+  const storage = createMemoryStorage();
+  const dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?history-edit=model-switch-draft');
+  document.querySelector('#newChatButton').click();
+  submitMessage('原始角色设定');
+  const initial = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+    return chat?.messages.at(-1)?.status === 'complete' ? chat : null;
+  });
+  const originalUserId = initial.messages[0].id;
+  document.querySelector('.message.user [data-action="edit"]').click();
+  let editor = document.querySelector('.edit-area textarea');
+  assert.equal(editor.value, '原始角色设定');
+  editor.value = '修改后但尚未保存的角色设定';
+  editor.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+  const requestsBeforeSwitch = payloads.length;
+  document.querySelector('#modelButton').click();
+  const modelOption = [...document.querySelectorAll('#modelMenu [data-model]')]
+    .find(option => option.getAttribute('aria-selected') !== 'true');
+  const selectedModel = modelOption.dataset.model;
+  modelOption.click();
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.model === selectedModel);
+
+  editor = document.querySelector('.edit-area textarea');
+  assert.ok(editor);
+  assert.equal(editor.value, '修改后但尚未保存的角色设定');
+  assert.equal(document.querySelector(`#modelMenu [data-model="${selectedModel}"]`).getAttribute('aria-selected'), 'true');
+  assert.equal((await loadChats(indexedDB)).find(item => !item.demo).messages[0].content, '原始角色设定');
+  assert.equal(payloads.length, requestsBeforeSwitch);
+
+  document.querySelector('[data-action="edit-save"]').click();
+  const saved = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+    return chat?.messages[0]?.content === '修改后但尚未保存的角色设定'
+      && chat.messages.at(-1)?.status === 'complete' ? chat : null;
+  });
+  assert.equal(saved.messages[0].id, originalUserId);
+  assert.equal(saved.messages.at(-1).model, selectedModel);
+  assert.equal(payloads.at(-1).model, selectedModel);
+  assert.equal(document.querySelector('.edit-area'), null);
+
+  document.querySelector('.message.user [data-action="edit"]').click();
+  editor = document.querySelector('.edit-area textarea');
+  assert.equal(editor.value, '修改后但尚未保存的角色设定');
+  editor.value = '应被取消的临时文字';
+  editor.dispatchEvent(new window.Event('input', { bubbles: true }));
+  document.querySelector('[data-action="edit-cancel"]').click();
+  assert.equal(document.querySelector('.edit-area'), null);
+  assert.match(document.querySelector('.message.user .message-bubble').textContent, /修改后但尚未保存的角色设定/);
+  document.querySelector('.message.user [data-action="edit"]').click();
+  assert.equal(document.querySelector('.edit-area textarea').value, '修改后但尚未保存的角色设定');
+  document.querySelector('[data-action="edit-cancel"]').click();
+
+  dom.window.close();
+  await closeChatDatabase();
+});
+
 test('variant switching restores independent descendant branches and persists the visible path', async () => {
   const indexedDB = new IDBFactory();
   const { fetchMock, contexts } = createFetchMock();

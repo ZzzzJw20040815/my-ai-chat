@@ -76,7 +76,7 @@ function createDemoChats() {
     return chat;
   });
 }
-let activeChat, generation = null, editingId = null, toastTimer, storageWarningShown = false;
+let activeChat, generation = null, editingId = null, editDraft = null, toastTimer, storageWarningShown = false;
 let wallpaperRecord = null, wallpaperBusy = false;
 let dataTransferBusy = false, persistenceRequestBusy = false;
 let modelCatalogBusy = false;
@@ -151,7 +151,9 @@ function action(action, label, icon, selected = false, disabled = false) {
 function messageHtml(message) {
   const busy = !!generation;
   if (message.role === 'user') {
-    if (editingId === message.id) return '<div class="edit-area"><textarea aria-label="Edit message" maxlength="50000">' + escapeHtml(message.content) +
+    const draftContent = editDraft?.chatId === activeChat && editDraft.messageId === message.id
+      ? editDraft.draftContent : message.content;
+    if (editingId === message.id) return '<div class="edit-area"><textarea aria-label="Edit message" maxlength="50000">' + escapeHtml(draftContent) +
       '</textarea><p class="edit-note">Saving starts a revised turn; later replies in this chat are removed.</p><div class="edit-controls"><button class="small-button" data-action="edit-cancel">Cancel</button><button class="small-button primary" data-action="edit-save">Save & resend</button></div></div>';
     return '<div class="message-bubble"><p>' + escapeHtml(message.content) + '</p></div><div class="message-actions">' +
       action('edit', 'Edit', icons.edit, false, busy) + action('copy', 'Copy', icons.copy) + '</div>';
@@ -244,6 +246,7 @@ function renderConversation(bottom = false) {
     $('.messages').append(article);
   }
   syncMobileStoryButton(chat);
+  resizeEditTextarea($('.edit-area textarea'));
   conversation.scrollTop = bottom ? conversation.scrollHeight : saved;
 }
 
@@ -276,6 +279,16 @@ function keepEditControlsVisible() {
   const rect = controls.getBoundingClientRect();
   const top = viewport.offsetTop || 0, bottom = top + viewport.height - 12;
   if (rect.bottom > bottom || rect.top < top) area.scrollIntoView?.({ block: 'end', behavior: 'auto' });
+}
+
+function beginHistoricalEdit(chat, message) {
+  editingId = message.id;
+  editDraft = { chatId: chat.id, messageId: message.id, draftContent: message.content };
+}
+
+function clearHistoricalEdit() {
+  editingId = null;
+  editDraft = null;
 }
 
 async function updateStoryMemory() {
@@ -375,7 +388,7 @@ function openSidebar() {
 }
 function selectChat(id) {
   current().draft = input.value; current().scrollTop = conversation.scrollTop;
-  activeChat = id; editingId = null; input.value = current().draft;
+  activeChat = id; clearHistoricalEdit(); input.value = current().draft;
   closeRegenerateMenu(); closeRuntimeMenu(); closeStoryMenu();
   rememberActiveChat(activeChat);
   closeSidebar(); syncModel(); syncComposer(); renderHistory(); renderConversation();
@@ -828,7 +841,7 @@ $('#backupInput').addEventListener('change', async event => {
       : chats.has(previousActiveChat) ? previousActiveChat : chats.keys().next().value;
     rememberActiveChat(activeChat);
     if (result.theme) setTheme(result.theme);
-    editingId = null; input.value = current()?.draft || '';
+    clearHistoricalEdit(); input.value = current()?.draft || '';
     syncModel(); renderHistory(); renderConversation(); syncComposer(); syncSettingsUi();
     $('#settingsDialog').close();
     toast(`Backup imported · ${result.added} added, ${result.updated} updated`);
@@ -994,16 +1007,18 @@ conversation.addEventListener('click', async event => {
     }
     case 'edit':
       if (generation) return;
-      editingId = message.id; syncComposer(); renderConversation();
+      beginHistoricalEdit(chat, message); syncComposer(); renderConversation();
       {
         const editor = $('textarea', $('[data-message-id="' + message.id + '"]'));
         resizeEditTextarea(editor); editor?.focus(); setTimeout(keepEditControlsVisible, 0);
       }
       break;
-    case 'edit-cancel': editingId = null; syncComposer(); renderConversation(); break;
+    case 'edit-cancel': clearHistoricalEdit(); syncComposer(); renderConversation(); break;
     case 'edit-save': {
       if (generation) return;
-      const value = $('textarea', article).value.trim(); if (!value) return;
+      const editor = $('textarea', article);
+      if (editDraft?.chatId === chat.id && editDraft.messageId === message.id) editDraft.draftContent = editor.value;
+      const value = (editDraft?.draftContent ?? editor.value).trim(); if (!value) return;
       const prunedAnchors = storySubtreeAnchorIds(chat, message.id);
       const hasStoredMemory = storyMemorySnapshots.some(snapshot => snapshot.chatId === chat.id && prunedAnchors.has(snapshot.anchorId));
       if (!storyMemoryLoaded || hasStoredMemory) {
@@ -1013,12 +1028,18 @@ conversation.addEventListener('click', async event => {
       storyMemorySnapshots = storyMemorySnapshots.filter(snapshot => snapshot.chatId !== chat.id || !prunedAnchors.has(snapshot.anchorId));
       pruneStoryRuntimeTransitions(chat, prunedAnchors);
       message.content = value; message.updatedAt = new Date().toISOString();
-      removeUserDescendants(chat, message.id); editingId = null; renderConversation(true);
+      removeUserDescendants(chat, message.id); clearHistoricalEdit(); renderConversation(true);
       await persistChat(chat); void generate(chat, message); break;
     }
   }
 });
-conversation.addEventListener('input', event => resizeEditTextarea(event.target));
+conversation.addEventListener('input', event => {
+  const editor = event.target.closest?.('.edit-area textarea');
+  if (editor && editDraft?.chatId === activeChat && editDraft.messageId === editor.closest('[data-message-id]')?.dataset.messageId) {
+    editDraft.draftContent = editor.value;
+  }
+  resizeEditTextarea(event.target);
+});
 document.addEventListener('keydown', event => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && !$('#settingsDialog').open) { event.preventDefault(); void newChat(); }
   if (event.key === 'Escape') { closeSidebar(true); setModelMenu(false); closeRegenerateMenu(true); closeRuntimeMenu(true); closeStoryMenu(true); }
