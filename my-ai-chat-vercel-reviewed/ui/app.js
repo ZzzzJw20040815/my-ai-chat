@@ -32,6 +32,7 @@ import {
 import { renderMarkdown } from './markdown.js';
 import { consumeStream } from './stream.js';
 import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from './settings.js';
+import { applyMobileDisplayPreferences } from './mobile-display.js';
 import { createWallpaperPresenter, decodeWallpaperImage, validateWallpaperFile } from './wallpaper.js';
 import {
   MAX_BACKUP_BYTES, createBackup, downloadBackup, importBackup as mergeBackup, parseBackupText,
@@ -86,6 +87,7 @@ let persistenceStatus = { state: 'checking', supported: true };
 let activeSurfaceMenu = null;
 const modelCatalog = createModelCatalog();
 let globalSettings = loadGlobalSettings();
+applyMobileDisplayPreferences(globalSettings);
 function ensureAvailableDefaultModel(confirmed = !!modelCatalog.syncedAt) {
   const available = availableDefaultModel(globalSettings.defaultModel, modelCatalog);
   if (confirmed && available !== globalSettings.defaultModel) {
@@ -416,6 +418,14 @@ function syncSettingsUi() {
   $('#contextLimitSetting').value = globalSettings.contextLimit;
   $('#maxOutputTokensSetting').value = globalSettings.maxOutputTokens ?? '';
   $('#thinkingLevelSetting').value = globalSettings.thinkingLevel;
+  $$('[data-mobile-density]').forEach(button => {
+    const active = button.dataset.mobileDensity === globalSettings.mobileDisplay.density;
+    button.classList.toggle('active', active); button.setAttribute('aria-checked', String(active));
+  });
+  $$('[data-chat-text-size]').forEach(button => {
+    const active = button.dataset.chatTextSize === globalSettings.mobileDisplay.chatTextSize;
+    button.classList.toggle('active', active); button.setAttribute('aria-checked', String(active));
+  });
   const capabilities = modelCatalog.metadata(globalSettings.defaultModel)?.capabilities;
   for (const option of $('#thinkingLevelSetting').options) {
     option.disabled = option.value !== 'default' && !capabilities?.thinkingLevels.includes(option.value);
@@ -479,6 +489,7 @@ function syncSettingsUi() {
 }
 function updateGlobalSettings(patch) {
   globalSettings = saveGlobalSettings({ ...globalSettings, ...patch });
+  applyMobileDisplayPreferences(globalSettings);
   syncSettingsUi();
 }
 function setTheme(theme) {
@@ -816,6 +827,12 @@ $('#settingsButton').addEventListener('click', () => { closeSidebar(); closeRege
 $('#settingsDialog').addEventListener('close', () => { if (mobile.matches) $('#openSidebar').focus(); });
 $('#quickTheme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $$('[data-theme-choice]').forEach(button => button.addEventListener('click', () => setTheme(button.dataset.themeChoice)));
+$$('[data-mobile-density]').forEach(button => button.addEventListener('click', () => updateGlobalSettings({
+  mobileDisplay: { ...globalSettings.mobileDisplay, density: button.dataset.mobileDensity },
+})));
+$$('[data-chat-text-size]').forEach(button => button.addEventListener('click', () => updateGlobalSettings({
+  mobileDisplay: { ...globalSettings.mobileDisplay, chatTextSize: button.dataset.chatTextSize },
+})));
 $('#exportBackup').addEventListener('click', () => {
   if (dataTransferBusy || generation) return;
   dataTransferBusy = true; syncSettingsUi();
@@ -855,6 +872,7 @@ $('#backupInput').addEventListener('change', async event => {
     chats.clear();
     for (const chat of result.chats) chats.set(chat.id, ensureBranchLineage(chat));
     globalSettings = result.settings;
+    applyMobileDisplayPreferences(globalSettings);
     activeChat = result.activeChatId && chats.has(result.activeChatId)
       ? result.activeChatId
       : chats.has(previousActiveChat) ? previousActiveChat : chats.keys().next().value;
@@ -970,7 +988,7 @@ for (const [selector, key] of [['#temperatureSetting', 'temperature'], ['#topPSe
   }));
 }
 $('#resetGlobalSettings').addEventListener('click', () => {
-  globalSettings = resetGlobalSettings(); syncSettingsUi(); toast('Model settings reset to defaults');
+  globalSettings = resetGlobalSettings(); applyMobileDisplayPreferences(globalSettings); syncSettingsUi(); toast('Settings reset to defaults');
 });
 async function copy(text) {
   try {

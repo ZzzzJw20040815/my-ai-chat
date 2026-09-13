@@ -11,6 +11,8 @@ export const SAMPLING_LIMITS = Object.freeze({
   topK: Object.freeze({ min: 1, max: 1000 }),
 });
 export const SAFETY_MODES = Object.freeze(['default', 'custom']);
+export const MOBILE_DENSITIES = Object.freeze(['compact', 'standard', 'comfortable']);
+export const CHAT_TEXT_SIZES = Object.freeze(['small', 'standard', 'large']);
 export const SAFETY_LEVELS = Object.freeze([
   Object.freeze({ label: 'Off', shortLabel: 'Off', threshold: 'OFF' }),
   Object.freeze({ label: 'Block none', shortLabel: 'None', threshold: 'BLOCK_NONE' }),
@@ -41,6 +43,7 @@ export const DEFAULT_GLOBAL_SETTINGS = Object.freeze({
     sexuallyExplicit: DEFAULT_SAFETY_THRESHOLD,
     dangerousContent: DEFAULT_SAFETY_THRESHOLD,
   }),
+  mobileDisplay: Object.freeze({ density: 'standard', chatTextSize: 'standard' }),
 });
 
 const inRange = (value, limits) => typeof value === 'number' && Number.isFinite(value)
@@ -52,6 +55,8 @@ export function normalizeGlobalSettings(value) {
     && !Array.isArray(source.samplingOverrides) ? source.samplingOverrides : {};
   const safety = source.safetySettings && typeof source.safetySettings === 'object'
     && !Array.isArray(source.safetySettings) ? source.safetySettings : {};
+  const mobileDisplay = source.mobileDisplay && typeof source.mobileDisplay === 'object'
+    && !Array.isArray(source.mobileDisplay) ? source.mobileDisplay : {};
   const maxOutputTokens = Number.isInteger(source.maxOutputTokens)
     && source.maxOutputTokens > 0 && source.maxOutputTokens <= MAX_OUTPUT_TOKENS_LIMIT
     ? source.maxOutputTokens : null;
@@ -77,6 +82,10 @@ export function normalizeGlobalSettings(value) {
         key,
         SAFETY_THRESHOLDS.includes(safety[key]) ? safety[key] : DEFAULT_GLOBAL_SETTINGS.safetySettings[key],
       ])),
+    },
+    mobileDisplay: {
+      density: MOBILE_DENSITIES.includes(mobileDisplay.density) ? mobileDisplay.density : 'standard',
+      chatTextSize: CHAT_TEXT_SIZES.includes(mobileDisplay.chatTextSize) ? mobileDisplay.chatTextSize : 'standard',
     },
   };
 }

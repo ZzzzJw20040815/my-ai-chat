@@ -469,6 +469,45 @@ test('Historical Edit draft survives model switch and saves with the newly selec
   await closeChatDatabase();
 });
 
+test('Mobile Display Settings apply immediately, preserve drafts, reload, and reset', async () => {
+  const indexedDB = new IDBFactory();
+  const { fetchMock } = createFetchMock();
+  const storage = createMemoryStorage();
+  let dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?mobile-display=immediate');
+
+  const root = document.documentElement;
+  assert.equal(root.dataset.mobileDensity, 'standard');
+  assert.equal(root.dataset.chatTextSize, 'standard');
+  const composerDraft = document.querySelector('#messageInput');
+  composerDraft.value = '未发送的输入草稿';
+  composerDraft.dispatchEvent(new window.Event('input', { bubbles: true }));
+  document.querySelector('#settingsButton').click();
+  document.querySelector('[data-mobile-density="compact"]').click();
+  assert.equal(root.dataset.mobileDensity, 'compact');
+  assert.equal(composerDraft.value, '未发送的输入草稿');
+  document.querySelector('[data-chat-text-size="large"]').click();
+  assert.equal(root.dataset.chatTextSize, 'large');
+  assert.equal(document.querySelector('[data-mobile-density="compact"]').getAttribute('aria-checked'), 'true');
+  assert.equal(document.querySelector('[data-chat-text-size="large"]').getAttribute('aria-checked'), 'true');
+  let persisted = JSON.parse(storage.getItem('my-ai-chat-global-settings'));
+  assert.deepEqual(persisted.mobileDisplay, { density: 'compact', chatTextSize: 'large' });
+
+  dom.window.close(); await closeChatDatabase();
+  dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?mobile-display=reload');
+  assert.equal(document.documentElement.dataset.mobileDensity, 'compact');
+  assert.equal(document.documentElement.dataset.chatTextSize, 'large');
+  document.querySelector('#settingsButton').click();
+  document.querySelector('#resetGlobalSettings').click();
+  assert.equal(document.documentElement.dataset.mobileDensity, 'standard');
+  assert.equal(document.documentElement.dataset.chatTextSize, 'standard');
+  persisted = JSON.parse(storage.getItem('my-ai-chat-global-settings'));
+  assert.deepEqual(persisted.mobileDisplay, { density: 'standard', chatTextSize: 'standard' });
+
+  dom.window.close(); await closeChatDatabase();
+});
+
 test('variant switching restores independent descendant branches and persists the visible path', async () => {
   const indexedDB = new IDBFactory();
   const { fetchMock, contexts } = createFetchMock();
