@@ -307,6 +307,39 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   await closeChatDatabase();
 });
 
+test('Story Runtime UI persists setup/writing and sends branch actions without visible control messages', async () => {
+  const indexedDB = new IDBFactory(), storage = createMemoryStorage();
+  const transport = createFetchMock();
+  let dom = installDom(indexedDB, transport.fetchMock, storage);
+  await import('../ui/app.js?story-runtime=first');
+  document.querySelector('#newChatButton').click();
+  document.querySelector('[data-story-runtime-action="prepare_story"]').click();
+  await waitFor(async () => (await loadChats(indexedDB)).find(chat => !chat.demo)?.storyRuntime?.transitions?.length === 1);
+  assert.match(document.querySelector('.story-runtime-control').textContent, /构思中/);
+
+  submitMessage('地点是一座雨夜图书馆。');
+  await waitFor(async () => transport.payloads.some(payload => payload.storyRuntime?.mode === 'setup'));
+  await waitFor(async () => (await loadChats(indexedDB)).find(chat => !chat.demo)?.messages.at(-1)?.status === 'complete');
+  document.querySelector('[data-story-runtime-action="start_writing"]').click();
+  await waitFor(async () => transport.payloads.some(payload => payload.storyRuntime?.action === 'start_writing'));
+  await waitFor(async () => document.querySelector('.story-runtime-control')?.textContent.includes('正文中'));
+  const startPayload = transport.payloads.find(payload => payload.storyRuntime?.action === 'start_writing');
+  assert.equal(startPayload.messages.at(-1).role, 'assistant');
+  assert.equal(document.querySelectorAll('.message.user').length, 1);
+
+  document.querySelector('[data-open-runtime-menu]').click();
+  assert.equal(document.querySelector('#runtimeMenu').hidden, false);
+  document.querySelector('#runtimeMenu [data-story-runtime-action="continue_story"]').click();
+  await waitFor(async () => transport.payloads.some(payload => payload.storyRuntime?.action === 'continue_story'));
+  await waitFor(async () => (await loadChats(indexedDB)).find(chat => !chat.demo)?.messages.at(-1)?.status === 'complete');
+
+  dom.window.close(); dom = installDom(indexedDB, transport.fetchMock, storage);
+  await import('../ui/app.js?story-runtime=reopen');
+  assert.match(document.querySelector('.story-runtime-control').textContent, /正文中/);
+  assert.equal(document.querySelectorAll('.message.user').length, 1);
+  dom.window.close(); await closeChatDatabase();
+});
+
 test('Edit and resend works for first, middle and last historical user messages', async () => {
   const indexedDB = new IDBFactory();
   const { fetchMock, contexts } = createFetchMock();
@@ -371,6 +404,67 @@ test('Edit and resend works for first, middle and last historical user messages'
   assert.ok(!contexts.at(-1).includes('last user'));
   assert.equal(edited.messages.at(-1).model, edited.model);
   assert.ok(edited.messages[2].updatedAt);
+  dom.window.close();
+  await closeChatDatabase();
+});
+
+test('Historical Edit draft survives model switch and saves with the newly selected model', async () => {
+  const indexedDB = new IDBFactory();
+  const { fetchMock, payloads } = createFetchMock();
+  const storage = createMemoryStorage();
+  const dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?history-edit=model-switch-draft');
+  document.querySelector('#newChatButton').click();
+  submitMessage('原始角色设定');
+  const initial = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+    return chat?.messages.at(-1)?.status === 'complete' ? chat : null;
+  });
+  const originalUserId = initial.messages[0].id;
+  document.querySelector('.message.user [data-action="edit"]').click();
+  let editor = document.querySelector('.edit-area textarea');
+  assert.equal(editor.value, '原始角色设定');
+  editor.value = '修改后但尚未保存的角色设定';
+  editor.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+  const requestsBeforeSwitch = payloads.length;
+  document.querySelector('#modelButton').click();
+  const modelOption = [...document.querySelectorAll('#modelMenu [data-model]')]
+    .find(option => option.getAttribute('aria-selected') !== 'true');
+  const selectedModel = modelOption.dataset.model;
+  modelOption.click();
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.model === selectedModel);
+
+  editor = document.querySelector('.edit-area textarea');
+  assert.ok(editor);
+  assert.equal(editor.value, '修改后但尚未保存的角色设定');
+  assert.equal(document.querySelector(`#modelMenu [data-model="${selectedModel}"]`).getAttribute('aria-selected'), 'true');
+  assert.equal((await loadChats(indexedDB)).find(item => !item.demo).messages[0].content, '原始角色设定');
+  assert.equal(payloads.length, requestsBeforeSwitch);
+
+  document.querySelector('[data-action="edit-save"]').click();
+  const saved = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+    return chat?.messages[0]?.content === '修改后但尚未保存的角色设定'
+      && chat.messages.at(-1)?.status === 'complete' ? chat : null;
+  });
+  assert.equal(saved.messages[0].id, originalUserId);
+  assert.equal(saved.messages.at(-1).model, selectedModel);
+  assert.equal(payloads.at(-1).model, selectedModel);
+  assert.equal(document.querySelector('.edit-area'), null);
+
+  document.querySelector('.message.user [data-action="edit"]').click();
+  editor = document.querySelector('.edit-area textarea');
+  assert.equal(editor.value, '修改后但尚未保存的角色设定');
+  editor.value = '应被取消的临时文字';
+  editor.dispatchEvent(new window.Event('input', { bubbles: true }));
+  document.querySelector('[data-action="edit-cancel"]').click();
+  assert.equal(document.querySelector('.edit-area'), null);
+  assert.match(document.querySelector('.message.user .message-bubble').textContent, /修改后但尚未保存的角色设定/);
+  document.querySelector('.message.user [data-action="edit"]').click();
+  assert.equal(document.querySelector('.edit-area textarea').value, '修改后但尚未保存的角色设定');
+  document.querySelector('[data-action="edit-cancel"]').click();
+
   dom.window.close();
   await closeChatDatabase();
 });

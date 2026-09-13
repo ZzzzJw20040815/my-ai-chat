@@ -119,22 +119,43 @@ export function formatLocalChatTitle(createdAt) {
 export function createChat(model = DEFAULT_MODEL) {
   const createdAt = new Date().toISOString();
   return { id: uniqueId(), title: 'New conversation', model, folderId: null, createdAt, updatedAt: createdAt,
-    group: 'Today', messages: [], draft: '', scrollTop: 0, demo: false, titleInitialized: false };
+    group: 'Today', messages: [], draft: '', scrollTop: 0, demo: false, titleInitialized: false,
+    storyRuntime: { version: 1, transitions: [] } };
 }
 // Include complete turns only. Failed/stopped partial responses never masquerade as valid context.
 export function contextFor(chat, userId, contextLimit = 'all') {
   const visibleMessages = visibleConversationPath(chat);
   const end = visibleMessages.findIndex(message => message.id === userId && message.role === 'user');
   if (end < 0) throw new Error('Message not found');
+  const startWritingControl = visibleMessages[end]?.kind === 'runtime-control'
+    && visibleMessages[end]?.runtimeAction === 'start_writing';
   const result = [];
   for (let index = 0; index <= end; index++) {
     const user = visibleMessages[index];
     if (user.role !== 'user' || user.status !== 'complete') continue;
+    if (user.kind === 'runtime-control') {
+      if (index === end) break;
+      const assistant = visibleMessages[index + 1];
+      const activeVariant = activeAssistantVariant(assistant);
+      if (assistant?.role === 'assistant' && activeVariant?.status === 'complete' && activeVariant.content.trim()) {
+        const reply = { ...activeVariant, role: 'assistant' };
+        if (result.at(-1)?.role === 'assistant') result.at(-1).content += '\n\n' + reply.content;
+        else result.push(reply);
+        index++;
+      }
+      continue;
+    }
     if (index === end) { result.push(user); break; }
     const assistant = visibleMessages[index + 1];
     const activeVariant = activeAssistantVariant(assistant);
     if (assistant?.role === 'assistant' && activeVariant?.status === 'complete' && activeVariant.content.trim()) {
       result.push(user, { ...activeVariant, role: 'assistant' });
+      index++;
+    } else if (startWritingControl && index + 2 === end && assistant?.role === 'assistant') {
+      // A failed or stopped setup reply must not strand the user's latest premise.
+      // The hidden start_writing control follows that assistant variant, while the
+      // request context keeps the complete user premise and omits partial output.
+      result.push(user);
       index++;
     }
   }

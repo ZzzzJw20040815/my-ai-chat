@@ -2,9 +2,30 @@ import { validateStoryMemory, STORY_MEMORY_SCHEMA_VERSION } from '../shared/stor
 import { activeAssistantVariant, assistantVariants, ensureBranchLineage, uniqueId, visibleConversationPath } from './state.js';
 
 export function visibleStoryAnchors(chat) {
-  return visibleConversationPath(chat).map(message => message.role === 'assistant'
+  return visibleConversationPath(chat).filter(message => message.kind !== 'runtime-control').map(message => message.role === 'assistant'
     ? activeAssistantVariant(message)?.id
     : message.id).filter(Boolean);
+}
+
+export const STORY_MEMORY_UPDATE_ERROR_CODES = Object.freeze([
+  'MEMORY_INVALID_ANCHOR', 'MEMORY_EXTRACTION_FAILED', 'MEMORY_INVALID_JSON', 'MEMORY_STORAGE_FAILED',
+]);
+
+export class StoryMemoryUpdateError extends Error {
+  constructor(code, details = {}) {
+    super(code);
+    this.name = 'StoryMemoryUpdateError';
+    this.code = STORY_MEMORY_UPDATE_ERROR_CODES.includes(code) ? code : 'MEMORY_EXTRACTION_FAILED';
+    this.details = details;
+  }
+}
+
+export function classifyStoryMemoryUpdateError(error, stage = 'extraction') {
+  if (error instanceof StoryMemoryUpdateError) return error.code;
+  if (stage === 'anchor') return 'MEMORY_INVALID_ANCHOR';
+  if (stage === 'validation') return 'MEMORY_INVALID_JSON';
+  if (stage === 'storage') return 'MEMORY_STORAGE_FAILED';
+  return 'MEMORY_EXTRACTION_FAILED';
 }
 
 export function currentStoryAnchor(chat) {
@@ -26,7 +47,7 @@ export function applicableStoryMemory(chat, snapshots = []) {
 }
 
 export function storyMemoryConversation(chat) {
-  return visibleConversationPath(chat).map(message => {
+  return visibleConversationPath(chat).filter(message => message.kind !== 'runtime-control').map(message => {
     const source = message.role === 'assistant' ? activeAssistantVariant(message) : message;
     return {
       id: source.id,

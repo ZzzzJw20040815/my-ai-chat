@@ -77,9 +77,10 @@ test('historical edit makes descendant memory unreachable while preserving sibli
 });
 
 test('Story Panel uses existing glass tokens and mobile-safe inline layout', async () => {
-  const [css, app] = await Promise.all([
+  const [css, app, memoryClient] = await Promise.all([
     readFile(new URL('../ui/styles.css', import.meta.url), 'utf8'),
     readFile(new URL('../ui/app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../ui/story-memory.js', import.meta.url), 'utf8'),
   ]);
   const panel = css.match(/\.story-panel\s*\{([^}]*)\}/s)?.[1] || '';
   assert.match(panel, /max-width:\s*100%/);
@@ -89,5 +90,8 @@ test('Story Panel uses existing glass tokens and mobile-safe inline layout', asy
   assert.match(css, /\.story-panel-toggle\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px/s);
   assert.match(app, /let storyPanelExpanded = !mobile\.matches/);
   assert.match(app, /case 'variant-prev': case 'variant-next':[\s\S]*renderConversation\(\)/);
-  assert.match(app, /Could not update story memory\. Your chat was not changed\./);
+  for (const code of ['MEMORY_INVALID_ANCHOR', 'MEMORY_EXTRACTION_FAILED', 'MEMORY_INVALID_JSON', 'MEMORY_STORAGE_FAILED']) {
+    assert.match(app + memoryClient, new RegExp(code));
+  }
+  assert.match(app, /尚未生成故事记忆/);
 });

@@ -10,6 +10,7 @@ import {
   isRegenerationReason, responseQualitySystemInstruction, STYLE_REFERENCE_LIMIT,
   STYLE_REFERENCE_TOTAL_CHARACTERS,
 } from '../shared/response-quality.js';
+import { storyRuntimeSystemInstruction, validateStoryRuntimeRequest } from '../shared/story-runtime.js';
 
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_MESSAGES = 100;
@@ -42,7 +43,7 @@ export function classifyError(error) {
 export function validatePayload(payload, authorizedModel = modelMetadata(payload?.model)) {
   if (!payload || !authorizedModel || authorizedModel.id !== payload.model || !Array.isArray(payload.messages) || !payload.messages.length)
     throw new Error('INVALID_REQUEST');
-  const allowedPayloadKeys = new Set(['model', 'messages', 'settings', 'storyMemory', 'styleReferences', 'regenerationReason']);
+  const allowedPayloadKeys = new Set(['model', 'messages', 'settings', 'storyMemory', 'styleReferences', 'regenerationReason', 'storyRuntime']);
   if (Object.keys(payload).some(key => !allowedPayloadKeys.has(key))) throw new Error('INVALID_REQUEST');
   if (payload.messages.length > MAX_MESSAGES) throw new Error('CONTEXT_LIMIT');
   const ids = new Set();
@@ -57,7 +58,13 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
     if (message.content.length > 50000 || total > 150000) throw new Error('CONTEXT_LIMIT');
     return { role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] };
   });
-  if (contents.at(-1).role !== 'user') throw new Error('INVALID_REQUEST');
+  const storyRuntime = validateStoryRuntimeRequest(payload.storyRuntime);
+  let activeAssistantContent = '';
+  if (storyRuntime?.action && storyRuntime.action !== 'prepare_story') {
+    if (contents.at(-1)?.role === 'model') activeAssistantContent = contents.pop().parts[0].text;
+    else if (storyRuntime.action !== 'start_writing') throw new Error('INVALID_REQUEST');
+  }
+  if (contents.at(-1)?.role !== 'user') throw new Error('INVALID_REQUEST');
   const config = validateGenerationSettings(payload.settings, authorizedModel);
   if (payload.storyMemory != null) {
     const memory = validateStoryMemory(payload.storyMemory);
@@ -69,6 +76,9 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
   const systemInstruction = responseQualitySystemInstruction(config.systemInstruction || '', styleReferences, regenerationReason);
   if (systemInstruction) config.systemInstruction = systemInstruction;
   else delete config.systemInstruction;
+  if (storyRuntime) {
+    config.systemInstruction = storyRuntimeSystemInstruction(config.systemInstruction || '', storyRuntime, activeAssistantContent);
+  }
   return { model: payload.model, contents, config };
 }
 function invalidRequest() { throw new Error('INVALID_REQUEST'); }
