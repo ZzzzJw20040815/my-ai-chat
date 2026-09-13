@@ -33,6 +33,7 @@ import { renderMarkdown } from './markdown.js';
 import { consumeStream } from './stream.js';
 import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from './settings.js';
 import { applyMobileDisplayPreferences } from './mobile-display.js';
+import { SettingsCodeError, createSettingsCode, parseSettingsCode } from './settings-code.js';
 import { createWallpaperPresenter, decodeWallpaperImage, validateWallpaperFile } from './wallpaper.js';
 import {
   MAX_BACKUP_BYTES, createBackup, downloadBackup, importBackup as mergeBackup, parseBackupText,
@@ -833,6 +834,54 @@ $$('[data-mobile-density]').forEach(button => button.addEventListener('click', (
 $$('[data-chat-text-size]').forEach(button => button.addEventListener('click', () => updateGlobalSettings({
   mobileDisplay: { ...globalSettings.mobileDisplay, chatTextSize: button.dataset.chatTextSize },
 })));
+$('#generateSettingsCode').addEventListener('click', () => {
+  try {
+    const code = createSettingsCode({
+      settings: globalSettings,
+      theme: document.documentElement.dataset.theme,
+    });
+    $('#settingsCodeOutput').value = code;
+    $('#settingsCodeOutputWrap').hidden = false;
+    toast('配置码已生成');
+  } catch {
+    toast('无法生成配置码，当前设置未受影响。');
+  }
+});
+$('#copySettingsCode').addEventListener('click', async () => {
+  const field = $('#settingsCodeOutput');
+  if (!field.value) return;
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+    await navigator.clipboard.writeText(field.value);
+    toast('配置码已复制');
+  } catch {
+    field.focus(); field.select(); field.setSelectionRange(0, field.value.length);
+    toast('无法自动复制，请手动复制。');
+  }
+});
+$('#importSettingsCode').addEventListener('click', () => {
+  let imported;
+  try {
+    imported = parseSettingsCode($('#settingsCodeInput').value);
+  } catch (error) {
+    toast(error instanceof SettingsCodeError && error.code === 'UNSUPPORTED_VERSION'
+      ? '这个配置码版本暂不受支持。' : '无法导入这个配置码。');
+    return;
+  }
+  const confirmed = window.confirm(
+    '将导入以下 My AI Chat 配置：\n\n' +
+    '模型与生成设置\nSystem Instruction\nSafety Settings\n主题\n手机显示设置\n\n' +
+    '聊天记录、Story Memory 和壁纸不会被修改。'
+  );
+  if (!confirmed) return;
+  const defaultModel = availableDefaultModel(imported.settings.defaultModel, modelCatalog);
+  globalSettings = saveGlobalSettings({ ...imported.settings, defaultModel });
+  applyMobileDisplayPreferences(globalSettings);
+  setTheme(imported.theme);
+  syncSettingsUi();
+  $('#settingsCodeInput').value = '';
+  toast('配置已导入，新设置已经生效。');
+});
 $('#exportBackup').addEventListener('click', () => {
   if (dataTransferBusy || generation) return;
   dataTransferBusy = true; syncSettingsUi();

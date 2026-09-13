@@ -6,6 +6,7 @@ import { JSDOM } from 'jsdom';
 import { IDBFactory } from 'fake-indexeddb';
 import { MODELS } from '../shared/models.js';
 import { activeAssistantVariant } from '../ui/state.js';
+import { createSettingsCode } from '../ui/settings-code.js';
 import { closeChatDatabase, loadChats, loadStoryMemories, loadStyleReferences, loadWallpaperAsset } from '../ui/storage.js';
 
 const html = await readFile(new URL('../ui/index.html', import.meta.url), 'utf8');
@@ -505,6 +506,90 @@ test('Mobile Display Settings apply immediately, preserve drafts, reload, and re
   persisted = JSON.parse(storage.getItem('my-ai-chat-global-settings'));
   assert.deepEqual(persisted.mobileDisplay, { density: 'standard', chatTextSize: 'standard' });
 
+  dom.window.close(); await closeChatDatabase();
+});
+
+test('Settings Code import is validated first, applies atomically, preserves chats, and keeps existing-chat model semantics', async () => {
+  const indexedDB = new IDBFactory(); const { fetchMock } = createFetchMock(); const storage = createMemoryStorage();
+  const dom = installDom(indexedDB, fetchMock, storage);
+  let confirmImport = true;
+  dom.window.confirm = () => confirmImport;
+  await import('../ui/app.js?settings-code=import');
+  document.querySelector('#newChatButton').click();
+  const existingModel = document.querySelector('#currentModel').textContent;
+  const chatsBefore = (await loadChats(indexedDB)).map(chat => chat.id).sort();
+  document.querySelector('#settingsButton').click();
+  const input = document.querySelector('#settingsCodeInput');
+  const originalSettings = storage.getItem('my-ai-chat-global-settings');
+  input.value = 'MAICFG1.invalid%%%';
+  document.querySelector('#importSettingsCode').click();
+  assert.equal(storage.getItem('my-ai-chat-global-settings'), originalSettings);
+  assert.equal(document.documentElement.dataset.theme, 'dark');
+
+  const code = createSettingsCode({
+    settings: {
+      defaultModel: 'gemini-3.7-flash',
+      systemInstruction: '中文 🎭\n第二行 **Markdown**', contextLimit: '20', maxOutputTokens: 4096,
+      thinkingLevel: 'high', samplingOverrides: { enabled: true, temperature: 0.7, topP: 0.8, topK: 32 },
+      safetySettings: {
+        mode: 'custom', harassment: 'BLOCK_ONLY_HIGH', hateSpeech: 'BLOCK_NONE',
+        sexuallyExplicit: 'BLOCK_MEDIUM_AND_ABOVE', dangerousContent: 'BLOCK_LOW_AND_ABOVE',
+      },
+      mobileDisplay: { density: 'compact', chatTextSize: 'small' },
+    },
+    theme: 'light',
+  });
+  confirmImport = false;
+  input.value = code;
+  document.querySelector('#importSettingsCode').click();
+  assert.equal(storage.getItem('my-ai-chat-global-settings'), originalSettings);
+  assert.equal(document.documentElement.dataset.theme, 'dark');
+  confirmImport = true;
+  input.value = code;
+  document.querySelector('#importSettingsCode').click();
+  const imported = JSON.parse(storage.getItem('my-ai-chat-global-settings'));
+  assert.equal(imported.systemInstruction, '中文 🎭\n第二行 **Markdown**');
+  assert.equal(imported.defaultModel, 'gemini-3.7-flash');
+  assert.equal(imported.safetySettings.mode, 'custom');
+  assert.equal(document.documentElement.dataset.theme, 'light');
+  assert.equal(document.documentElement.dataset.mobileDensity, 'compact');
+  assert.equal(document.documentElement.dataset.chatTextSize, 'small');
+  assert.equal(document.querySelector('#systemInstructionSetting').value, imported.systemInstruction);
+  assert.equal(document.querySelector('#currentModel').textContent, existingModel);
+  assert.deepEqual((await loadChats(indexedDB)).map(chat => chat.id).sort(), chatsBefore);
+  document.querySelector('#newChatButton').click();
+  assert.equal(document.querySelector('#currentModel').textContent, 'Gemini 3.7 Flash');
+  document.querySelector('#resetGlobalSettings').click();
+  assert.equal(document.documentElement.dataset.mobileDensity, 'standard');
+  assert.equal(document.documentElement.dataset.chatTextSize, 'standard');
+  input.value = createSettingsCode({ settings: { defaultModel: 'gemini-9-unavailable' }, theme: 'dark' });
+  document.querySelector('#importSettingsCode').click();
+  assert.equal(JSON.parse(storage.getItem('my-ai-chat-global-settings')).defaultModel, 'gemini-3.1-pro-preview');
+  dom.window.close(); await closeChatDatabase();
+});
+
+test('Settings Code clipboard failure or unavailability selects the visible code for manual Safari copying', async () => {
+  const indexedDB = new IDBFactory(); const { fetchMock } = createFetchMock(); const storage = createMemoryStorage();
+  const dom = installDom(indexedDB, fetchMock, storage);
+  Object.defineProperty(dom.window.navigator, 'clipboard', {
+    configurable: true, value: { writeText: async () => { throw new Error('denied'); } },
+  });
+  await import('../ui/app.js?settings-code=clipboard-failure');
+  document.querySelector('#settingsButton').click();
+  document.querySelector('#generateSettingsCode').click();
+  const output = document.querySelector('#settingsCodeOutput');
+  assert.match(output.value, /^MAICFG1\./);
+  document.querySelector('#copySettingsCode').click();
+  await waitFor(() => document.querySelector('#toast').textContent.includes('手动复制'));
+  assert.equal(document.activeElement, output);
+  assert.equal(output.selectionStart, 0);
+  assert.equal(output.selectionEnd, output.value.length);
+  Object.defineProperty(dom.window.navigator, 'clipboard', { configurable: true, value: undefined });
+  output.setSelectionRange(1, 1);
+  document.querySelector('#copySettingsCode').click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(output.selectionStart, 0);
+  assert.equal(output.selectionEnd, output.value.length);
   dom.window.close(); await closeChatDatabase();
 });
 
