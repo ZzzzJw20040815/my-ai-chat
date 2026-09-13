@@ -114,13 +114,19 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
   const indexedDB = new IDBFactory(), transport = createTransport(), storage = memoryStorage();
   let { dom } = installMobileDom(indexedDB, transport.fetchMock, storage);
   await import('../ui/app.js?mobile-story-stability');
+  assert.equal(document.querySelector('#mobileStoryLabel').textContent, '故事');
+  assert.ok(document.querySelector('#mobileStoryButton').closest('.composer'));
   document.querySelector('#mobileStoryButton').click();
   let menu = document.querySelector('#storyMenu');
   assert.match(menu.textContent, /状态：未启用/);
   assert.deepEqual([...menu.querySelectorAll('[data-story-runtime-action]')].map(button => button.dataset.storyRuntimeAction), ['prepare_story']);
+  assert.match(menu.textContent, /开始构思/);
   menu.querySelector('[data-story-runtime-action="prepare_story"]').click();
-  await waitFor(() => menu.textContent.includes('状态：资料收集中'));
+  await waitFor(() => menu.textContent.includes('状态：构思中'));
+  assert.equal(document.querySelector('#mobileStoryLabel').textContent, '故事 · 构思中');
   assert.deepEqual([...menu.querySelectorAll('[data-story-runtime-action]')].map(button => button.dataset.storyRuntimeAction), ['start_writing', 'exit_story']);
+  assert.equal(menu.querySelector('[data-story-runtime-action="continue_story"]'), null);
+  assert.ok(menu.querySelector('[data-update-story-memory]'));
   menu.querySelector('[data-open-story-state]').click();
   assert.match(menu.textContent, /尚未生成故事记忆/);
   menu.querySelector('[data-update-story-memory]').click();
@@ -135,7 +141,9 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
   document.querySelector('#mobileStoryButton').click();
   menu = document.querySelector('#storyMenu');
   assert.match(menu.textContent, /状态：正文中/);
+  assert.equal(document.querySelector('#mobileStoryLabel').textContent, '故事 · 正文中');
   assert.deepEqual([...menu.querySelectorAll('[data-story-runtime-action]')].map(button => button.dataset.storyRuntimeAction), ['continue_story', 'continue_incomplete', 'exit_story']);
+  assert.equal(menu.querySelector('[data-story-runtime-action="start_writing"]'), null);
   assert.ok(menu.querySelector('[data-open-story-state]'));
   assert.ok(menu.querySelector('[data-update-story-memory]'));
   menu.querySelector('[data-story-runtime-action="exit_story"]').click();
@@ -144,6 +152,7 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
     return storyRuntimeState(chat).transition?.action === 'exit_story' ? chat : null;
   });
   assert.equal(storyRuntimeState(exited).enabled, false);
+  assert.equal(document.querySelector('#mobileStoryLabel').textContent, '故事');
   assert.equal((await loadStoryMemories(exited.id, indexedDB)).length, 1);
 
   dom.window.close(); await closeChatDatabase();
@@ -153,6 +162,30 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
   menu = document.querySelector('#storyMenu');
   assert.match(menu.textContent, /状态：未启用/);
   assert.deepEqual([...menu.querySelectorAll('[data-story-runtime-action]')].map(button => button.dataset.storyRuntimeAction), ['prepare_story']);
+  dom.window.close(); await closeChatDatabase();
+});
+
+test('mobile long-message editor grows to a visual-viewport cap and keeps actions touchable', async () => {
+  const indexedDB = new IDBFactory(), transport = createTransport();
+  const { dom } = installMobileDom(indexedDB, transport.fetchMock);
+  await import('../ui/app.js?mobile-long-edit-polish');
+  document.querySelector('.message.user [data-action="edit"]').click();
+  const editor = document.querySelector('.edit-area textarea');
+  assert.equal(editor.style.height, '176px');
+  Object.defineProperty(editor, 'scrollHeight', { configurable: true, value: 900 });
+  editor.value = '很长的角色设定。'.repeat(300);
+  editor.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert.equal(editor.style.height, '380px');
+  assert.equal(editor.style.overflowY, 'auto');
+  assert.deepEqual([...document.querySelectorAll('.edit-controls button')].map(button => button.textContent), ['Cancel', 'Save & resend']);
+  document.querySelector('[data-action="edit-cancel"]').click();
+  assert.equal(document.querySelector('.edit-area'), null);
+
+  const css = await readFile(new URL('../ui/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.edit-area\s*\{[^}]*width:\s*100%/);
+  assert.match(css, /\.edit-area textarea\s*\{[^}]*min-height:\s*176px;[^}]*max-height:\s*min\(46dvh, 380px\);[^}]*font-size:\s*16px/s);
+  assert.match(css, /\.edit-controls\s*\{[^}]*position:\s*sticky;[^}]*env\(safe-area-inset-bottom\)[^}]*grid-template-columns:/s);
+  assert.match(css, /\.edit-controls \.small-button\s*\{[^}]*min-height:\s*44px/s);
   dom.window.close(); await closeChatDatabase();
 });
 
@@ -189,4 +222,6 @@ test('shared mobile sheet CSS stays above composer, uses safe area, and avoids h
   assert.match(css, /\.surface-menu\s*\{[^}]*overflow-x:\s*hidden/s);
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.surface-menu\s*\{[^}]*env\(safe-area-inset-bottom\)/);
   assert.match(css, /\.mobile-story-button\s*\{[^}]*min-height:\s*44px/s);
+  assert.match(css, /\.chat-heading > \.story-runtime-control, \.chat-heading > \.story-panel\s*\{\s*display:\s*none/);
+  assert.match(css, /\.mobile-story-button\s*\{[^}]*border-radius:\s*999px/);
 });

@@ -315,7 +315,7 @@ test('Story Runtime UI persists setup/writing and sends branch actions without v
   document.querySelector('#newChatButton').click();
   document.querySelector('[data-story-runtime-action="prepare_story"]').click();
   await waitFor(async () => (await loadChats(indexedDB)).find(chat => !chat.demo)?.storyRuntime?.transitions?.length === 1);
-  assert.match(document.querySelector('.story-runtime-control').textContent, /资料收集中/);
+  assert.match(document.querySelector('.story-runtime-control').textContent, /构思中/);
 
   submitMessage('地点是一座雨夜图书馆。');
   await waitFor(async () => transport.payloads.some(payload => payload.storyRuntime?.mode === 'setup'));

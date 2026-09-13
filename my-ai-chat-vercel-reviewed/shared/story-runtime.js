@@ -57,7 +57,8 @@ Render the user's actions, dialogue, and events concretely instead of merely res
 
 const ACTION_GUIDANCE = Object.freeze({
   prepare_story: 'Remain in setup mode. Help clarify the premise briefly; do not start the formal story.',
-  start_writing: 'Begin the formal story now with one measured opening beat based only on established premises. Use user-provided names; if a necessary name is absent, choose a natural, distinct name without replacing any established name.',
+  start_writing: `Begin the formal story now with one measured opening beat using the entire active setup-branch conversation as context.
+Treat facts stated by the user and assistant suggestions the user explicitly accepted or confirmed as established premises. An assistant brainstorming suggestion that the user never accepted remains only a candidate and must not become canonical merely because it appeared in the conversation. If brainstormed options conflict, prioritize the user's latest explicit statement, then explicitly accepted options, then established Story Memory and branch facts. Do not randomly choose an unconfirmed option; keep it unspecified when needed. Use user-provided names; if a necessary name is absent, choose a natural, distinct name without replacing any established name.`,
   continue_story: 'Continue the current active branch by one natural, modest beat. Preserve user agency and continuity; do not force a climax, large time jump, scene change, or relationship change.',
   continue_incomplete: 'Continue directly from the end of the current active assistant response. Do not restart, summarize, substantially repeat it, change direction, jump scene, or reset state. Preserve its voice, pacing, POV, characters, time, positions, clothing, and ongoing action.',
 });

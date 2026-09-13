@@ -132,6 +132,33 @@ test('writing rules preserve agency, limited POV, continuity and one-call action
   assert.match(incomplete, /Do not restart, summarize, substantially repeat/);
 });
 
+test('start_writing uses the full active setup branch but does not canonize unconfirmed brainstorming', async () => {
+  const chat = createChat(MODEL);
+  let parentVariantId = null;
+  const expected = [];
+  for (let index = 1; index <= 6; index++) {
+    const user = createMessage('user', index === 6 ? '我确认选择海边，时间改为清晨。' : `用户设定 ${index}`);
+    user.parentVariantId = parentVariantId;
+    const assistant = createMessage('assistant', index === 5 ? '候选方案：月球基地或海边小镇。' : `助手讨论 ${index}`, MODEL);
+    assistant.parentUserId = user.id;
+    chat.messages.push(user, assistant); parentVariantId = assistant.id;
+    expected.push(user.content, assistant.content);
+  }
+  const control = createRuntimeControl('start_writing', parentVariantId); chat.messages.push(control);
+  assert.deepEqual(contextFor(chat, control.id, 'all').map(item => item.content), expected);
+  assert.ok(contextFor(chat, control.id, 10).length < expected.length);
+
+  const instruction = storyRuntimeSystemInstruction('', { mode: 'writing', action: 'start_writing' }, expected.at(-1));
+  assert.match(instruction, /entire active setup-branch conversation/);
+  assert.match(instruction, /explicitly accepted or confirmed/);
+  assert.match(instruction, /never accepted remains only a candidate/);
+  assert.match(instruction, /must not become canonical/);
+  assert.match(instruction, /user's latest explicit statement/);
+
+  const app = await readFile(new URL('../ui/app.js', import.meta.url), 'utf8');
+  assert.match(app, /runtimeAction === 'start_writing' \? 'all' : globalSettings\.contextLimit/);
+});
+
 test('normalization ignores malformed runtime transitions without damaging chat data', () => {
   assert.deepEqual(normalizeStoryRuntime({ transitions: [{ id: 'bad', anchorId: null, mode: 'writing', action: 'prepare_story', createdAt: 'bad' }] }), { version: 1, transitions: [] });
   const exited = normalizeStoryRuntime({ transitions: [{ id: 'exit', anchorId: 'branch', mode: 'disabled', action: 'exit_story', createdAt: '2026-09-12T01:00:00Z' }] });
@@ -145,7 +172,7 @@ test('runtime UI is Chinese, compact, mobile-safe, and preserves Phase 4C reason
     readFile(new URL('../ui/styles.css', import.meta.url), 'utf8'),
     import('../shared/response-quality.js'),
   ]);
-  for (const label of ['故事', '准备故事', '资料收集中', '开始正文', '正文中', '继续故事', '继续未完成', '退出故事模式']) assert.match(html + app, new RegExp(label));
+  for (const label of ['故事', '开始构思', '构思中', '开始正文', '正文中', '继续故事', '继续未完成', '退出故事模式']) assert.match(html + app, new RegExp(label));
   assert.deepEqual(quality.REGENERATION_REASON_OPTIONS.map(item => item.id), ['try_again', 'character_off', 'too_repetitive', 'too_fast', 'acted_for_me', 'continuity_issue']);
   assert.match(css, /\.surface-menu\s*\{[^}]*position:\s*fixed[^}]*max-height|\.runtime-menu\s*\{[^}]*max-height:/s);
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.surface-menu\s*\{[^}]*env\(safe-area-inset-bottom\)/);
