@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { validateGenerationSettings, validatePayload } from '../server/chat.js';
 import { MODELS } from '../shared/models.js';
 import {
-  DEFAULT_GLOBAL_SETTINGS, GLOBAL_SETTINGS_STORAGE_KEY, normalizeGlobalSettings,
+  CHAT_TEXT_SIZES, DEFAULT_GLOBAL_SETTINGS, GLOBAL_SETTINGS_STORAGE_KEY, MOBILE_DENSITIES, normalizeGlobalSettings,
 } from '../shared/settings.js';
 import { createChat, createMessage, contextFor } from '../ui/state.js';
 import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from '../ui/settings.js';
@@ -30,6 +30,7 @@ test('global settings persist, tolerate malformed/legacy values, and reset indep
     maxOutputTokens: 4096,
     thinkingLevel: 'high',
     samplingOverrides: { enabled: true, temperature: 0.8, topP: 0.9, topK: 32 },
+    mobileDisplay: { density: 'compact', chatTextSize: 'large' },
   }, storage);
   assert.deepEqual(loadGlobalSettings(storage), saved);
   assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).defaultModel, FLASH);
@@ -39,6 +40,21 @@ test('global settings persist, tolerate malformed/legacy values, and reset indep
   storage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, '{broken');
   assert.deepEqual(loadGlobalSettings(storage), normalizeGlobalSettings(null));
   assert.deepEqual(resetGlobalSettings(storage), normalizeGlobalSettings(DEFAULT_GLOBAL_SETTINGS));
+});
+
+test('mobile display settings normalize legacy, valid, and malformed preferences safely', () => {
+  assert.deepEqual(normalizeGlobalSettings({}).mobileDisplay, { density: 'standard', chatTextSize: 'standard' });
+  assert.deepEqual(normalizeGlobalSettings({ mobileDisplay: null }).mobileDisplay, { density: 'standard', chatTextSize: 'standard' });
+  assert.deepEqual(normalizeGlobalSettings({ mobileDisplay: { density: 'invalid', chatTextSize: 'huge' } }).mobileDisplay,
+    { density: 'standard', chatTextSize: 'standard' });
+  assert.deepEqual(MOBILE_DENSITIES, ['compact', 'standard', 'comfortable']);
+  assert.deepEqual(CHAT_TEXT_SIZES, ['small', 'standard', 'large']);
+  for (const density of MOBILE_DENSITIES) {
+    assert.equal(normalizeGlobalSettings({ mobileDisplay: { density, chatTextSize: 'standard' } }).mobileDisplay.density, density);
+  }
+  for (const chatTextSize of CHAT_TEXT_SIZES) {
+    assert.equal(normalizeGlobalSettings({ mobileDisplay: { density: 'standard', chatTextSize } }).mobileDisplay.chatTextSize, chatTextSize);
+  }
 });
 
 test('context limit trims sent history only and continues excluding interrupted assistants', () => {
@@ -87,6 +103,7 @@ test('model defaults omit generation overrides and sampling OFF ignores numeric 
   assert.equal(clientSettings.maxOutputTokens, null);
   assert.equal(clientSettings.thinkingLevel, 'default');
   assert.equal(clientSettings.samplingOverrides.enabled, false);
+  assert.equal(Object.hasOwn(clientSettings, 'mobileDisplay'), false);
 });
 
 test('server rejects invalid known parameters and unsupported thinking levels', () => {
@@ -125,7 +142,7 @@ test('mobile settings close and composer send controls use stable flex alignment
   assert.match(headerRule, /align-items:\s*center/);
   assert.match(headerRule, /gap:\s*16px/);
   assert.match(css, /\.settings-head \.icon-button\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px/);
-  assert.match(css, /\.composer-actions\s*\{[^}]*gap:\s*8px;[^}]*padding:\s*0 2px 2px/);
+  assert.match(css, /\.composer-actions\s*\{[^}]*gap:\s*var\(--mobile-control-gap\);[^}]*padding:\s*0 2px 2px/);
   assert.match(css, /\.composer-dock\s*\{[\s\S]*?padding-bottom:\s*max\(11px, env\(safe-area-inset-bottom\)\)/);
   assert.doesNotMatch(css, /@media \(max-width: 520px\)[\s\S]*?\.send-button\s*\{[^}]*transform:/);
 });

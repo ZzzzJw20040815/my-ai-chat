@@ -32,8 +32,10 @@ test('legacy Phase 3B-1 settings upgrade without changing existing values', () =
     thinkingLevel: 'high', samplingOverrides: { enabled: true, temperature: 0.8, topP: 0.9, topK: 32 },
   };
   const upgraded = normalizeGlobalSettings(legacy);
-  assert.deepEqual({ ...upgraded, safetySettings: undefined }, { ...legacy, safetySettings: undefined });
+  assert.deepEqual({ ...upgraded, safetySettings: undefined, mobileDisplay: undefined },
+    { ...legacy, safetySettings: undefined, mobileDisplay: undefined });
   assert.deepEqual(upgraded.safetySettings, DEFAULT_GLOBAL_SETTINGS.safetySettings);
+  assert.deepEqual(upgraded.mobileDisplay, DEFAULT_GLOBAL_SETTINGS.mobileDisplay);
 });
 
 test('custom safety settings persist across reload and Reset restores defaults', () => {

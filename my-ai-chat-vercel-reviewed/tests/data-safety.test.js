@@ -60,6 +60,7 @@ function settings() {
     thinkingLevel: 'low',
     samplingOverrides: { enabled: true, temperature: 0.7, topP: 0.8, topK: 32 },
     safetySettings: { ...DEFAULT_GLOBAL_SETTINGS.safetySettings, mode: 'custom', harassment: 'BLOCK_ONLY_HIGH' },
+    mobileDisplay: { density: 'compact', chatTextSize: 'large' },
   };
 }
 
@@ -170,6 +171,14 @@ test('unknown settings are ignored and invalid activeChatId safely falls back to
   const normalized = validateBackup({ ...backup, settings: { ...settings(), injected: 'ignored' }, activeChatId: 'missing' });
   assert.equal(normalized.settings.injected, undefined);
   assert.equal(normalized.activeChatId, null);
+});
+
+test('old backups without mobile display preferences import as standard defaults', () => {
+  const backup = createBackup({ chats: [branchedChat()], settings: settings() });
+  delete backup.settings.mobileDisplay;
+  const normalized = validateBackup(backup);
+  assert.deepEqual(normalized.settings.mobileDisplay, { density: 'standard', chatTextSize: 'standard' });
+  assert.equal(normalized.version, BACKUP_VERSION);
 });
 
 test('in-progress generations become safely interrupted in exported data', () => {
