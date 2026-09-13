@@ -407,9 +407,10 @@ async function newChat() {
   selectChat(chat.id); input.focus(); await persistChat(chat);
 }
 function syncSettingsUi() {
+  const settingsModelId = availableDefaultModel(globalSettings.defaultModel, modelCatalog);
   $('#defaultModelSetting').innerHTML = modelCatalog.models.map(model => '<option value="' + model.id + '">' + escapeHtml(model.name) +
     (model.source === 'discovered' ? ' · Auto' : '') + '</option>').join('');
-  $('#defaultModelSetting').value = availableDefaultModel(globalSettings.defaultModel, modelCatalog);
+  $('#defaultModelSetting').value = settingsModelId;
   $('#refreshModels').disabled = modelCatalogBusy;
   $('#refreshModels').textContent = modelCatalogBusy ? 'Refreshing…' : 'Refresh Models';
   $('#modelCatalogSynced').textContent = modelCatalog.syncedAt
@@ -427,7 +428,7 @@ function syncSettingsUi() {
     const active = button.dataset.chatTextSize === globalSettings.mobileDisplay.chatTextSize;
     button.classList.toggle('active', active); button.setAttribute('aria-checked', String(active));
   });
-  const capabilities = modelCatalog.metadata(globalSettings.defaultModel)?.capabilities;
+  const capabilities = modelCatalog.metadata(settingsModelId)?.capabilities;
   for (const option of $('#thinkingLevelSetting').options) {
     option.disabled = option.value !== 'default' && !capabilities?.thinkingLevels.includes(option.value);
   }
@@ -438,6 +439,9 @@ function syncSettingsUi() {
   const samplingSupported = capabilities?.samplingOverrides === true;
   $('#samplingEnabledSetting').checked = samplingSupported && globalSettings.samplingOverrides.enabled;
   $('#samplingEnabledSetting').disabled = !samplingSupported;
+  $('#samplingSupport').textContent = samplingSupported
+    ? 'For Gemini 3.x, model defaults are recommended.'
+    : 'Sampling overrides are not supported by the selected default model.';
   $('#temperatureSetting').value = globalSettings.samplingOverrides.temperature;
   $('#topPSetting').value = globalSettings.samplingOverrides.topP;
   $('#topKSetting').value = globalSettings.samplingOverrides.topK;
@@ -1018,9 +1022,14 @@ $('#maxOutputTokensSetting').addEventListener('change', event => {
   updateGlobalSettings({ maxOutputTokens: value ? Number(value) : null });
 });
 $('#thinkingLevelSetting').addEventListener('change', event => updateGlobalSettings({ thinkingLevel: event.target.value }));
-$('#samplingEnabledSetting').addEventListener('change', event => updateGlobalSettings({
-  samplingOverrides: { ...globalSettings.samplingOverrides, enabled: event.target.checked },
-}));
+const updateSamplingEnabled = event => {
+  const enabled = event.target.checked;
+  if (globalSettings.samplingOverrides.enabled === enabled) return;
+  updateGlobalSettings({ samplingOverrides: { ...globalSettings.samplingOverrides, enabled } });
+};
+// Capture real activation before an asynchronous Settings repaint, while retaining change-event compatibility.
+$('#samplingEnabledSetting').addEventListener('click', updateSamplingEnabled);
+$('#samplingEnabledSetting').addEventListener('change', updateSamplingEnabled);
 $('#safetyModeSetting').addEventListener('change', event => updateGlobalSettings({
   safetySettings: { ...globalSettings.safetySettings, mode: event.target.value },
 }));

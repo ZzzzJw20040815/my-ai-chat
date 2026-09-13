@@ -199,8 +199,8 @@
           </label>
           <div class="advanced-settings">
             <label class="toggle-row">
-              <span><strong>Override sampling defaults</strong><small>For Gemini 3.x, model defaults are recommended.</small></span>
-              <input id="samplingEnabledSetting" type="checkbox" role="switch" />
+              <span><strong>Override sampling defaults</strong><small id="samplingSupport">For Gemini 3.x, model defaults are recommended.</small></span>
+              <input id="samplingEnabledSetting" type="checkbox" role="switch" aria-describedby="samplingSupport" />
             </label>
             <fieldset class="advanced-fields" id="advancedFields">
               <label class="compact-field"><span>Temperature</span><input id="temperatureSetting" type="number" min="0" max="2" step="0.05" /></label>

@@ -5,8 +5,10 @@ import { webcrypto } from 'node:crypto';
 import { JSDOM } from 'jsdom';
 import { IDBFactory } from 'fake-indexeddb';
 import { MODELS } from '../shared/models.js';
+import { DEFAULT_GLOBAL_SETTINGS, GLOBAL_SETTINGS_STORAGE_KEY } from '../shared/settings.js';
 import { activeAssistantVariant } from '../ui/state.js';
 import { createSettingsCode } from '../ui/settings-code.js';
+import { MODEL_CATALOG_STORAGE_KEY, MODEL_CATALOG_SYNC_STORAGE_KEY } from '../ui/model-catalog.js';
 import { closeChatDatabase, loadChats, loadStoryMemories, loadStyleReferences, loadWallpaperAsset } from '../ui/storage.js';
 
 const html = await readFile(new URL('../ui/index.html', import.meta.url), 'utf8');
@@ -21,12 +23,12 @@ const waitFor = async (check, timeout = 4000) => {
   throw new Error('Timed out waiting for persisted app state');
 };
 
-function installDom(indexedDB, fetchMock, storage) {
+function installDom(indexedDB, fetchMock, storage, mobileMatches = false) {
   const dom = new JSDOM(html, { url: 'https://app.example/' });
   const dialog = dom.window.document.querySelector('#settingsDialog');
   dialog.showModal = () => dialog.setAttribute('open', '');
   dialog.close = () => { dialog.removeAttribute('open'); dialog.dispatchEvent(new dom.window.Event('close')); };
-  const media = { matches: false, addEventListener() {}, removeEventListener() {} };
+  const media = { matches: mobileMatches, addEventListener() {}, removeEventListener() {} };
   Object.assign(globalThis, {
     window: dom.window,
     document: dom.window.document,
@@ -509,6 +511,99 @@ test('Mobile Display Settings apply immediately, preserve drafts, reload, and re
   dom.window.close(); await closeChatDatabase();
 });
 
+test('Sampling override toggle persists on supported models while Top K remains independently gated', async () => {
+  const indexedDB = new IDBFactory(); const { fetchMock } = createFetchMock(); const storage = createMemoryStorage();
+  const settingsWrites = [];
+  const setItem = storage.setItem.bind(storage);
+  storage.setItem = (key, value) => {
+    if (key === GLOBAL_SETTINGS_STORAGE_KEY) settingsWrites.push(JSON.parse(String(value)));
+    setItem(key, value);
+  };
+  let dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?sampling-toggle=desktop');
+  document.querySelector('#settingsButton').click();
+  const toggle = document.querySelector('#samplingEnabledSetting');
+  const fields = document.querySelector('#advancedFields');
+  const temperature = document.querySelector('#temperatureSetting');
+  const topP = document.querySelector('#topPSetting');
+  const topK = document.querySelector('#topKSetting');
+  assert.equal(toggle.disabled, false);
+  assert.equal(toggle.checked, false);
+  assert.equal(fields.disabled, true);
+  let changeEvents = 0;
+  toggle.addEventListener('change', () => { changeEvents += 1; });
+  toggle.click();
+  assert.equal(settingsWrites.at(-1)?.samplingOverrides.enabled, true);
+  assert.equal(changeEvents, 1);
+  assert.equal(toggle.checked, true);
+  assert.equal(fields.disabled, false);
+  assert.equal(temperature.matches(':disabled'), false);
+  assert.equal(topP.matches(':disabled'), false);
+  assert.equal(topK.disabled, true);
+  assert.match(document.querySelector('#topKSupport').textContent, /Not supported/);
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).samplingOverrides.enabled, true);
+  document.querySelector('#generateSettingsCode').click();
+  const exportedCode = document.querySelector('#settingsCodeOutput').value;
+  assert.equal(JSON.parse(Buffer.from(exportedCode.split('.')[1], 'base64url').toString('utf8'))
+    .globalSettings.samplingOverrides.enabled, true);
+  toggle.click();
+  assert.equal(toggle.checked, false);
+  assert.equal(fields.disabled, true);
+  toggle.click();
+
+  dom.window.close(); await closeChatDatabase();
+  dom = installDom(indexedDB, fetchMock, storage, true);
+  await import('../ui/app.js?sampling-toggle=mobile-reload');
+  document.querySelector('#settingsButton').click();
+  assert.equal(document.querySelector('#samplingEnabledSetting').checked, true);
+  assert.equal(document.querySelector('#advancedFields').disabled, false);
+  document.querySelector('#resetGlobalSettings').click();
+  assert.equal(document.querySelector('#samplingEnabledSetting').checked, false);
+  assert.equal(document.querySelector('#advancedFields').disabled, true);
+  dom.window.close(); await closeChatDatabase();
+});
+
+test('Sampling capability uses the displayed fallback model and unsupported discovered models explain the disabled toggle', async () => {
+  const indexedDB = new IDBFactory(); const { fetchMock } = createFetchMock();
+  let storage = createMemoryStorage();
+  storage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, JSON.stringify({
+    ...DEFAULT_GLOBAL_SETTINGS, defaultModel: 'gemini-removed-model',
+  }));
+  storage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify({ version: 1, models: [] }));
+  storage.setItem(MODEL_CATALOG_SYNC_STORAGE_KEY, new Date().toISOString());
+  let dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?sampling-toggle=fallback-model');
+  document.querySelector('#settingsButton').click();
+  assert.equal(document.querySelector('#defaultModelSetting').value, 'gemini-3.1-pro-preview');
+  assert.equal(document.querySelector('#samplingEnabledSetting').disabled, false);
+  document.querySelector('#samplingEnabledSetting').click();
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).samplingOverrides.enabled, true);
+  dom.window.close(); await closeChatDatabase();
+
+  const discovered = {
+    id: 'gemini-auto-no-sampling', name: 'Gemini Auto No Sampling', description: 'Limited metadata',
+    stage: 'stable', source: 'discovered', capabilities: {
+      thinking: false, thinkingLevels: [], topK: false, safetySettings: false, samplingOverrides: false,
+      outputTokenLimit: 32768, maxTemperature: null, topP: null,
+    },
+  };
+  storage = createMemoryStorage();
+  storage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, JSON.stringify({ ...DEFAULT_GLOBAL_SETTINGS, defaultModel: discovered.id }));
+  storage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify({ version: 1, models: [discovered] }));
+  storage.setItem(MODEL_CATALOG_SYNC_STORAGE_KEY, new Date().toISOString());
+  dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?sampling-toggle=unsupported-discovered');
+  document.querySelector('#settingsButton').click();
+  const toggle = document.querySelector('#samplingEnabledSetting');
+  assert.equal(document.querySelector('#defaultModelSetting').value, discovered.id);
+  assert.equal(toggle.disabled, true);
+  assert.match(document.querySelector('#samplingSupport').textContent, /not supported by the selected default model/i);
+  toggle.click();
+  assert.equal(toggle.checked, false);
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).samplingOverrides.enabled, false);
+  dom.window.close(); await closeChatDatabase();
+});
+
 test('Settings Code import is validated first, applies atomically, preserves chats, and keeps existing-chat model semantics', async () => {
   const indexedDB = new IDBFactory(); const { fetchMock } = createFetchMock(); const storage = createMemoryStorage();
   const dom = installDom(indexedDB, fetchMock, storage);
@@ -554,6 +649,11 @@ test('Settings Code import is validated first, applies atomically, preserves cha
   assert.equal(document.documentElement.dataset.theme, 'light');
   assert.equal(document.documentElement.dataset.mobileDensity, 'compact');
   assert.equal(document.documentElement.dataset.chatTextSize, 'small');
+  assert.equal(document.querySelector('#samplingEnabledSetting').checked, true);
+  assert.equal(document.querySelector('#advancedFields').disabled, false);
+  assert.equal(document.querySelector('#temperatureSetting').matches(':disabled'), false);
+  assert.equal(document.querySelector('#topPSetting').matches(':disabled'), false);
+  assert.equal(document.querySelector('#topKSetting').disabled, true);
   assert.equal(document.querySelector('#systemInstructionSetting').value, imported.systemInstruction);
   assert.equal(document.querySelector('#currentModel').textContent, existingModel);
   assert.deepEqual((await loadChats(indexedDB)).map(chat => chat.id).sort(), chatsBefore);
