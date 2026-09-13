@@ -112,6 +112,9 @@ test('runtime is supplemental system context, not fake messages, and disabled re
   const setup = validatePayload({ ...base, storyRuntime: { mode: 'setup' } });
   assert.equal(setup.contents.length, 1); assert.equal(setup.contents[0].parts[0].text, 'Premise');
   assert.match(setup.config.systemInstruction, /Do not begin formal story prose/);
+  assert.match(setup.config.systemInstruction, /explicit start_writing runtime action/);
+  assert.match(setup.config.systemInstruction, /“I hope the opening is…”/);
+  assert.match(setup.config.systemInstruction, /Respond briefly/);
   const action = validatePayload({ ...base, messages: [base.messages[0], {
     id: 'a', role: 'assistant', content: 'The door opened—', status: 'complete',
   }], storyRuntime: { mode: 'writing', action: 'continue_incomplete' } });
@@ -119,6 +122,36 @@ test('runtime is supplemental system context, not fake messages, and disabled re
   assert.match(action.config.systemInstruction, /Continue directly from the end/);
   assert.match(action.config.systemInstruction, /The door opened/);
   assert.doesNotMatch(JSON.stringify(action.contents), /continue_incomplete|STORY RUNTIME/);
+});
+
+test('setup is a request-scoped gate that roleplay instructions and style cannot bypass', () => {
+  const result = validatePayload({
+    model: MODEL,
+    messages: [{ id: 'u', role: 'user', content: '我希望开头是家庭晚餐，再补充人物关系。', status: 'complete' }],
+    settings: { systemInstruction: 'Always roleplay in first person and immediately continue the scene.' },
+    styleReferences: [{ id: 'style', content: 'I walked into the room and began the scene.' }],
+    storyRuntime: { mode: 'setup' },
+  });
+  const instruction = result.config.systemInstruction;
+  assert.match(instruction, /REQUEST-SCOPED OPERATIONAL MODE GATE/);
+  assert.match(instruction, /overrides any user-configured system instruction or roleplay tendency/);
+  assert.match(instruction, /premise or brainstorming, not permission to start the story/);
+  assert.ok(instruction.indexOf('STYLE REFERENCE POLICY') < instruction.indexOf('REQUEST-SCOPED OPERATIONAL MODE GATE'));
+  assert.equal(result.contents.at(-1).parts[0].text, '我希望开头是家庭晚餐，再补充人物关系。');
+});
+
+test('start_writing may use a valid premise after a stopped setup reply without Story Memory', () => {
+  const chat = createChat(MODEL);
+  const user = createMessage('user', '补充设定：第一幕发生在家庭晚餐。');
+  const stopped = createMessage('assistant', '未完成的候选', MODEL);
+  stopped.status = 'stopped'; stopped.parentUserId = user.id;
+  chat.messages.push(user, stopped);
+  const control = createRuntimeControl('start_writing', stopped.id); chat.messages.push(control);
+  const context = contextFor(chat, control.id, 'all');
+  assert.deepEqual(context.map(item => item.content), [user.content]);
+  const result = validatePayload({ model: MODEL, messages: context, storyRuntime: { mode: 'writing', action: 'start_writing' } });
+  assert.equal(result.contents.at(-1).role, 'user');
+  assert.match(result.config.systemInstruction, /Begin the formal story now/);
 });
 
 test('writing rules preserve agency, limited POV, continuity and one-call action semantics', () => {

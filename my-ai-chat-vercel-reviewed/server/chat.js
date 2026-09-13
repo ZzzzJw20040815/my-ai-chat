@@ -61,8 +61,8 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
   const storyRuntime = validateStoryRuntimeRequest(payload.storyRuntime);
   let activeAssistantContent = '';
   if (storyRuntime?.action && storyRuntime.action !== 'prepare_story') {
-    if (contents.at(-1)?.role !== 'model') throw new Error('INVALID_REQUEST');
-    activeAssistantContent = contents.pop().parts[0].text;
+    if (contents.at(-1)?.role === 'model') activeAssistantContent = contents.pop().parts[0].text;
+    else if (storyRuntime.action !== 'start_writing') throw new Error('INVALID_REQUEST');
   }
   if (contents.at(-1)?.role !== 'user') throw new Error('INVALID_REQUEST');
   const config = validateGenerationSettings(payload.settings, authorizedModel);
@@ -70,15 +70,15 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
     const memory = validateStoryMemory(payload.storyMemory);
     config.systemInstruction = storyMemorySystemInstruction(config.systemInstruction || '', memory);
   }
-  if (storyRuntime) {
-    config.systemInstruction = storyRuntimeSystemInstruction(config.systemInstruction || '', storyRuntime, activeAssistantContent);
-  }
   const styleReferences = validateStyleReferences(payload.styleReferences);
   const regenerationReason = payload.regenerationReason == null ? null : payload.regenerationReason;
   if (regenerationReason !== null && !isRegenerationReason(regenerationReason)) throw new Error('INVALID_REQUEST');
   const systemInstruction = responseQualitySystemInstruction(config.systemInstruction || '', styleReferences, regenerationReason);
   if (systemInstruction) config.systemInstruction = systemInstruction;
   else delete config.systemInstruction;
+  if (storyRuntime) {
+    config.systemInstruction = storyRuntimeSystemInstruction(config.systemInstruction || '', storyRuntime, activeAssistantContent);
+  }
   return { model: payload.model, contents, config };
 }
 function invalidRequest() { throw new Error('INVALID_REQUEST'); }

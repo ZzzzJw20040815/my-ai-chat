@@ -226,9 +226,13 @@ function storyRuntimeHtml(chat) {
   const ready = assistant && activeAssistantVariant(assistant)?.status === 'complete' && !generation;
   if (!runtime.enabled) return '<div class="story-runtime-control"><button class="small-button" type="button" data-story-runtime-action="prepare_story"' +
     (generation ? ' disabled' : '') + '>开始构思</button></div>';
-  if (runtime.mode === 'setup') return '<div class="story-runtime-control"><span class="story-runtime-status"><i></i>构思中</span>' +
-    '<button class="small-button primary" type="button" data-story-runtime-action="start_writing"' + (ready ? '' : ' disabled') + '>开始正文</button>' +
+  if (runtime.mode === 'setup') {
+    const availability = startWritingAvailability(chat);
+    return '<div class="story-runtime-control"><span class="story-runtime-status"><i></i>构思中</span>' +
+    '<button class="small-button primary" type="button" data-story-runtime-action="start_writing"' +
+    (availability.enabled ? '' : ' disabled title="' + escapeHtml(availability.reason) + '"') + '>开始正文</button>' +
     '<button class="small-button" type="button" data-story-runtime-action="exit_story">退出故事模式</button></div>';
+  }
   return '<div class="story-runtime-control"><span class="story-runtime-status"><i></i>正文中</span>' +
     '<button class="small-button" type="button" data-open-runtime-menu' + (ready ? '' : ' disabled') + ' aria-haspopup="menu" aria-expanded="false">故事操作</button></div>';
 }
@@ -247,6 +251,7 @@ function renderConversation(bottom = false) {
   }
   syncMobileStoryButton(chat);
   resizeEditTextarea($('.edit-area textarea'));
+  if (!$('#storyMenu').hidden) renderStoryMenu($('#storyMenu').dataset.view || 'overview');
   conversation.scrollTop = bottom ? conversation.scrollHeight : saved;
 }
 
@@ -637,6 +642,19 @@ function storyAction(actionId, label, { primary = false, disabled = false, detai
   return '<button class="story-menu-action' + (primary ? ' primary' : '') + '" type="button" data-story-runtime-action="' + actionId + '"' +
     (disabled ? ' disabled' : '') + '><span>' + escapeHtml(label) + '</span>' + (detail ? '<small>' + escapeHtml(detail) + '</small>' : '') + '</button>';
 }
+function startWritingAvailability(chat) {
+  if (generation) return { enabled: false, reason: '等待当前回复完成' };
+  const hasPremise = visibleConversationPath(chat).some(message => message.role === 'user'
+    && !isRuntimeControlMessage(message) && message.status === 'complete' && message.content.trim());
+  if (!hasPremise) return { enabled: false, reason: '请先提供一些故事想法' };
+  return { enabled: true, reason: '' };
+}
+function startWritingAction(chat) {
+  const availability = startWritingAvailability(chat);
+  return storyAction('start_writing', '开始正文', {
+    primary: true, disabled: !availability.enabled, detail: availability.reason,
+  });
+}
 function storyMemoryAction(canUpdate, primary = false) {
   const disabled = storyMemoryBusy || !canUpdate;
   const detail = storyMemoryBusy ? '正在处理' : generation ? '等待当前回复完成' : canUpdate ? '' : '暂无可更新内容';
@@ -682,7 +700,7 @@ function renderStoryMenu(viewName = 'overview') {
     if (runtime.mode === 'setup') actions =
       '<button class="story-menu-action" type="button" data-open-story-state><span>故事状态</span><small>' + (memory ? '查看当前状态' : '尚未生成记忆') + '</small></button>' +
       storyMemoryAction(canUpdate) +
-      storyAction('start_writing', '开始正文', { primary: true, disabled: !ready }) + storyAction('exit_story', '退出故事模式');
+      startWritingAction(chat) + storyAction('exit_story', '退出故事模式');
     if (runtime.mode === 'writing') actions =
       '<button class="story-menu-action" type="button" data-open-story-state><span>故事状态</span><small>' + (memory ? '查看当前状态' : '尚未生成记忆') + '</small></button>' +
       storyMemoryAction(canUpdate) +
@@ -716,7 +734,8 @@ async function runStoryRuntimeAction(actionId) {
     || (actionId !== 'start_writing' && runtime.mode !== 'writing')) return;
   const assistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
   const variant = activeAssistantVariant(assistant);
-  if (!assistant || variant?.status !== 'complete') return;
+  if (!assistant || !variant || (actionId === 'start_writing' && !startWritingAvailability(chat).enabled)
+    || (actionId !== 'start_writing' && variant.status !== 'complete')) return;
   const control = createRuntimeControl(actionId, variant.id);
   chat.messages.push(control);
   if (actionId === 'start_writing') setStoryRuntimeMode(chat, 'writing', actionId, control.id);

@@ -64,6 +64,17 @@ function createTransport() {
   return { fetchMock, payloads };
 }
 
+function createPausedChatTransport() {
+  const transport = createTransport();
+  let releaseChat;
+  const gate = new Promise(resolve => { releaseChat = resolve; });
+  const fetchMock = async (url, init = {}) => {
+    if (String(url).includes('/api/chat')) await gate;
+    return transport.fetchMock(url, init);
+  };
+  return { ...transport, fetchMock, releaseChat };
+}
+
 function installMobileDom(indexedDB, fetchMock, storage = memoryStorage()) {
   const dom = new JSDOM(html, { url: 'https://app.example/' });
   const dialog = dom.window.document.querySelector('#settingsDialog');
@@ -111,7 +122,7 @@ test('390x844 regenerate sheet opens above composer, closes cleanly, and sends s
 });
 
 test('mobile Story entry is contextual, shows explicit empty state, refreshes memory, and exit persists', async () => {
-  const indexedDB = new IDBFactory(), transport = createTransport(), storage = memoryStorage();
+  const indexedDB = new IDBFactory(), transport = createPausedChatTransport(), storage = memoryStorage();
   let { dom } = installMobileDom(indexedDB, transport.fetchMock, storage);
   await import('../ui/app.js?mobile-story-stability');
   assert.equal(document.querySelector('#mobileStoryLabel').textContent, '故事');
@@ -127,11 +138,21 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
   assert.deepEqual([...menu.querySelectorAll('[data-story-runtime-action]')].map(button => button.dataset.storyRuntimeAction), ['start_writing', 'exit_story']);
   assert.equal(menu.querySelector('[data-story-runtime-action="continue_story"]'), null);
   assert.ok(menu.querySelector('[data-update-story-memory]'));
+  assert.equal(menu.querySelector('[data-story-runtime-action="start_writing"]').disabled, false);
+  assert.equal((await loadStoryMemories((await loadChats(indexedDB)).find(item => item.demo).id, indexedDB)).length, 0);
+
+  const input = document.querySelector('#messageInput');
+  input.value = '补充设定：我希望开头是家庭晚餐。';
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  document.querySelector('#composerForm').requestSubmit();
+  await waitFor(() => menu.querySelector('[data-story-runtime-action="start_writing"]')?.disabled);
+  assert.match(menu.textContent, /等待当前回复完成/);
+  transport.releaseChat();
+  await waitFor(() => menu.querySelector('[data-story-runtime-action="start_writing"]')?.disabled === false);
+  assert.ok(transport.payloads.some(payload => payload.storyRuntime?.mode === 'setup' && !payload.storyRuntime.action));
+
   menu.querySelector('[data-open-story-state]').click();
   assert.match(menu.textContent, /尚未生成故事记忆/);
-  menu.querySelector('[data-update-story-memory]').click();
-  await waitFor(() => menu.textContent.includes('雨夜图书馆'));
-  assert.match(menu.textContent, /米拉/);
   menu.querySelector('[data-story-menu-back]').click();
   menu.querySelector('[data-story-runtime-action="start_writing"]').click();
   await waitFor(async () => {
@@ -146,6 +167,13 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
   assert.equal(menu.querySelector('[data-story-runtime-action="start_writing"]'), null);
   assert.ok(menu.querySelector('[data-open-story-state]'));
   assert.ok(menu.querySelector('[data-update-story-memory]'));
+  menu.querySelector('[data-update-story-memory]').click();
+  await waitFor(() => !document.querySelector('#storyMenu').textContent.includes('正在更新'));
+  menu = document.querySelector('#storyMenu');
+  menu.querySelector('[data-open-story-state]').click();
+  await waitFor(() => menu.textContent.includes('雨夜图书馆'));
+  assert.match(menu.textContent, /米拉/);
+  menu.querySelector('[data-story-menu-back]').click();
   menu.querySelector('[data-story-runtime-action="exit_story"]').click();
   const exited = await waitFor(async () => {
     const chat = (await loadChats(indexedDB)).find(item => item.demo);
@@ -162,6 +190,15 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
   menu = document.querySelector('#storyMenu');
   assert.match(menu.textContent, /状态：未启用/);
   assert.deepEqual([...menu.querySelectorAll('[data-story-runtime-action]')].map(button => button.dataset.storyRuntimeAction), ['prepare_story']);
+
+  document.querySelector('#newChatButton').click();
+  await waitFor(() => document.querySelector('#mobileStoryLabel').textContent === '故事');
+  document.querySelector('#mobileStoryButton').click();
+  menu = document.querySelector('#storyMenu');
+  menu.querySelector('[data-story-runtime-action="prepare_story"]').click();
+  await waitFor(() => menu.textContent.includes('状态：构思中'));
+  assert.equal(menu.querySelector('[data-story-runtime-action="start_writing"]').disabled, true);
+  assert.match(menu.textContent, /请先提供一些故事想法/);
   dom.window.close(); await closeChatDatabase();
 });
 

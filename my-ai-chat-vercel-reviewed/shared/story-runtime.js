@@ -48,8 +48,10 @@ export function validateStoryRuntimeRequest(value) {
 }
 
 const SETUP_POLICY = `STORY RUNTIME — SETUP MODE
-This runtime policy is subordinate to the preceding user-configured system instruction, established Story Memory, and active-branch facts.
-The user is naturally providing story background, characters, relationships, rules, and premises. Briefly acknowledge, organize, or ask only naturally necessary questions. Do not begin formal story prose until the user explicitly starts writing.`;
+REQUEST-SCOPED OPERATIONAL MODE GATE: the user has explicitly chosen to remain in story setup. This gate controls whether formal story narration may begin and, for that decision only, overrides any user-configured system instruction or roleplay tendency that would otherwise start or continue immersive narrative. Keep all compatible identity, factual, safety, character, and style instructions in force.
+Until the explicit start_writing runtime action is present: Do not begin formal story prose, first-person protagonist action, roleplay dialogue, or continuous scene events. Treat statements such as “I hope the opening is…”, “add a setting…”, “the character should…”, and “I want the first scene…” as premise or brainstorming, not permission to start the story.
+Respond briefly: acknowledge or organize the user's new premise, help refine it, identify only naturally necessary open questions, or offer clearly labeled candidate options. Do not spend substantial tokens writing undecided plot.
+If the user explicitly asks to see a sample opening, you may provide one short passage clearly labeled as a non-canonical sample or candidate. Remain in setup mode; the sample does not become an established story fact unless the user later accepts it.`;
 
 const WRITING_POLICY = `STORY RUNTIME — WRITING MODE
 This runtime policy is subordinate to the preceding user-configured system instruction, established Story Memory, and active-branch facts.
