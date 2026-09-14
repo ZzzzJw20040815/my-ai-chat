@@ -199,8 +199,8 @@
           </label>
           <div class="advanced-settings">
             <label class="toggle-row">
-              <span><strong>Override sampling defaults</strong><small>For Gemini 3.x, model defaults are recommended.</small></span>
-              <input id="samplingEnabledSetting" type="checkbox" role="switch" />
+              <span><strong>Override sampling defaults</strong><small id="samplingSupport">For Gemini 3.x, model defaults are recommended.</small></span>
+              <input id="samplingEnabledSetting" type="checkbox" role="switch" aria-describedby="samplingSupport" />
             </label>
             <fieldset class="advanced-fields" id="advancedFields">
               <label class="compact-field"><span>Temperature</span><input id="temperatureSetting" type="number" min="0" max="2" step="0.05" /></label>
@@ -247,6 +247,24 @@
               <button type="button" role="radio" data-chat-text-size="large">大</button>
             </div>
           </div>
+        </section>
+        <section class="settings-section settings-code-section" aria-labelledby="settingsCodeTitle">
+          <div class="settings-section-head"><div><p class="eyebrow">Portability</p><h3 id="settingsCodeTitle">配置迁移</h3></div></div>
+          <p class="settings-intro">配置码包含你的应用设置，可用于在其他 My AI Chat 页面恢复配置。</p>
+          <div class="settings-code-block">
+            <div><strong>导出配置码</strong><p>不会包含聊天记录、故事数据、壁纸或任何 API Key。</p></div>
+            <button class="small-button settings-code-action" type="button" id="generateSettingsCode">生成配置码</button>
+            <div class="settings-code-output" id="settingsCodeOutputWrap" hidden>
+              <textarea id="settingsCodeOutput" rows="4" readonly spellcheck="false" aria-label="生成的配置码"></textarea>
+              <button class="small-button settings-code-action" type="button" id="copySettingsCode">复制配置码</button>
+            </div>
+          </div>
+          <div class="settings-code-block">
+            <label for="settingsCodeInput"><strong>导入配置码</strong><p>验证并确认后一次性应用；不会修改聊天、Story Memory 或壁纸。</p></label>
+            <textarea id="settingsCodeInput" rows="4" maxlength="131072" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="粘贴 MAICFG1.…" aria-label="要导入的配置码"></textarea>
+            <button class="small-button settings-code-action" type="button" id="importSettingsCode">导入设置</button>
+          </div>
+          <p class="settings-code-privacy">配置码不是加密内容，可能包含你的 System Instruction。请像对待个人配置一样保管，不要公开分享。</p>
         </section>
         <section class="settings-section" aria-labelledby="appearanceSettingsTitle">
           <div class="settings-section-head"><div><p class="eyebrow">General</p><h3 id="appearanceSettingsTitle">Appearance</h3></div></div>

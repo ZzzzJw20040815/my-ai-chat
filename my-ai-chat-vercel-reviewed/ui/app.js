@@ -33,6 +33,7 @@ import { renderMarkdown } from './markdown.js';
 import { consumeStream } from './stream.js';
 import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from './settings.js';
 import { applyMobileDisplayPreferences } from './mobile-display.js';
+import { SettingsCodeError, createSettingsCode, parseSettingsCode } from './settings-code.js';
 import { createWallpaperPresenter, decodeWallpaperImage, validateWallpaperFile } from './wallpaper.js';
 import {
   MAX_BACKUP_BYTES, createBackup, downloadBackup, importBackup as mergeBackup, parseBackupText,
@@ -406,9 +407,10 @@ async function newChat() {
   selectChat(chat.id); input.focus(); await persistChat(chat);
 }
 function syncSettingsUi() {
+  const settingsModelId = availableDefaultModel(globalSettings.defaultModel, modelCatalog);
   $('#defaultModelSetting').innerHTML = modelCatalog.models.map(model => '<option value="' + model.id + '">' + escapeHtml(model.name) +
     (model.source === 'discovered' ? ' · Auto' : '') + '</option>').join('');
-  $('#defaultModelSetting').value = availableDefaultModel(globalSettings.defaultModel, modelCatalog);
+  $('#defaultModelSetting').value = settingsModelId;
   $('#refreshModels').disabled = modelCatalogBusy;
   $('#refreshModels').textContent = modelCatalogBusy ? 'Refreshing…' : 'Refresh Models';
   $('#modelCatalogSynced').textContent = modelCatalog.syncedAt
@@ -426,7 +428,7 @@ function syncSettingsUi() {
     const active = button.dataset.chatTextSize === globalSettings.mobileDisplay.chatTextSize;
     button.classList.toggle('active', active); button.setAttribute('aria-checked', String(active));
   });
-  const capabilities = modelCatalog.metadata(globalSettings.defaultModel)?.capabilities;
+  const capabilities = modelCatalog.metadata(settingsModelId)?.capabilities;
   for (const option of $('#thinkingLevelSetting').options) {
     option.disabled = option.value !== 'default' && !capabilities?.thinkingLevels.includes(option.value);
   }
@@ -437,6 +439,9 @@ function syncSettingsUi() {
   const samplingSupported = capabilities?.samplingOverrides === true;
   $('#samplingEnabledSetting').checked = samplingSupported && globalSettings.samplingOverrides.enabled;
   $('#samplingEnabledSetting').disabled = !samplingSupported;
+  $('#samplingSupport').textContent = samplingSupported
+    ? 'For Gemini 3.x, model defaults are recommended.'
+    : 'Sampling overrides are not supported by the selected default model.';
   $('#temperatureSetting').value = globalSettings.samplingOverrides.temperature;
   $('#topPSetting').value = globalSettings.samplingOverrides.topP;
   $('#topKSetting').value = globalSettings.samplingOverrides.topK;
@@ -833,6 +838,54 @@ $$('[data-mobile-density]').forEach(button => button.addEventListener('click', (
 $$('[data-chat-text-size]').forEach(button => button.addEventListener('click', () => updateGlobalSettings({
   mobileDisplay: { ...globalSettings.mobileDisplay, chatTextSize: button.dataset.chatTextSize },
 })));
+$('#generateSettingsCode').addEventListener('click', () => {
+  try {
+    const code = createSettingsCode({
+      settings: globalSettings,
+      theme: document.documentElement.dataset.theme,
+    });
+    $('#settingsCodeOutput').value = code;
+    $('#settingsCodeOutputWrap').hidden = false;
+    toast('配置码已生成');
+  } catch {
+    toast('无法生成配置码，当前设置未受影响。');
+  }
+});
+$('#copySettingsCode').addEventListener('click', async () => {
+  const field = $('#settingsCodeOutput');
+  if (!field.value) return;
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+    await navigator.clipboard.writeText(field.value);
+    toast('配置码已复制');
+  } catch {
+    field.focus(); field.select(); field.setSelectionRange(0, field.value.length);
+    toast('无法自动复制，请手动复制。');
+  }
+});
+$('#importSettingsCode').addEventListener('click', () => {
+  let imported;
+  try {
+    imported = parseSettingsCode($('#settingsCodeInput').value);
+  } catch (error) {
+    toast(error instanceof SettingsCodeError && error.code === 'UNSUPPORTED_VERSION'
+      ? '这个配置码版本暂不受支持。' : '无法导入这个配置码。');
+    return;
+  }
+  const confirmed = window.confirm(
+    '将导入以下 My AI Chat 配置：\n\n' +
+    '模型与生成设置\nSystem Instruction\nSafety Settings\n主题\n手机显示设置\n\n' +
+    '聊天记录、Story Memory 和壁纸不会被修改。'
+  );
+  if (!confirmed) return;
+  const defaultModel = availableDefaultModel(imported.settings.defaultModel, modelCatalog);
+  globalSettings = saveGlobalSettings({ ...imported.settings, defaultModel });
+  applyMobileDisplayPreferences(globalSettings);
+  setTheme(imported.theme);
+  syncSettingsUi();
+  $('#settingsCodeInput').value = '';
+  toast('配置已导入，新设置已经生效。');
+});
 $('#exportBackup').addEventListener('click', () => {
   if (dataTransferBusy || generation) return;
   dataTransferBusy = true; syncSettingsUi();
@@ -969,9 +1022,14 @@ $('#maxOutputTokensSetting').addEventListener('change', event => {
   updateGlobalSettings({ maxOutputTokens: value ? Number(value) : null });
 });
 $('#thinkingLevelSetting').addEventListener('change', event => updateGlobalSettings({ thinkingLevel: event.target.value }));
-$('#samplingEnabledSetting').addEventListener('change', event => updateGlobalSettings({
-  samplingOverrides: { ...globalSettings.samplingOverrides, enabled: event.target.checked },
-}));
+const updateSamplingEnabled = event => {
+  const enabled = event.target.checked;
+  if (globalSettings.samplingOverrides.enabled === enabled) return;
+  updateGlobalSettings({ samplingOverrides: { ...globalSettings.samplingOverrides, enabled } });
+};
+// Capture real activation before an asynchronous Settings repaint, while retaining change-event compatibility.
+$('#samplingEnabledSetting').addEventListener('click', updateSamplingEnabled);
+$('#samplingEnabledSetting').addEventListener('change', updateSamplingEnabled);
 $('#safetyModeSetting').addEventListener('change', event => updateGlobalSettings({
   safetySettings: { ...globalSettings.safetySettings, mode: event.target.value },
 }));
