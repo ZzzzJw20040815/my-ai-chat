@@ -6,7 +6,7 @@ import { JSDOM } from 'jsdom';
 import { IDBFactory } from 'fake-indexeddb';
 import { activeAssistantVariant } from '../ui/state.js';
 import { closeChatDatabase, loadChats, loadStoryMemories } from '../ui/storage.js';
-import { classifyStoryMemoryUpdateError, StoryMemoryUpdateError } from '../ui/story-memory.js';
+import { classifyStoryMemoryUpdateError, storyMemoryErrorMessage, StoryMemoryUpdateError } from '../ui/story-memory.js';
 import { positionMobileSheet, visualViewportBounds } from '../ui/mobile-sheet.js';
 import { storyRuntimeState } from '../ui/story-runtime.js';
 
@@ -241,7 +241,7 @@ test('visual viewport positioning follows keyboard-sized Safari viewport', () =>
 });
 
 test('memory failures have stable non-sensitive classifications and Safari write queues synchronously', async () => {
-  for (const [stage, expected] of [['anchor', 'MEMORY_INVALID_ANCHOR'], ['extraction', 'MEMORY_EXTRACTION_FAILED'], ['validation', 'MEMORY_INVALID_JSON'], ['storage', 'MEMORY_STORAGE_FAILED']]) {
+  for (const [stage, expected] of [['anchor', 'MEMORY_INVALID_ANCHOR'], ['extraction', 'SERVER_ERROR'], ['validation', 'MEMORY_INVALID_JSON'], ['storage', 'MEMORY_STORAGE_FAILED']]) {
     assert.equal(classifyStoryMemoryUpdateError(new Error('private detail'), stage), expected);
   }
   assert.equal(classifyStoryMemoryUpdateError(new StoryMemoryUpdateError('MEMORY_INVALID_JSON'), 'storage'), 'MEMORY_INVALID_JSON');
@@ -249,6 +249,37 @@ test('memory failures have stable non-sensitive classifications and Safari write
   const replacement = storageSource.match(/export async function replaceStoryMemorySnapshot[\s\S]*?\n}/)?.[0] || '';
   assert.match(replacement, /lookup\.addEventListener\('success'/);
   assert.doesNotMatch(replacement, /await requestResult\(store\.index\('anchorId'\)/);
+});
+
+test('memory error copy is specific, includes safe codes, and the Story sheet clears failure after success', async () => {
+  const expected = {
+    CONTEXT_LIMIT: '当前故事内容过长', TIMEOUT: '生成超时', RATE_LIMIT: '暂时繁忙', NETWORK_ERROR: '无法连接 Gemini',
+    MODEL_UNAVAILABLE: '当前模型暂不可用', MEMORY_INVALID_JSON: '格式无效', MEMORY_STORAGE_FAILED: '无法保存到此设备',
+    MEMORY_INVALID_ANCHOR: '分支状态异常', SERVER_ERROR: '暂时无法更新',
+  };
+  for (const [code, text] of Object.entries(expected)) assert.match(storyMemoryErrorMessage(code), new RegExp(text));
+
+  const indexedDB = new IDBFactory(), transport = createTransport(); let memoryAttempts = 0;
+  const fetchMock = async (url, init) => {
+    if (String(url).includes('/api/story-memory')) {
+      memoryAttempts++;
+      return memoryAttempts === 1
+        ? Response.json({ error: { code: 'TIMEOUT' } }, { status: 504 })
+        : Response.json({ memory: memoryFixture() });
+    }
+    return transport.fetchMock(url, init);
+  };
+  const { dom } = installMobileDom(indexedDB, fetchMock);
+  await import('../ui/app.js?mobile-memory-failure-state');
+  document.querySelector('.story-panel [data-update-story-memory]').click();
+  await waitFor(() => document.querySelector('#toast').textContent.includes('TIMEOUT'));
+  document.querySelector('#mobileStoryButton').click();
+  assert.match(document.querySelector('#storyMenu').textContent, /上次更新失败：TIMEOUT/);
+  assert.match(document.querySelector('#storyMenu').textContent, /错误代码：TIMEOUT/);
+  document.querySelector('.story-panel [data-update-story-memory]').click();
+  await waitFor(async () => (await loadStoryMemories(null, indexedDB)).length === 1);
+  assert.doesNotMatch(document.querySelector('#storyMenu').textContent, /上次更新失败/);
+  dom.window.close(); await closeChatDatabase();
 });
 
 test('shared mobile sheet CSS stays above composer, uses safe area, and avoids horizontal overflow', async () => {

@@ -3,11 +3,14 @@ import { isPersistableModelId, modelMetadata } from '../shared/models.js';
 import {
   STORY_MEMORY_JSON_SCHEMA, STORY_MEMORY_SCHEMA_VERSION, StoryMemoryValidationError, validateStoryMemory,
 } from '../shared/story-memory.js';
+import {
+  STORY_MEMORY_MAX_BODY_BYTES, STORY_MEMORY_MAX_MESSAGES, STORY_MEMORY_MAX_MESSAGE_CHARACTERS,
+  STORY_MEMORY_MAX_TOTAL_CHARACTERS,
+} from '../shared/story-memory-transport.js';
 import { trustedModelMetadata } from './model-catalog.js';
 import { classifyError, readPayload } from './chat.js';
 
-export const STORY_MEMORY_MAX_BODY_BYTES = 256 * 1024;
-export const STORY_MEMORY_MAX_MESSAGES = 100;
+export { STORY_MEMORY_MAX_BODY_BYTES, STORY_MEMORY_MAX_MESSAGES } from '../shared/story-memory-transport.js';
 const STATUS = new Set(['complete', 'stopped', 'interrupted', 'error']);
 const ERROR_MESSAGES = Object.freeze({
   INVALID_REQUEST: 'Story memory request is not valid.',
@@ -27,17 +30,18 @@ const validId = value => typeof value === 'string' && value.length > 0 && value.
 
 export function validateStoryMemoryRequest(payload, authorizedModel) {
   if (!payload || !authorizedModel || authorizedModel.id !== payload.model || !validId(payload.chatId)
-    || !validId(payload.anchorId) || !Array.isArray(payload.messages) || !payload.messages.length
-    || payload.messages.length > STORY_MEMORY_MAX_MESSAGES) throw new Error('INVALID_REQUEST');
+    || !validId(payload.anchorId) || !Array.isArray(payload.messages) || !payload.messages.length) throw new Error('INVALID_REQUEST');
+  if (payload.messages.length > STORY_MEMORY_MAX_MESSAGES) throw new Error('CONTEXT_LIMIT');
   let total = 0;
   const ids = new Set();
   const conversation = payload.messages.map(message => {
     if (!message || !validId(message.id) || ids.has(message.id) || !['user', 'assistant'].includes(message.role)
-      || typeof message.content !== 'string' || message.content.length > 50000 || !STATUS.has(message.status)
+      || typeof message.content !== 'string' || !STATUS.has(message.status)
       || !Number.isFinite(Date.parse(message.createdAt))) throw new Error('INVALID_REQUEST');
+    if (message.content.length > STORY_MEMORY_MAX_MESSAGE_CHARACTERS) throw new Error('CONTEXT_LIMIT');
     ids.add(message.id);
     total += message.content.length;
-    if (total > 180000) throw new Error('CONTEXT_LIMIT');
+    if (total > STORY_MEMORY_MAX_TOTAL_CHARACTERS) throw new Error('CONTEXT_LIMIT');
     return {
       id: message.id, role: message.role, content: message.content,
       status: message.status, createdAt: new Date(message.createdAt).toISOString(),

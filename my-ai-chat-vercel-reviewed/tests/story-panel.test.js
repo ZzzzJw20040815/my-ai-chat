@@ -90,8 +90,10 @@ test('Story Panel uses existing glass tokens and mobile-safe inline layout', asy
   assert.match(css, /\.story-panel-toggle\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px/s);
   assert.match(app, /let storyPanelExpanded = !mobile\.matches/);
   assert.match(app, /case 'variant-prev': case 'variant-next':[\s\S]*renderConversation\(\)/);
-  for (const code of ['MEMORY_INVALID_ANCHOR', 'MEMORY_EXTRACTION_FAILED', 'MEMORY_INVALID_JSON', 'MEMORY_STORAGE_FAILED']) {
+  for (const code of ['CONTEXT_LIMIT', 'TIMEOUT', 'RATE_LIMIT', 'NETWORK_ERROR', 'MODEL_UNAVAILABLE',
+    'MEMORY_INVALID_ANCHOR', 'MEMORY_INVALID_JSON', 'MEMORY_STORAGE_FAILED', 'SERVER_ERROR']) {
     assert.match(app + memoryClient, new RegExp(code));
   }
   assert.match(app, /尚未生成故事记忆/);
+  assert.match(app, /上次更新失败/);
 });
