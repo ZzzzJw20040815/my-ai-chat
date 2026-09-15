@@ -1,3 +1,5 @@
+import { hasMeaningfulStoryMemory } from '../shared/story-memory.js';
+
 const strings = value => Array.isArray(value)
   ? value.filter(item => typeof item === 'string' && item.trim()).map(item => item.trim())
   : [];
@@ -15,7 +17,8 @@ export function storyPanelView(snapshot) {
   const central = characters.find(character => presentCharacters.some(name =>
     sameName(name, character?.name) || sameName(name, character?.idOrName))) || characters[0] || null;
   const centralName = nameOf(central) || presentCharacters[0] || '';
-  return {
+  const view = {
+    hasMeaningfulContent: hasMeaningfulStoryMemory(memory),
     centralCharacter: centralName,
     otherCharacters: unique(presentCharacters.filter(name => !sameName(name, centralName))),
     location: typeof scene.location === 'string' ? scene.location : '',
@@ -37,5 +40,11 @@ export function storyPanelView(snapshot) {
     unresolvedThreads: unique([
       ...strings(memory.unresolvedThreads), ...strings(relationship.unresolvedTension),
     ]),
+  };
+  return {
+    ...view,
+    hasDisplayableFacts: !!(view.centralCharacter || view.location || view.time || view.relationshipSummary
+      || ['otherCharacters', 'sceneState', 'relationshipChanges', 'currentState', 'appearance', 'importantMemories', 'unresolvedThreads']
+        .some(key => view[key].length)),
   };
 }

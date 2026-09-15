@@ -1,4 +1,4 @@
-import { validateStoryMemory, STORY_MEMORY_MAX_BYTES, STORY_MEMORY_SCHEMA_VERSION } from '../shared/story-memory.js';
+import { hasMeaningfulStoryMemory, validateStoryMemory, STORY_MEMORY_MAX_BYTES, STORY_MEMORY_SCHEMA_VERSION } from '../shared/story-memory.js';
 import {
   STORY_MEMORY_MAX_CHUNKS, STORY_MEMORY_MAX_MESSAGE_CHARACTERS, STORY_MEMORY_SAFE_BODY_BYTES,
   STORY_MEMORY_SAFE_MESSAGES, STORY_MEMORY_SAFE_TOTAL_CHARACTERS,
@@ -13,7 +13,7 @@ export function visibleStoryAnchors(chat) {
 
 export const STORY_MEMORY_UPDATE_ERROR_CODES = Object.freeze([
   'CONTEXT_LIMIT', 'TIMEOUT', 'RATE_LIMIT', 'NETWORK_ERROR', 'MODEL_UNAVAILABLE', 'MEMORY_REQUEST_REJECTED', 'KEY_MISSING',
-  'MEMORY_INVALID_ANCHOR', 'MEMORY_INVALID_JSON', 'MEMORY_STORAGE_FAILED', 'SERVER_ERROR',
+  'MEMORY_INVALID_ANCHOR', 'MEMORY_INVALID_JSON', 'MEMORY_EMPTY', 'MEMORY_STORAGE_FAILED', 'SERVER_ERROR',
 ]);
 
 export const STORY_MEMORY_ERROR_MESSAGES = Object.freeze({
@@ -25,6 +25,7 @@ export const STORY_MEMORY_ERROR_MESSAGES = Object.freeze({
   MEMORY_REQUEST_REJECTED: 'Gemini 拒绝了故事记忆请求，当前记忆未修改。',
   KEY_MISSING: '故事记忆服务尚未配置，请联系站点管理员。',
   MEMORY_INVALID_JSON: 'Gemini 返回的故事记忆格式无效，原记忆已保留。',
+  MEMORY_EMPTY: 'Gemini 没有提取到可用的故事记忆，原记忆已保留。',
   MEMORY_STORAGE_FAILED: '故事记忆已生成，但无法保存到此设备。',
   MEMORY_INVALID_ANCHOR: '当前故事分支状态异常，无法建立记忆锚点。',
   SERVER_ERROR: '故事记忆暂时无法更新，请稍后重试。',
@@ -99,7 +100,8 @@ export function storyMemoryUpdatePlan(chat, snapshots = []) {
   const path = visibleConversationPath(chat);
   const messages = storyMemoryMessagesFromPath(path);
   if (!messages.some(message => message.id === anchorId)) throw new StoryMemoryUpdateError('MEMORY_INVALID_ANCHOR');
-  const applicable = applicableStoryMemory(chat, snapshots);
+  const candidate = applicableStoryMemory(chat, snapshots);
+  const applicable = candidate && hasMeaningfulStoryMemory(candidate.memory) ? candidate : null;
   const pendingMessages = applicable
     ? storyMemoryMessagesAfterAnchor(path, applicable.anchorId)
     : messages;
@@ -150,7 +152,7 @@ const SERVER_ERROR_CODES = Object.freeze({
   CONTEXT_LIMIT: 'CONTEXT_LIMIT', TIMEOUT: 'TIMEOUT', RATE_LIMIT: 'RATE_LIMIT',
   NETWORK_ERROR: 'NETWORK_ERROR', MODEL_UNAVAILABLE: 'MODEL_UNAVAILABLE', MEMORY_REQUEST_REJECTED: 'MEMORY_REQUEST_REJECTED',
   KEY_MISSING: 'KEY_MISSING',
-  MEMORY_INVALID: 'MEMORY_INVALID_JSON', SERVER_ERROR: 'SERVER_ERROR',
+  MEMORY_INVALID: 'MEMORY_INVALID_JSON', MEMORY_EMPTY: 'MEMORY_EMPTY', SERVER_ERROR: 'SERVER_ERROR',
 });
 
 async function requestStoryMemoryChunk(payload, fetchImpl) {
@@ -169,8 +171,11 @@ async function requestStoryMemoryChunk(payload, fetchImpl) {
     const serverCode = typeof body?.error?.code === 'string' ? body.error.code : null;
     throw new StoryMemoryUpdateError(SERVER_ERROR_CODES[serverCode] || 'SERVER_ERROR', { serverCode, status: response.status });
   }
-  try { return validateStoryMemory(body?.memory); }
+  let memory;
+  try { memory = validateStoryMemory(body?.memory); }
   catch { throw new StoryMemoryUpdateError('MEMORY_INVALID_JSON'); }
+  if (!hasMeaningfulStoryMemory(memory)) throw new StoryMemoryUpdateError('MEMORY_EMPTY');
+  return memory;
 }
 
 export async function runStoryMemoryUpdate({ chat, snapshots = [], fetchImpl = fetch, save, onProgress = () => {} }) {

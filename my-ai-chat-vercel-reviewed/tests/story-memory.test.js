@@ -19,6 +19,7 @@ import {
 } from '../ui/story-memory.js';
 import {
   canonicalizeStoryMemoryCandidate, canonicalizeStoryMemoryCandidateWithDiagnostics, normalizeStringArray,
+  hasMeaningfulStoryMemory, meaningfulStoryMemoryFieldCount,
   STORY_MEMORY_JSON_SCHEMA, STORY_MEMORY_MAX_ARRAY, STORY_MEMORY_MAX_BYTES, STORY_MEMORY_MAX_CHARACTERS, STORY_MEMORY_MAX_STRING,
   STORY_MEMORY_PROVIDER_JSON_SCHEMA, StoryMemoryCanonicalizationError, StoryMemoryValidationError,
   storyMemorySystemInstruction, validateStoryMemory,
@@ -95,6 +96,13 @@ test('client bootstrap sends a short active branch once and saves one final snap
   assert.deepEqual(captured[0].messages.map(item => item.content), ['message-0', 'message-1', 'message-2', 'message-3']);
   assert.equal(captured[0].existingMemory, null);
   assert.equal(saved[0].anchorId, currentStoryAnchor(chat));
+});
+const emptyMemory = () => ({
+  version: 1,
+  scene: { location: null, time: null, presentCharacters: [], relativePositions: [], environmentState: [], importantObjects: [] },
+  characters: [],
+  relationship: { summary: '', establishedChanges: [], sharedHistory: [], unresolvedTension: [] },
+  importantEvents: [], knownFacts: [], unknownOrUnconfirmed: [], unresolvedThreads: [],
 });
 
 test('branch-safe delta handles user and active assistant anchors without resending old history', () => {
@@ -222,7 +230,8 @@ test('server error codes retain stable client classifications', async () => {
     ['CONTEXT_LIMIT', 'CONTEXT_LIMIT'], ['TIMEOUT', 'TIMEOUT'], ['RATE_LIMIT', 'RATE_LIMIT'],
     ['NETWORK_ERROR', 'NETWORK_ERROR'], ['MODEL_UNAVAILABLE', 'MODEL_UNAVAILABLE'],
     ['MEMORY_REQUEST_REJECTED', 'MEMORY_REQUEST_REJECTED'],
-    ['MEMORY_INVALID', 'MEMORY_INVALID_JSON'], ['SERVER_ERROR', 'SERVER_ERROR'], ['INVALID_REQUEST', 'SERVER_ERROR'],
+    ['MEMORY_INVALID', 'MEMORY_INVALID_JSON'], ['MEMORY_EMPTY', 'MEMORY_EMPTY'],
+    ['SERVER_ERROR', 'SERVER_ERROR'], ['INVALID_REQUEST', 'SERVER_ERROR'],
   ]) {
     const chat = linearChat(1);
     await assert.rejects(runStoryMemoryUpdate({
@@ -385,6 +394,50 @@ test('deterministic canonicalizer preserves valid memory and repairs logged shap
   assert.deepEqual(normalizeStringArray(null), []);
 });
 
+test('meaningful quality accepts any displayable fact but excludes empty and unknown-only memory', () => {
+  assert.equal(hasMeaningfulStoryMemory(memory()), true);
+  assert.equal(hasMeaningfulStoryMemory({ ...emptyMemory(), scene: { ...emptyMemory().scene, location: '车站' } }), true);
+  assert.equal(hasMeaningfulStoryMemory({ ...emptyMemory(), characters: [{
+    idOrName: '', name: '米拉', identity: [], visualAnchors: [], publicPersona: [], observedDisposition: [],
+    speechFingerprint: [], behavioralTells: [], knownPreferences: [], knownBoundaries: [], currentState: [],
+    currentClothing: [], relationshipToProtagonist: [],
+  }] }), true);
+  assert.equal(hasMeaningfulStoryMemory({ ...emptyMemory(), knownFacts: ['钟停在九点。'] }), true);
+  assert.equal(hasMeaningfulStoryMemory(emptyMemory()), false);
+  assert.equal(hasMeaningfulStoryMemory({ ...emptyMemory(), unknownOrUnconfirmed: ['身份未知'] }), false);
+  assert.equal(meaningfulStoryMemoryFieldCount(emptyMemory()), 0);
+});
+
+test('an applicable empty snapshot bootstraps from the full branch and is replaced only after meaningful success', async () => {
+  const chat = linearChat(2), anchorId = currentStoryAnchor(chat);
+  const old = createStoryMemorySnapshot({ chatId: chat.id, anchorId, memory: emptyMemory(), id: 'empty-old' });
+  const captured = [], saved = [];
+  const result = await runStoryMemoryUpdate({
+    chat, snapshots: [old], fetchImpl: successfulMemoryFetch(captured), save: async snapshot => saved.push(snapshot),
+  });
+  assert.equal(result.updated, true);
+  assert.equal(result.upToDate, false);
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].existingMemory, null);
+  assert.deepEqual(captured[0].messages.map(item => item.content), ['message-0', 'message-1', 'message-2', 'message-3']);
+  assert.equal(saved.length, 1);
+  assert.equal(result.snapshots.some(item => item.id === 'empty-old'), false);
+  assert.equal(hasMeaningfulStoryMemory(result.snapshot.memory), true);
+});
+
+test('failed recovery of an applicable empty snapshot preserves the old snapshot and performs no write', async () => {
+  const chat = linearChat(1), old = createStoryMemorySnapshot({
+    chatId: chat.id, anchorId: currentStoryAnchor(chat), memory: emptyMemory(), id: 'empty-old',
+  });
+  let saves = 0;
+  await assert.rejects(runStoryMemoryUpdate({
+    chat, snapshots: [old], save: async () => { saves++; },
+    fetchImpl: async () => Response.json({ error: { code: 'MEMORY_EMPTY' } }, { status: 502 }),
+  }), error => error.code === 'MEMORY_EMPTY');
+  assert.equal(saves, 0);
+  assert.equal(old.memory.knownFacts.length, 0);
+});
+
 test('canonicalizer rejects complex values instead of stringifying or inventing facts', () => {
   for (const candidate of [
     { ...memory(), knownFacts: { text: '不得转换' } },
@@ -541,6 +594,50 @@ test('missing nested keys and string arrays canonicalize deterministically witho
     && detail.code === 'COMPLETED' && detail.canonicalizationApplied === true));
 });
 
+test('structurally valid empty response performs one content recovery and then succeeds', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
+  const chat = branchChat().chat, attempts = [];
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+    async (_key, params, _signal, attempt, repair) => {
+      attempts.push(attempt);
+      assert.equal(repair, undefined);
+      assert.ok(params.conversation.length > 0);
+      return { text: JSON.stringify(attempt === 'content-recovery' ? memory('recovered fact') : emptyMemory()) };
+    });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).memory.knownFacts, ['recovered fact']);
+  assert.deepEqual(attempts, ['structured', 'content-recovery']);
+  assert.ok(logs.some(([, detail]) => detail.stage === 'quality' && detail.code === 'MEMORY_EMPTY'
+    && detail.meaningfulFieldCount === 0));
+  assert.ok(logs.some(([, detail]) => detail.stage === 'content-recovery' && detail.code === 'SUCCEEDED'));
+});
+
+test('content recovery is attempted once and a second empty result returns MEMORY_EMPTY', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
+  const chat = branchChat().chat, attempts = [];
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+    async (_key, _params, _signal, attempt) => { attempts.push(attempt); return { text: JSON.stringify(emptyMemory()) }; });
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).error.code, 'MEMORY_EMPTY');
+  assert.deepEqual(attempts, ['structured', 'content-recovery']);
+  assert.equal(logs.filter(([, detail]) => detail.stage === 'content-recovery' && detail.code === 'ATTEMPTED').length, 1);
+  assert.ok(logs.some(([, detail]) => detail.stage === 'content-recovery' && detail.code === 'EMPTY'));
+});
+
+test('structured rejection, empty fallback, and content recovery respect the three-call cap', async t => {
+  t.mock.method(console, 'info', () => {});
+  const chat = branchChat().chat, attempts = [];
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+    async (_key, _params, _signal, attempt) => {
+      attempts.push(attempt);
+      if (attempt === 'structured') throw { status: 400 };
+      return { text: JSON.stringify(attempt === 'content-recovery' ? memory('recovered after fallback') : emptyMemory()) };
+    });
+  assert.equal(response.status, 200);
+  assert.deepEqual(attempts, ['structured', 'json', 'content-recovery']);
+  assert.equal(attempts.length, STORY_MEMORY_MAX_PROVIDER_CALLS_PER_CHUNK);
+});
+
 test('unsafe complex array content uses at most one repair without rereading the story', async t => {
   t.mock.method(console, 'info', () => {});
   for (const [candidate, expectedReason] of [
@@ -647,6 +744,10 @@ test('official SDK extraction uses a shallow schema while fallback and repair us
     model: MODEL, existingMemory: null,
     conversation: [{ id: 'u', role: 'user', content: 'PRIVATE_STORY', status: 'complete', createdAt: new Date().toISOString() }],
   }, new AbortController().signal, 'repair', { reason: 'SCENE_KEYS_INVALID', candidate: '{"version":1}' });
+  await googleExtractStoryMemory('unit-test-sentinel', {
+    model: MODEL, existingMemory: null,
+    conversation: [{ id: 'u', role: 'user', content: 'EXPLICIT_STORY_FACT', status: 'complete', createdAt: new Date().toISOString() }],
+  }, new AbortController().signal, 'content-recovery');
   const body = await captured[0].json();
   assert.equal(body.generationConfig.responseMimeType, 'application/json');
   assert.equal(body.generationConfig.responseJsonSchema.additionalProperties, false);
@@ -663,9 +764,26 @@ test('official SDK extraction uses a shallow schema while fallback and repair us
   });
   assert.doesNotMatch(repairBody.contents[0].parts[0].text, /PRIVATE_STORY/);
   assert.match(repairBody.systemInstruction.parts[0].text, /Do not add, infer, embellish, or re-summarize story facts/);
+  const recoveryBody = await captured[3].json();
+  assert.equal(Object.hasOwn(recoveryBody.generationConfig, 'responseJsonSchema'), false);
+  assert.match(recoveryBody.systemInstruction.parts[0].text, /Do not return an all-empty Story Memory/);
+  assert.match(recoveryBody.contents[0].parts[0].text, /EXPLICIT_STORY_FACT/);
   assert.match(body.systemInstruction.parts[0].text, /never invent/i);
   assert.match(body.systemInstruction.parts[0].text, /exactly these keys and value shapes/i);
-  assert.ok(!JSON.stringify([body, fallbackBody, repairBody]).includes('unit-test-sentinel'));
+  assert.ok(!JSON.stringify([body, fallbackBody, repairBody, recoveryBody]).includes('unit-test-sentinel'));
+});
+
+test('normal chat ignores empty memory but injects meaningful memory', () => {
+  const base = {
+    model: MODEL,
+    messages: [{ id: 'u', role: 'user', content: 'Continue', status: 'complete' }],
+    settings: {}, styleReferences: [],
+  };
+  const empty = validatePayload({ ...base, storyMemory: emptyMemory() });
+  assert.doesNotMatch(empty.config.systemInstruction || '', /STORY MEMORY DATA/);
+  const meaningful = validatePayload({ ...base, storyMemory: memory('kept fact') });
+  assert.match(meaningful.config.systemInstruction, /STORY MEMORY DATA/);
+  assert.match(meaningful.config.systemInstruction, /kept fact/);
 });
 
 test('story-memory endpoint enforces same-origin and missing-key boundaries', async () => {

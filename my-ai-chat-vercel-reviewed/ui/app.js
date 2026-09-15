@@ -51,6 +51,7 @@ import {
   storySubtreeAnchorIds,
 } from './story-memory.js';
 import { storyPanelView } from './story-panel.js';
+import { hasMeaningfulStoryMemory } from '../shared/story-memory.js';
 import { clearMobileSheetPosition, positionMobileSheet } from './mobile-sheet.js';
 import { REGENERATION_REASON_OPTIONS, styleReferenceRequestItems } from '../shared/response-quality.js';
 import {
@@ -505,7 +506,10 @@ async function generate(chat, user, existingTurn = null, existingVariant = null,
       body: JSON.stringify({
         model: chat.model,
         messages: contextFor(chat, user.id, runtimeAction === 'start_writing' ? 'all' : globalSettings.contextLimit),
-        storyMemory: applicableStoryMemory(chat, storyMemorySnapshots)?.memory || null,
+        storyMemory: (() => {
+          const memory = applicableStoryMemory(chat, storyMemorySnapshots)?.memory;
+          return memory && hasMeaningfulStoryMemory(memory) ? memory : null;
+        })(),
         styleReferences: styleReferenceRequestItems(styleReferences),
         ...(regenerationReason ? { regenerationReason } : {}),
         ...(storyRuntimeState(chat).enabled ? { storyRuntime: {
@@ -649,14 +653,14 @@ function startWritingAction(chat) {
     primary: true, disabled: !availability.enabled, detail: availability.reason,
   });
 }
-function storyMemoryAction(canUpdate, primary = false) {
+function storyMemoryAction(canUpdate, primary = false, label = '更新记忆') {
   const disabled = storyMemoryBusy || !canUpdate;
   const progress = storyMemoryProgress;
   const detail = storyMemoryBusy
     ? (progress?.total > 1 ? `正在整理故事记忆 ${progress.index}/${progress.total}` : '正在处理')
     : generation ? '等待当前回复完成' : canUpdate ? '' : '暂无可更新内容';
   return '<button class="story-menu-action' + (primary ? ' primary' : '') + '" type="button" data-update-story-memory' +
-    (disabled ? ' disabled' : '') + '><span>' + (storyMemoryBusy ? '正在更新…' : '更新记忆') + '</span>' +
+    (disabled ? ' disabled' : '') + '><span>' + (storyMemoryBusy ? '正在更新…' : escapeHtml(label)) + '</span>' +
     (detail ? '<small>' + escapeHtml(detail) + '</small>' : '') + '</button>';
 }
 function storyMemoryFailureHtml(chatId) {
@@ -668,6 +672,7 @@ function storyMemoryFailureHtml(chatId) {
 function storyStateContent(snapshot) {
   const view = storyPanelView(snapshot);
   if (!view) return '<div class="story-state-empty"><strong>尚未生成故事记忆</strong><p>更新记忆后，这里会显示当前分支中已经明确发生的故事状态。</p></div>';
+  if (!view.hasDisplayableFacts) return '<div class="story-state-empty"><strong>没有可展示的有效状态</strong><p>这份故事记忆没有提取到可展示的有效状态。</p></div>';
   const sceneFacts = [
     ...(view.location ? ['地点：' + view.location] : []), ...(view.time ? ['时间：' + view.time] : []), ...view.sceneState,
   ];
@@ -694,7 +699,8 @@ function renderStoryMenu(viewName = 'overview') {
   if (viewName === 'state') {
     menu.innerHTML = '<header class="story-menu-head"><button class="story-menu-back" type="button" data-story-menu-back aria-label="返回">‹</button>' +
       '<div><strong>故事状态</strong><span>当前分支</span></div><button class="story-menu-close" type="button" data-close-story-menu aria-label="关闭">×</button></header>' +
-      storyStateContent(memory) + storyMemoryFailureHtml(chat.id) + '<div class="story-menu-actions">' + storyMemoryAction(canUpdate, true) + '</div>';
+      storyStateContent(memory) + storyMemoryFailureHtml(chat.id) + '<div class="story-menu-actions">' +
+      storyMemoryAction(canUpdate, true, memory && !storyPanelView(memory)?.hasDisplayableFacts ? '重新更新记忆' : '更新记忆') + '</div>';
   } else {
     const assistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
     const ready = assistant && activeAssistantVariant(assistant)?.status === 'complete' && !generation;

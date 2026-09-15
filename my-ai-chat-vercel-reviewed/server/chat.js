@@ -5,7 +5,7 @@ import {
   MAX_OUTPUT_TOKENS_LIMIT, MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_MODES,
   SAFETY_THRESHOLDS, SAMPLING_LIMITS, THINKING_LEVELS,
 } from '../shared/settings.js';
-import { storyMemorySystemInstruction, validateStoryMemory } from '../shared/story-memory.js';
+import { hasMeaningfulStoryMemory, storyMemorySystemInstruction, validateStoryMemory } from '../shared/story-memory.js';
 import {
   isRegenerationReason, responseQualitySystemInstruction, STYLE_REFERENCE_LIMIT,
   STYLE_REFERENCE_TOTAL_CHARACTERS,
@@ -71,7 +71,7 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
   const config = validateGenerationSettings(payload.settings, authorizedModel);
   if (payload.storyMemory != null) {
     const memory = validateStoryMemory(payload.storyMemory);
-    config.systemInstruction = storyMemorySystemInstruction(config.systemInstruction || '', memory);
+    if (hasMeaningfulStoryMemory(memory)) config.systemInstruction = storyMemorySystemInstruction(config.systemInstruction || '', memory);
   }
   const styleReferences = validateStyleReferences(payload.styleReferences);
   const regenerationReason = payload.regenerationReason == null ? null : payload.regenerationReason;
