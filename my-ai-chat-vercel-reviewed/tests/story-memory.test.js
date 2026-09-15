@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { IDBFactory } from 'fake-indexeddb';
-import { classifyStoryMemoryProviderError, googleExtractStoryMemory, handleStoryMemory } from '../server/story-memory.js';
+import {
+  classifyStoryMemoryProviderError, googleExtractStoryMemory, handleStoryMemory,
+  STORY_MEMORY_MAX_PROVIDER_CALLS_PER_CHUNK,
+} from '../server/story-memory.js';
 import { validatePayload } from '../server/chat.js';
 import { createChat, createMessage, addAssistantVariant, visibleConversationPath } from '../ui/state.js';
 import {
@@ -16,7 +19,7 @@ import {
 } from '../ui/story-memory.js';
 import {
   STORY_MEMORY_JSON_SCHEMA, STORY_MEMORY_MAX_ARRAY, STORY_MEMORY_MAX_BYTES, STORY_MEMORY_MAX_CHARACTERS, STORY_MEMORY_MAX_STRING,
-  STORY_MEMORY_PROVIDER_JSON_SCHEMA, storyMemorySystemInstruction, validateStoryMemory,
+  STORY_MEMORY_PROVIDER_JSON_SCHEMA, StoryMemoryValidationError, storyMemorySystemInstruction, validateStoryMemory,
 } from '../shared/story-memory.js';
 import {
   STORY_MEMORY_MAX_CHUNKS, STORY_MEMORY_SAFE_BODY_BYTES, STORY_MEMORY_SAFE_MESSAGES,
@@ -62,6 +65,23 @@ function successfulMemoryFetch(captured = []) {
     const payload = JSON.parse(init.body); captured.push(payload);
     return Response.json({ memory: memory(`call-${captured.length}`) });
   };
+}
+
+function storyMemoryEndpointRequest(chat) {
+  const messages = storyMemoryConversation(chat);
+  return new Request('https://app.example/api/story-memory', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },
+    body: JSON.stringify({ model: MODEL, chatId: chat.id, anchorId: currentStoryAnchor(chat), messages }),
+  });
+}
+
+function validationReason(value) {
+  try { validateStoryMemory(value); }
+  catch (error) {
+    assert.ok(error instanceof StoryMemoryValidationError);
+    return error.reason;
+  }
+  assert.fail('Expected StoryMemory validation to fail');
 }
 
 test('client bootstrap sends a short active branch once and saves one final snapshot', async () => {
@@ -298,17 +318,25 @@ test('failed storage commit leaves previous in-memory snapshot unchanged', async
 });
 
 test('memory schema rejects malformed or oversized model data', () => {
-  assert.throws(() => validateStoryMemory({ ...memory(), invented: true }));
-  assert.throws(() => validateStoryMemory({ ...memory(), version: 2 }));
-  assert.throws(() => validateStoryMemory({ ...memory(), knownFacts: ['x'.repeat(801)] }));
-  assert.throws(() => validateStoryMemory({ ...memory(), knownFacts: Array(STORY_MEMORY_MAX_ARRAY + 1).fill('x') }));
+  assert.equal(validationReason({ ...memory(), invented: true }), 'ROOT_KEYS_INVALID');
+  assert.equal(validationReason({ ...memory(), version: 2 }), 'VERSION_INVALID');
+  assert.equal(validationReason({ ...memory(), scene: { ...memory().scene, time: 42 } }), 'STRING_TYPE_INVALID');
+  const { time: _time, ...missingSceneField } = memory().scene;
+  assert.equal(validationReason({ ...memory(), scene: missingSceneField }), 'SCENE_KEYS_INVALID');
+  assert.equal(validationReason({ ...memory(), knownFacts: 'not-an-array' }), 'ARRAY_TYPE_INVALID');
+  assert.equal(validationReason({ ...memory(), knownFacts: [42] }), 'STRING_TYPE_INVALID');
+  assert.equal(validationReason({ ...memory(), knownFacts: ['x'.repeat(801)] }), 'STRING_TOO_LONG');
+  assert.equal(validationReason({ ...memory(), knownFacts: Array(STORY_MEMORY_MAX_ARRAY + 1).fill('x') }), 'ARRAY_TOO_LONG');
   const character = {
     idOrName: 'A', name: 'A', identity: [], visualAnchors: [], publicPersona: [], observedDisposition: [],
     speechFingerprint: [], behavioralTells: [], knownPreferences: [], knownBoundaries: [], currentState: [],
     currentClothing: [], relationshipToProtagonist: [],
   };
-  assert.throws(() => validateStoryMemory({ ...memory(), characters: Array(STORY_MEMORY_MAX_CHARACTERS + 1).fill(character) }));
-  assert.throws(() => validateStoryMemory({ ...memory(), knownFacts: Array(STORY_MEMORY_MAX_ARRAY).fill('中'.repeat(STORY_MEMORY_MAX_STRING)) }));
+  assert.equal(validationReason({ ...memory(), characters: 'not-an-array' }), 'CHARACTERS_TYPE_INVALID');
+  assert.equal(validationReason({ ...memory(), characters: Array(STORY_MEMORY_MAX_CHARACTERS + 1).fill(character) }), 'TOO_MANY_CHARACTERS');
+  const { currentClothing: _clothing, ...missingCharacterField } = character;
+  assert.equal(validationReason({ ...memory(), characters: [missingCharacterField] }), 'CHARACTER_KEYS_INVALID');
+  assert.equal(validationReason({ ...memory(), knownFacts: Array(STORY_MEMORY_MAX_ARRAY).fill('中'.repeat(STORY_MEMORY_MAX_STRING)) }), 'MEMORY_TOO_LARGE');
   assert.equal(STORY_MEMORY_MAX_STRING, 800); assert.equal(STORY_MEMORY_MAX_BYTES, 32 * 1024);
 });
 
@@ -406,7 +434,87 @@ test('structured HTTP 400 retries exactly once in JSON mode and returns validate
   ]);
 });
 
-test('JSON fallback invalid output is MEMORY_INVALID and never retries again', async t => {
+test('malformed JSON is repaired once without logging raw provider content', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
+  const chat = branchChat().chat, attempts = [], raw = 'PRIVATE_STORY_TEXT_{bad';
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+    async (_key, _params, _signal, attempt, repair) => {
+      attempts.push(attempt);
+      if (attempt === 'structured') return { text: raw };
+      assert.equal(repair.reason, 'JSON_PARSE_FAILED'); assert.equal(repair.candidate, raw);
+      return { text: JSON.stringify(memory('repaired-json')) };
+    });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).memory.knownFacts, ['repaired-json']);
+  assert.deepEqual(attempts, ['structured', 'repair']);
+  assert.equal(JSON.stringify(logs).includes(raw), false);
+  assert.ok(logs.some(([, detail]) => detail.stage === 'validation' && detail.code === 'JSON_PARSE_FAILED'));
+  assert.ok(logs.some(([, detail]) => detail.stage === 'repair' && detail.code === 'SUCCEEDED'));
+});
+
+test('schema-invalid candidates expose safe reasons and are repaired without rereading the story', async t => {
+  t.mock.method(console, 'info', () => {});
+  const valid = memory('repaired-schema');
+  const { time: _time, ...sceneMissingTime } = memory().scene;
+  const character = {
+    idOrName: 'A', name: 'A', identity: [], visualAnchors: [], publicPersona: [], observedDisposition: [],
+    speechFingerprint: [], behavioralTells: [], knownPreferences: [], knownBoundaries: [], currentState: [],
+    currentClothing: [], relationshipToProtagonist: [],
+  };
+  const { currentState: _state, ...characterMissingState } = character;
+  for (const [candidate, expectedReason] of [
+    [{ ...memory(), scene: sceneMissingTime }, 'SCENE_KEYS_INVALID'],
+    [{ ...memory(), characters: [characterMissingState] }, 'CHARACTER_KEYS_INVALID'],
+    [{ ...memory(), knownFacts: 'wrong-type' }, 'ARRAY_TYPE_INVALID'],
+    [{ ...memory(), knownFacts: [12] }, 'STRING_TYPE_INVALID'],
+  ]) {
+    const chat = branchChat().chat, attempts = [];
+    const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+      async (_key, params, _signal, attempt, repair) => {
+        attempts.push(attempt);
+        if (attempt === 'structured') return { text: JSON.stringify(candidate) };
+        assert.equal(repair.reason, expectedReason);
+        assert.equal(Object.hasOwn(repair, 'conversation'), false);
+        assert.ok(params.conversation.length > 0);
+        return { text: JSON.stringify(valid) };
+      });
+    assert.equal(response.status, 200);
+    assert.deepEqual(attempts, ['structured', 'repair']);
+    assert.deepEqual((await response.json()).memory.knownFacts, ['repaired-schema']);
+  }
+});
+
+test('repair cannot bypass string limits and is attempted only once', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
+  const chat = branchChat().chat, oversized = { ...memory(), knownFacts: ['x'.repeat(STORY_MEMORY_MAX_STRING + 1)] };
+  let calls = 0;
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' }, async () => {
+    calls++; return { text: JSON.stringify(oversized) };
+  });
+  assert.equal((await response.json()).error.code, 'MEMORY_INVALID');
+  assert.equal(calls, 2);
+  assert.equal(logs.filter(([, detail]) => detail.stage === 'repair' && detail.code === 'ATTEMPTED').length, 1);
+  assert.equal(logs.filter(([, detail]) => detail.reason === 'STRING_TOO_LONG'
+    && detail.code === 'MEMORY_SCHEMA_INVALID').length, 2);
+});
+
+test('invalid JSON fallback may use one repair and respects the three-call chunk cap', async t => {
+  t.mock.method(console, 'info', () => {});
+  const chat = branchChat().chat, attempts = [];
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+    async (_key, _params, _signal, attempt) => {
+      attempts.push(attempt);
+      if (attempt === 'structured') throw { status: 400 };
+      if (attempt === 'json') return { text: JSON.stringify({ invalid: true }) };
+      return { text: JSON.stringify(memory('fallback-repaired')) };
+    });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).memory.knownFacts, ['fallback-repaired']);
+  assert.deepEqual(attempts, ['structured', 'json', 'repair']);
+  assert.equal(attempts.length, STORY_MEMORY_MAX_PROVIDER_CALLS_PER_CHUNK);
+});
+
+test('invalid JSON fallback and invalid repair return MEMORY_INVALID after the fixed call cap', async t => {
   t.mock.method(console, 'info', () => {});
   const { chat } = branchChat(), messages = storyMemoryConversation(chat);
   for (const fallbackText of ['{bad', JSON.stringify({ invalid: true })]) {
@@ -421,7 +529,7 @@ test('JSON fallback invalid output is MEMORY_INVALID and never retries again', a
       return { text: fallbackText };
     });
     assert.equal((await response.json()).error.code, 'MEMORY_INVALID');
-    assert.deepEqual(attempts, ['structured', 'json']);
+    assert.deepEqual(attempts, ['structured', 'json', 'repair']);
   }
 });
 
@@ -439,7 +547,7 @@ test('a rejected JSON fallback stops after two total provider calls', async t =>
   assert.equal(calls, 2);
 });
 
-test('official SDK extraction uses a shallow structured schema and JSON fallback omits the schema', async t => {
+test('official SDK extraction uses a shallow schema while fallback and repair use JSON mode', async t => {
   const captured = [];
   t.mock.method(globalThis, 'fetch', async (input, init) => {
     captured.push(new Request(input, init));
@@ -456,6 +564,10 @@ test('official SDK extraction uses a shallow structured schema and JSON fallback
     model: MODEL, existingMemory: null,
     conversation: [{ id: 'u', role: 'user', content: 'A', status: 'complete', createdAt: new Date().toISOString() }],
   }, new AbortController().signal, 'json');
+  await googleExtractStoryMemory('unit-test-sentinel', {
+    model: MODEL, existingMemory: null,
+    conversation: [{ id: 'u', role: 'user', content: 'PRIVATE_STORY', status: 'complete', createdAt: new Date().toISOString() }],
+  }, new AbortController().signal, 'repair', { reason: 'SCENE_KEYS_INVALID', candidate: '{"version":1}' });
   const body = await captured[0].json();
   assert.equal(body.generationConfig.responseMimeType, 'application/json');
   assert.equal(body.generationConfig.responseJsonSchema.additionalProperties, false);
@@ -464,9 +576,17 @@ test('official SDK extraction uses a shallow structured schema and JSON fallback
   const fallbackBody = await captured[1].json();
   assert.equal(fallbackBody.generationConfig.responseMimeType, 'application/json');
   assert.equal(Object.hasOwn(fallbackBody.generationConfig, 'responseJsonSchema'), false);
+  const repairBody = await captured[2].json();
+  assert.equal(repairBody.generationConfig.responseMimeType, 'application/json');
+  assert.equal(Object.hasOwn(repairBody.generationConfig, 'responseJsonSchema'), false);
+  assert.deepEqual(JSON.parse(repairBody.contents[0].parts[0].text), {
+    validationReason: 'SCENE_KEYS_INVALID', candidateOutput: '{"version":1}',
+  });
+  assert.doesNotMatch(repairBody.contents[0].parts[0].text, /PRIVATE_STORY/);
+  assert.match(repairBody.systemInstruction.parts[0].text, /Do not add, infer, embellish, or re-summarize story facts/);
   assert.match(body.systemInstruction.parts[0].text, /never invent/i);
   assert.match(body.systemInstruction.parts[0].text, /exactly these keys and value shapes/i);
-  assert.ok(!JSON.stringify([body, fallbackBody]).includes('unit-test-sentinel'));
+  assert.ok(!JSON.stringify([body, fallbackBody, repairBody]).includes('unit-test-sentinel'));
 });
 
 test('story-memory endpoint enforces same-origin and missing-key boundaries', async () => {

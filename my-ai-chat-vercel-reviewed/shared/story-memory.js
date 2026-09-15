@@ -83,28 +83,43 @@ export const STORY_MEMORY_PROVIDER_JSON_SCHEMA = Object.freeze({
   },
 });
 
-export class StoryMemoryValidationError extends Error {}
-const fail = () => { throw new StoryMemoryValidationError('Invalid story memory'); };
+export const STORY_MEMORY_VALIDATION_REASONS = Object.freeze([
+  'ROOT_KEYS_INVALID', 'VERSION_INVALID', 'SCENE_KEYS_INVALID', 'RELATIONSHIP_KEYS_INVALID',
+  'CHARACTERS_TYPE_INVALID', 'TOO_MANY_CHARACTERS', 'CHARACTER_KEYS_INVALID',
+  'STRING_TYPE_INVALID', 'STRING_TOO_LONG', 'ARRAY_TYPE_INVALID', 'ARRAY_TOO_LONG', 'MEMORY_TOO_LARGE',
+]);
+const validationReasons = new Set(STORY_MEMORY_VALIDATION_REASONS);
+export class StoryMemoryValidationError extends Error {
+  constructor(reason) {
+    super('Invalid story memory');
+    this.name = 'StoryMemoryValidationError';
+    this.reason = validationReasons.has(reason) ? reason : 'MEMORY_SCHEMA_INVALID';
+  }
+}
+const fail = reason => { throw new StoryMemoryValidationError(reason); };
 const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);
-function exactKeys(value, expected) {
+function exactKeys(value, expected, reason) {
   if (!isRecord(value) || Object.keys(value).length !== expected.length
-    || Object.keys(value).some(key => !expected.includes(key))) fail();
+    || Object.keys(value).some(key => !expected.includes(key))) fail(reason);
 }
 function cleanString(value, limit = STORY_MEMORY_MAX_STRING) {
-  if (typeof value !== 'string' || value.length > limit) fail();
+  if (typeof value !== 'string') fail('STRING_TYPE_INVALID');
+  if (value.length > limit) fail('STRING_TOO_LONG');
   return value.trim();
 }
 function cleanStringArray(value) {
-  if (!Array.isArray(value) || value.length > STORY_MEMORY_MAX_ARRAY) fail();
+  if (!Array.isArray(value)) fail('ARRAY_TYPE_INVALID');
+  if (value.length > STORY_MEMORY_MAX_ARRAY) fail('ARRAY_TOO_LONG');
   return value.map(item => cleanString(item)).filter(Boolean);
 }
 
 export function validateStoryMemory(value) {
-  exactKeys(value, ROOT_KEYS);
-  if (value.version !== STORY_MEMORY_SCHEMA_VERSION) fail();
-  exactKeys(value.scene, SCENE_KEYS);
-  exactKeys(value.relationship, RELATIONSHIP_KEYS);
-  if (!Array.isArray(value.characters) || value.characters.length > STORY_MEMORY_MAX_CHARACTERS) fail();
+  exactKeys(value, ROOT_KEYS, 'ROOT_KEYS_INVALID');
+  if (value.version !== STORY_MEMORY_SCHEMA_VERSION) fail('VERSION_INVALID');
+  exactKeys(value.scene, SCENE_KEYS, 'SCENE_KEYS_INVALID');
+  exactKeys(value.relationship, RELATIONSHIP_KEYS, 'RELATIONSHIP_KEYS_INVALID');
+  if (!Array.isArray(value.characters)) fail('CHARACTERS_TYPE_INVALID');
+  if (value.characters.length > STORY_MEMORY_MAX_CHARACTERS) fail('TOO_MANY_CHARACTERS');
   const memory = {
     version: STORY_MEMORY_SCHEMA_VERSION,
     scene: {
@@ -116,7 +131,7 @@ export function validateStoryMemory(value) {
       importantObjects: cleanStringArray(value.scene.importantObjects),
     },
     characters: value.characters.map(character => {
-      exactKeys(character, CHARACTER_KEYS);
+      exactKeys(character, CHARACTER_KEYS, 'CHARACTER_KEYS_INVALID');
       return Object.fromEntries(CHARACTER_KEYS.map(key => [key,
         ['idOrName', 'name'].includes(key) ? cleanString(character[key]) : cleanStringArray(character[key]),
       ]));
@@ -132,7 +147,7 @@ export function validateStoryMemory(value) {
     unknownOrUnconfirmed: cleanStringArray(value.unknownOrUnconfirmed),
     unresolvedThreads: cleanStringArray(value.unresolvedThreads),
   };
-  if (new TextEncoder().encode(JSON.stringify(memory)).byteLength > STORY_MEMORY_MAX_BYTES) fail();
+  if (new TextEncoder().encode(JSON.stringify(memory)).byteLength > STORY_MEMORY_MAX_BYTES) fail('MEMORY_TOO_LARGE');
   return memory;
 }
 
