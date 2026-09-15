@@ -10,7 +10,7 @@ import {
   isRegenerationReason, responseQualitySystemInstruction, STYLE_REFERENCE_LIMIT,
   STYLE_REFERENCE_TOTAL_CHARACTERS,
 } from '../shared/response-quality.js';
-import { storyRuntimeSystemInstruction, validateStoryRuntimeRequest } from '../shared/story-runtime.js';
+import { storyRuntimeActionTurn, storyRuntimeSystemInstruction, validateStoryRuntimeRequest } from '../shared/story-runtime.js';
 
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_MESSAGES = 100;
@@ -60,10 +60,12 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
     return { role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] };
   });
   const storyRuntime = validateStoryRuntimeRequest(payload.storyRuntime);
-  let activeAssistantContent = '';
   if (storyRuntime?.action && storyRuntime.action !== 'prepare_story') {
-    if (contents.at(-1)?.role === 'model') activeAssistantContent = contents.pop().parts[0].text;
-    else if (storyRuntime.action !== 'start_writing') throw new Error('INVALID_REQUEST');
+    const actionTurn = storyRuntimeActionTurn(storyRuntime.action);
+    if (contents.at(-1)?.role === 'model') contents.push(actionTurn);
+    else if (storyRuntime.action === 'start_writing' && contents.at(-1)?.role === 'user') {
+      contents.at(-1).parts.push(...actionTurn.parts);
+    } else throw new Error('INVALID_REQUEST');
   }
   if (contents.at(-1)?.role !== 'user') throw new Error('INVALID_REQUEST');
   const config = validateGenerationSettings(payload.settings, authorizedModel);
@@ -78,7 +80,7 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
   if (systemInstruction) config.systemInstruction = systemInstruction;
   else delete config.systemInstruction;
   if (storyRuntime) {
-    config.systemInstruction = storyRuntimeSystemInstruction(config.systemInstruction || '', storyRuntime, activeAssistantContent);
+    config.systemInstruction = storyRuntimeSystemInstruction(config.systemInstruction || '', storyRuntime);
   }
   return { model: payload.model, contents, config };
 }

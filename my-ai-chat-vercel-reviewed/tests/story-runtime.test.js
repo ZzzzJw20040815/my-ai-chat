@@ -118,10 +118,45 @@ test('runtime is supplemental system context, not fake messages, and disabled re
   const action = validatePayload({ ...base, messages: [base.messages[0], {
     id: 'a', role: 'assistant', content: 'The door opened—', status: 'complete',
   }], storyRuntime: { mode: 'writing', action: 'continue_incomplete' } });
-  assert.equal(action.contents.length, 1);
+  assert.deepEqual(action.contents.map(item => item.role), ['user', 'model', 'user']);
+  assert.equal(action.contents[1].parts[0].text, 'The door opened—');
+  assert.match(action.contents.at(-1).parts[0].text, /exact ending.*immediately above/i);
   assert.match(action.config.systemInstruction, /Continue directly from the end/);
-  assert.match(action.config.systemInstruction, /The door opened/);
+  assert.doesNotMatch(action.config.systemInstruction, /The door opened/);
   assert.doesNotMatch(JSON.stringify(action.contents), /continue_incomplete|STORY RUNTIME/);
+});
+
+test('continue actions keep the active assistant and append a request-only operational user turn', () => {
+  const setupPrompt = '请帮我准备一个适合测试 Story Memory 的故事设定。';
+  const setupReply = '已经为你准备好了一段测试设定。';
+  const messages = [
+    { id: 'u', role: 'user', content: setupPrompt, status: 'complete' },
+    { id: 'a', role: 'assistant', content: setupReply, status: 'complete' },
+  ];
+  for (const action of ['continue_story', 'continue_incomplete']) {
+    const result = validatePayload({ model: MODEL, messages, storyRuntime: { mode: 'writing', action } });
+    assert.deepEqual(result.contents.map(item => item.role), ['user', 'model', 'user']);
+    assert.equal(result.contents[0].parts[0].text, setupPrompt);
+    assert.equal(result.contents[1].parts[0].text, setupReply);
+    assert.match(result.contents[2].parts[0].text, /immediately above/);
+    assert.doesNotMatch(result.contents[2].parts[0].text, /准备.*设定/);
+    assert.notEqual(result.contents.at(-1).parts[0].text, setupPrompt);
+  }
+});
+
+test('start_writing appends its operational turn while normal sends remain unchanged', () => {
+  const messages = [
+    { id: 'u', role: 'user', content: '故事发生在雨夜图书馆。', status: 'complete' },
+    { id: 'a', role: 'assistant', content: '候选人物可以是图书管理员。', status: 'complete' },
+  ];
+  const start = validatePayload({ model: MODEL, messages, storyRuntime: { mode: 'writing', action: 'start_writing' } });
+  assert.deepEqual(start.contents.map(item => item.role), ['user', 'model', 'user']);
+  assert.match(start.contents.at(-1).parts[0].text, /Begin the formal story now/);
+  assert.match(start.contents.at(-1).parts[0].text, /do not canonicalize unconfirmed candidates/i);
+  assert.equal(start.contents[1].parts[0].text, messages[1].content);
+
+  const normal = validatePayload({ model: MODEL, messages: [messages[0]], storyRuntime: { mode: 'writing' } });
+  assert.deepEqual(normal.contents, [{ role: 'user', parts: [{ text: messages[0].content }] }]);
 });
 
 test('setup is a request-scoped gate that roleplay instructions and style cannot bypass', () => {
@@ -151,6 +186,8 @@ test('start_writing may use a valid premise after a stopped setup reply without 
   assert.deepEqual(context.map(item => item.content), [user.content]);
   const result = validatePayload({ model: MODEL, messages: context, storyRuntime: { mode: 'writing', action: 'start_writing' } });
   assert.equal(result.contents.at(-1).role, 'user');
+  assert.equal(result.contents[0].parts[0].text, user.content);
+  assert.match(result.contents[0].parts[1].text, /Begin the formal story now/);
   assert.match(result.config.systemInstruction, /Begin the formal story now/);
 });
 
