@@ -67,7 +67,11 @@ test('chat prose sizes are independent while code and table safety sizes remain 
 });
 
 test('Safari form sizes, touch targets, sheets, and Story pill remain mobile safe', async () => {
-  const css = await read('styles.css');
+  const [css, html] = await Promise.all([read('styles.css'), read('index.html')]);
+  assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.app-shell :is\(input, textarea, select\), \.settings-dialog :is\(input, textarea, select\)\s*\{\s*font-size:\s*16px/);
+  for (const id of ['chatSearch', 'messageInput', 'defaultModelSetting', 'systemInstructionSetting', 'settingsCodeOutput', 'settingsCodeInput']) {
+    assert.match(html, new RegExp(`<(?:input|textarea|select)[^>]*id="${id}"`));
+  }
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.composer textarea\s*\{[^}]*font-size:\s*16px/);
   assert.match(css, /\.edit-area textarea\s*\{[^}]*font-size:\s*16px/);
   assert.match(css, /\.setting-field select, \.setting-field input, \.setting-field textarea, \.compact-field input\s*\{[^}]*font-size:\s*16px/);
@@ -102,8 +106,11 @@ test('Story controls retain a safe horizontal budget at common iPhone CSS widths
 test('display preferences never emulate browser zoom or alter breakpoint semantics', async () => {
   const [css, html] = await Promise.all([read('styles.css'), read('index.html')]);
   const preferenceCss = css.slice(css.indexOf(':root, html[data-mobile-density="standard"]'), css.indexOf('.topbar { height: 56px'));
+  const desktopCss = css.slice(0, css.indexOf('@media (max-width: 520px)'));
   assert.doesNotMatch(preferenceCss, /(?:^|[;{])\s*zoom\s*:/m);
   assert.doesNotMatch(preferenceCss, /transform\s*:\s*scale\(/);
+  assert.match(desktopCss, /\.search-box input\s*\{[^}]*font-size:\s*14px/);
   assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1\.0, interactive-widget=resizes-content"/);
+  assert.doesNotMatch(html, /maximum-scale|user-scalable/i);
   assert.equal((css.match(/@media \(max-width: 520px\)/g) || []).length >= 1, true);
 });
