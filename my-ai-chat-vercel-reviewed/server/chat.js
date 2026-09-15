@@ -35,7 +35,8 @@ export function classifyError(error) {
   const status = Number(error?.status || error?.code);
   if (status === 429) return ['RATE_LIMIT', 429];
   if (status === 401 || status === 403) return ['KEY_INVALID', 502];
-  if (status === 404 || status === 400) return ['MODEL_UNAVAILABLE', 502];
+  if (status === 404) return ['MODEL_UNAVAILABLE', 502];
+  if (status === 400) return ['INVALID_REQUEST', 502];
   if (error?.name === 'TimeoutError') return ['TIMEOUT', 504];
   if (error instanceof TypeError) return ['NETWORK_ERROR', 502];
   return ['SERVER_ERROR', 502];

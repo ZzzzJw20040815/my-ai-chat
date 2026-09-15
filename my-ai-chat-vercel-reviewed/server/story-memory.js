@@ -1,7 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { isPersistableModelId, modelMetadata } from '../shared/models.js';
 import {
-  STORY_MEMORY_JSON_SCHEMA, STORY_MEMORY_SCHEMA_VERSION, StoryMemoryValidationError, validateStoryMemory,
+  STORY_MEMORY_PROVIDER_JSON_SCHEMA, STORY_MEMORY_SCHEMA_VERSION, StoryMemoryValidationError, validateStoryMemory,
 } from '../shared/story-memory.js';
 import {
   STORY_MEMORY_MAX_BODY_BYTES, STORY_MEMORY_MAX_MESSAGES, STORY_MEMORY_MAX_MESSAGE_CHARACTERS,
@@ -17,6 +17,7 @@ const ERROR_MESSAGES = Object.freeze({
   CONTEXT_LIMIT: 'This conversation is too large to update story memory in one request.',
   KEY_MISSING: 'Gemini is not configured for this site.',
   MODEL_UNAVAILABLE: 'The selected Gemini model is unavailable for story memory.',
+  MEMORY_REQUEST_REJECTED: 'Gemini rejected the story memory request. Your previous memory was kept.',
   MEMORY_INVALID: 'Gemini returned an invalid story memory. Your previous memory was kept.',
   RATE_LIMIT: 'Gemini is temporarily rate limited. Your previous memory was kept.',
   NETWORK_ERROR: 'Could not connect to Gemini. Your previous memory was kept.',
@@ -74,9 +75,17 @@ export async function googleExtractStoryMemory(apiKey, params, signal) {
       abortSignal: signal,
       systemInstruction: EXTRACTION_INSTRUCTION,
       responseMimeType: 'application/json',
-      responseJsonSchema: STORY_MEMORY_JSON_SCHEMA,
+      responseJsonSchema: STORY_MEMORY_PROVIDER_JSON_SCHEMA,
     },
   });
+}
+
+export function classifyStoryMemoryProviderError(error) {
+  const status = Number(error?.status || error?.code);
+  if (status === 400) return ['MEMORY_REQUEST_REJECTED', 502];
+  if (status === 404) return ['MODEL_UNAVAILABLE', 502];
+  const [code, responseStatus] = classifyError(error);
+  return [ERROR_MESSAGES[code] ? code : 'SERVER_ERROR', responseStatus];
 }
 
 export async function handleStoryMemory(request, env, transport = googleExtractStoryMemory, timeoutMs = 90000, catalogOptions = {}) {
@@ -122,8 +131,8 @@ export async function handleStoryMemory(request, env, transport = googleExtractS
     if (error?.message === 'MEMORY_INVALID' || error instanceof SyntaxError || error instanceof StoryMemoryValidationError) {
       return jsonError('MEMORY_INVALID', 502);
     }
-    const code = timedOut ? 'TIMEOUT' : classifyError(error)[0];
-    return jsonError(ERROR_MESSAGES[code] ? code : 'SERVER_ERROR', code === 'RATE_LIMIT' ? 429 : code === 'TIMEOUT' ? 504 : 502);
+    const [code, status] = timedOut ? ['TIMEOUT', 504] : classifyStoryMemoryProviderError(error);
+    return jsonError(code, status);
   } finally {
     clearTimeout(timer);
     request.signal.removeEventListener('abort', onDisconnect);

@@ -64,6 +64,26 @@ export const STORY_MEMORY_JSON_SCHEMA = Object.freeze({
   },
 });
 
+// Gemini responseJsonSchema supports only a documented JSON Schema subset.
+// Keep provider compatibility separate from the stricter local contract below:
+// unsupported generation hints (currently maxLength) are intentionally omitted,
+// while validateStoryMemory remains the final authority for every returned value.
+const GEMINI_RESPONSE_SCHEMA_KEYS = new Set([
+  'type', 'properties', 'required', 'additionalProperties', 'enum', 'items', 'maxItems',
+]);
+function providerSchema(schema) {
+  const result = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (!GEMINI_RESPONSE_SCHEMA_KEYS.has(key)) continue;
+    if (key === 'properties') {
+      result.properties = Object.fromEntries(Object.entries(value).map(([name, child]) => [name, providerSchema(child)]));
+    } else if (key === 'items') result.items = providerSchema(value);
+    else result[key] = Array.isArray(value) ? [...value] : value;
+  }
+  return Object.freeze(result);
+}
+export const STORY_MEMORY_PROVIDER_JSON_SCHEMA = providerSchema(STORY_MEMORY_JSON_SCHEMA);
+
 export class StoryMemoryValidationError extends Error {}
 const fail = () => { throw new StoryMemoryValidationError('Invalid story memory'); };
 const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);

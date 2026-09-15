@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { IDBFactory } from 'fake-indexeddb';
-import { googleExtractStoryMemory, handleStoryMemory } from '../server/story-memory.js';
+import { classifyStoryMemoryProviderError, googleExtractStoryMemory, handleStoryMemory } from '../server/story-memory.js';
 import { validatePayload } from '../server/chat.js';
 import { createChat, createMessage, addAssistantVariant, visibleConversationPath } from '../ui/state.js';
 import {
@@ -14,7 +14,10 @@ import {
   chunkStoryMemoryMessages, currentStoryAnchor, runStoryMemoryUpdate, storyMemoryConversation,
   storyMemoryMessagesAfterAnchor, storyMemoryRequestByteLength, storySubtreeAnchorIds,
 } from '../ui/story-memory.js';
-import { storyMemorySystemInstruction, validateStoryMemory } from '../shared/story-memory.js';
+import {
+  STORY_MEMORY_JSON_SCHEMA, STORY_MEMORY_MAX_ARRAY, STORY_MEMORY_MAX_BYTES, STORY_MEMORY_MAX_STRING,
+  STORY_MEMORY_PROVIDER_JSON_SCHEMA, storyMemorySystemInstruction, validateStoryMemory,
+} from '../shared/story-memory.js';
 import {
   STORY_MEMORY_MAX_CHUNKS, STORY_MEMORY_SAFE_BODY_BYTES, STORY_MEMORY_SAFE_MESSAGES,
   STORY_MEMORY_SAFE_TOTAL_CHARACTERS,
@@ -196,6 +199,7 @@ test('server error codes retain stable client classifications', async () => {
   for (const [serverCode, clientCode] of [
     ['CONTEXT_LIMIT', 'CONTEXT_LIMIT'], ['TIMEOUT', 'TIMEOUT'], ['RATE_LIMIT', 'RATE_LIMIT'],
     ['NETWORK_ERROR', 'NETWORK_ERROR'], ['MODEL_UNAVAILABLE', 'MODEL_UNAVAILABLE'],
+    ['MEMORY_REQUEST_REJECTED', 'MEMORY_REQUEST_REJECTED'],
     ['MEMORY_INVALID', 'MEMORY_INVALID_JSON'], ['SERVER_ERROR', 'SERVER_ERROR'], ['INVALID_REQUEST', 'SERVER_ERROR'],
   ]) {
     const chat = linearChat(1);
@@ -296,6 +300,22 @@ test('failed storage commit leaves previous in-memory snapshot unchanged', async
 test('memory schema rejects malformed or oversized model data', () => {
   assert.throws(() => validateStoryMemory({ ...memory(), invented: true }));
   assert.throws(() => validateStoryMemory({ ...memory(), knownFacts: ['x'.repeat(801)] }));
+  assert.throws(() => validateStoryMemory({ ...memory(), knownFacts: Array(STORY_MEMORY_MAX_ARRAY + 1).fill('x') }));
+  assert.equal(STORY_MEMORY_MAX_STRING, 800); assert.equal(STORY_MEMORY_MAX_BYTES, 32 * 1024);
+});
+
+test('provider-facing schema uses only Gemini responseJsonSchema keywords while local limits remain strict', () => {
+  const supported = new Set(['type', 'properties', 'required', 'additionalProperties', 'enum', 'items', 'maxItems']);
+  const visit = schema => {
+    for (const key of Object.keys(schema)) assert.ok(supported.has(key), `unsupported provider keyword: ${key}`);
+    if (schema.properties) for (const child of Object.values(schema.properties)) visit(child);
+    if (schema.items) visit(schema.items);
+  };
+  visit(STORY_MEMORY_PROVIDER_JSON_SCHEMA);
+  assert.equal(JSON.stringify(STORY_MEMORY_PROVIDER_JSON_SCHEMA).includes('maxLength'), false);
+  assert.equal(JSON.stringify(STORY_MEMORY_JSON_SCHEMA).includes('maxLength'), true);
+  assert.equal(STORY_MEMORY_PROVIDER_JSON_SCHEMA.properties.importantEvents.maxItems, STORY_MEMORY_MAX_ARRAY);
+  assert.throws(() => validateStoryMemory({ ...memory(), knownFacts: ['x'.repeat(STORY_MEMORY_MAX_STRING + 1)] }));
 });
 
 test('story-memory endpoint authorizes model, sends only supplied active path, and validates JSON before returning', async () => {
@@ -335,6 +355,20 @@ test('synthetic long conversation reproduces server CONTEXT_LIMIT without callin
   assert.equal(transportCalls, 0);
 });
 
+test('provider HTTP 404 means model unavailable while HTTP 400 means request rejected', async () => {
+  assert.deepEqual(classifyStoryMemoryProviderError({ status: 404 }), ['MODEL_UNAVAILABLE', 502]);
+  assert.deepEqual(classifyStoryMemoryProviderError({ status: 400 }), ['MEMORY_REQUEST_REJECTED', 502]);
+  const { chat } = branchChat(), messages = storyMemoryConversation(chat), anchorId = currentStoryAnchor(chat);
+  for (const [status, code] of [[404, 'MODEL_UNAVAILABLE'], [400, 'MEMORY_REQUEST_REJECTED']]) {
+    const request = new Request('https://app.example/api/story-memory', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },
+      body: JSON.stringify({ model: MODEL, chatId: chat.id, anchorId, messages }),
+    });
+    const response = await handleStoryMemory(request, { GEMINI_API_KEY: 'test-only' }, async () => { throw { status }; });
+    assert.equal(response.status, 502); assert.equal((await response.json()).error.code, code);
+  }
+});
+
 test('official SDK extraction requests structured JSON without exposing the server key', async t => {
   let captured;
   t.mock.method(globalThis, 'fetch', async (input, init) => {
@@ -351,6 +385,8 @@ test('official SDK extraction requests structured JSON without exposing the serv
   const body = await captured.json();
   assert.equal(body.generationConfig.responseMimeType, 'application/json');
   assert.equal(body.generationConfig.responseJsonSchema.additionalProperties, false);
+  assert.equal(JSON.stringify(body.generationConfig.responseJsonSchema).includes('maxLength'), false);
+  assert.equal(body.generationConfig.responseJsonSchema.properties.importantEvents.maxItems, STORY_MEMORY_MAX_ARRAY);
   assert.match(body.systemInstruction.parts[0].text, /never invent/i);
   assert.ok(!JSON.stringify(body).includes('unit-test-sentinel'));
 });

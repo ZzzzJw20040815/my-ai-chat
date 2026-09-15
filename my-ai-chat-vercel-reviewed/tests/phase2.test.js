@@ -72,8 +72,8 @@ test('transport emits first delta before generation finishes, forwards context a
   let rest = ''; while (true) { const {done,value} = await reader.read(); if(done) break; rest += new TextDecoder().decode(value); }
   assert.match(rest, /明/); assert.match(rest, /"done"/); assert.ok(!rest.includes(testEnv.GEMINI_API_KEY));
 });
-test('429, model errors, network and server exceptions are sanitized', async () => {
-  for (const [error, code] of [[{status:429},'RATE_LIMIT'],[{status:404},'MODEL_UNAVAILABLE'],[{status:403},'KEY_INVALID'],[new TypeError('secret stack'),'NETWORK_ERROR'],[new Error('secret stack'),'SERVER_ERROR']]) {
+test('429, provider request, model, network and server exceptions are sanitized', async () => {
+  for (const [error, code] of [[{status:429},'RATE_LIMIT'],[{status:400},'INVALID_REQUEST'],[{status:404},'MODEL_UNAVAILABLE'],[{status:403},'KEY_INVALID'],[new TypeError('secret stack'),'NETWORK_ERROR'],[new Error('secret stack'),'SERVER_ERROR']]) {
     const output = await events(await handleChat(request(),testEnv,async () => { throw error; }));
     assert.equal(output.at(-1).code,code); assert.equal(output.at(-1).message,ERROR_TEXT[code]);
     assert.ok(!JSON.stringify(output).includes('secret stack'));

@@ -254,7 +254,8 @@ test('memory failures have stable non-sensitive classifications and Safari write
 test('memory error copy is specific, includes safe codes, and the Story sheet clears failure after success', async () => {
   const expected = {
     CONTEXT_LIMIT: '当前故事内容过长', TIMEOUT: '生成超时', RATE_LIMIT: '暂时繁忙', NETWORK_ERROR: '无法连接 Gemini',
-    MODEL_UNAVAILABLE: '当前模型暂不可用', MEMORY_INVALID_JSON: '格式无效', MEMORY_STORAGE_FAILED: '无法保存到此设备',
+    MODEL_UNAVAILABLE: '当前模型暂不可用', MEMORY_REQUEST_REJECTED: '拒绝了故事记忆请求',
+    MEMORY_INVALID_JSON: '格式无效', MEMORY_STORAGE_FAILED: '无法保存到此设备',
     MEMORY_INVALID_ANCHOR: '分支状态异常', SERVER_ERROR: '暂时无法更新',
   };
   for (const [code, text] of Object.entries(expected)) assert.match(storyMemoryErrorMessage(code), new RegExp(text));
