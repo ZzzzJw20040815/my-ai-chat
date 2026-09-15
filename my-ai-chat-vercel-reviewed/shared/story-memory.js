@@ -98,6 +98,137 @@ export class StoryMemoryValidationError extends Error {
 }
 const fail = reason => { throw new StoryMemoryValidationError(reason); };
 const isRecord = value => !!value && typeof value === 'object' && !Array.isArray(value);
+
+export const STORY_MEMORY_CANONICALIZATION_REASONS = Object.freeze([
+  'ROOT_TYPE_UNSAFE', 'SCENE_TYPE_UNSAFE', 'SCENE_SCALAR_TYPE_UNSAFE',
+  'CHARACTERS_TYPE_UNSAFE', 'CHARACTER_TYPE_UNSAFE', 'CHARACTER_SCALAR_TYPE_UNSAFE',
+  'RELATIONSHIP_TYPE_UNSAFE', 'RELATIONSHIP_SUMMARY_TYPE_UNSAFE',
+  'STRING_ARRAY_TYPE_UNSAFE', 'STRING_ARRAY_ITEM_TYPE_UNSAFE',
+]);
+const canonicalizationReasons = new Set(STORY_MEMORY_CANONICALIZATION_REASONS);
+export class StoryMemoryCanonicalizationError extends Error {
+  constructor(reason, diagnostics) {
+    super('Story memory candidate cannot be safely canonicalized');
+    this.name = 'StoryMemoryCanonicalizationError';
+    this.reason = canonicalizationReasons.has(reason) ? reason : 'CANONICALIZATION_UNSAFE';
+    this.diagnostics = diagnostics || Object.freeze({
+      canonicalizationApplied: false, missingKeysFilled: 0, stringArraysWrapped: 0, unknownKeysDropped: 0,
+    });
+  }
+}
+
+function normalizeStringArrayValue(item, context) {
+  if (item == null) { if (item !== undefined) context.changed(); return []; }
+  if (typeof item === 'string') {
+    const text = item.trim(); context.changed();
+    if (text) context.diagnostics.stringArraysWrapped++;
+    return text ? [text] : [];
+  }
+  if (!Array.isArray(item)) context.unsafe('STRING_ARRAY_TYPE_UNSAFE');
+  if (item.some(entry => typeof entry !== 'string')) context.unsafe('STRING_ARRAY_ITEM_TYPE_UNSAFE');
+  const normalized = item.map(entry => entry.trim()).filter(Boolean);
+  if (normalized.length !== item.length || normalized.some((entry, index) => entry !== item[index])) context.changed();
+  return normalized;
+}
+
+export function normalizeStringArray(value) {
+  const diagnostics = { stringArraysWrapped: 0 };
+  return normalizeStringArrayValue(value, {
+    diagnostics, changed() {},
+    unsafe(reason) { throw new StoryMemoryCanonicalizationError(reason); },
+  });
+}
+
+function canonicalizeCandidate(value) {
+  const diagnostics = { canonicalizationApplied: false, missingKeysFilled: 0, stringArraysWrapped: 0, unknownKeysDropped: 0 };
+  const changed = () => { diagnostics.canonicalizationApplied = true; };
+  const missing = (object, key) => {
+    if (!Object.hasOwn(object, key)) { diagnostics.missingKeysFilled++; changed(); }
+  };
+  const dropUnknown = (object, keys) => {
+    const count = Object.keys(object).filter(key => !keys.includes(key)).length;
+    if (count) { diagnostics.unknownKeysDropped += count; changed(); }
+  };
+  const unsafe = reason => { throw new StoryMemoryCanonicalizationError(reason, { ...diagnostics }); };
+  const stringOrNeutral = (object, key, neutral, reason) => {
+    missing(object, key);
+    const item = object[key];
+    if (item == null) { if (item !== neutral) changed(); return neutral; }
+    if (typeof item !== 'string') unsafe(reason);
+    return item;
+  };
+  const normalizeArray = item => normalizeStringArrayValue(item, { diagnostics, changed, unsafe });
+  const arrayField = (object, key) => { missing(object, key); return normalizeArray(object[key]); };
+
+  if (!isRecord(value)) unsafe('ROOT_TYPE_UNSAFE');
+  dropUnknown(value, ROOT_KEYS);
+  missing(value, 'version');
+  if (value.version !== STORY_MEMORY_SCHEMA_VERSION) changed();
+
+  missing(value, 'scene');
+  const sceneValue = value.scene == null ? {} : value.scene;
+  if (!isRecord(sceneValue)) unsafe('SCENE_TYPE_UNSAFE');
+  if (value.scene == null) changed();
+  dropUnknown(sceneValue, SCENE_KEYS);
+  const scene = {
+    location: stringOrNeutral(sceneValue, 'location', null, 'SCENE_SCALAR_TYPE_UNSAFE'),
+    time: stringOrNeutral(sceneValue, 'time', null, 'SCENE_SCALAR_TYPE_UNSAFE'),
+    presentCharacters: arrayField(sceneValue, 'presentCharacters'),
+    relativePositions: arrayField(sceneValue, 'relativePositions'),
+    environmentState: arrayField(sceneValue, 'environmentState'),
+    importantObjects: arrayField(sceneValue, 'importantObjects'),
+  };
+
+  missing(value, 'characters');
+  const characterValues = value.characters == null ? [] : value.characters;
+  if (!Array.isArray(characterValues)) unsafe('CHARACTERS_TYPE_UNSAFE');
+  if (value.characters == null) changed();
+  const characters = characterValues.map(character => {
+    if (!isRecord(character)) unsafe('CHARACTER_TYPE_UNSAFE');
+    dropUnknown(character, CHARACTER_KEYS);
+    return Object.fromEntries(CHARACTER_KEYS.map(key => [key,
+      ['idOrName', 'name'].includes(key)
+        ? stringOrNeutral(character, key, '', 'CHARACTER_SCALAR_TYPE_UNSAFE')
+        : arrayField(character, key),
+    ]));
+  });
+
+  missing(value, 'relationship');
+  const relationshipValue = value.relationship == null ? {} : value.relationship;
+  if (!isRecord(relationshipValue)) unsafe('RELATIONSHIP_TYPE_UNSAFE');
+  if (value.relationship == null) changed();
+  dropUnknown(relationshipValue, RELATIONSHIP_KEYS);
+  const relationship = {
+    summary: stringOrNeutral(relationshipValue, 'summary', '', 'RELATIONSHIP_SUMMARY_TYPE_UNSAFE'),
+    establishedChanges: arrayField(relationshipValue, 'establishedChanges'),
+    sharedHistory: arrayField(relationshipValue, 'sharedHistory'),
+    unresolvedTension: arrayField(relationshipValue, 'unresolvedTension'),
+  };
+
+  for (const key of ['importantEvents', 'knownFacts', 'unknownOrUnconfirmed', 'unresolvedThreads']) missing(value, key);
+  return {
+    memory: {
+      version: STORY_MEMORY_SCHEMA_VERSION,
+      scene,
+      characters,
+      relationship,
+      importantEvents: normalizeArray(value.importantEvents),
+      knownFacts: normalizeArray(value.knownFacts),
+      unknownOrUnconfirmed: normalizeArray(value.unknownOrUnconfirmed),
+      unresolvedThreads: normalizeArray(value.unresolvedThreads),
+    },
+    diagnostics: Object.freeze({ ...diagnostics }),
+  };
+}
+
+export function canonicalizeStoryMemoryCandidate(value) {
+  return canonicalizeCandidate(value).memory;
+}
+
+export function canonicalizeStoryMemoryCandidateWithDiagnostics(value) {
+  return canonicalizeCandidate(value);
+}
+
 function exactKeys(value, expected, reason) {
   if (!isRecord(value) || Object.keys(value).length !== expected.length
     || Object.keys(value).some(key => !expected.includes(key))) fail(reason);

@@ -18,8 +18,10 @@ import {
   storyMemoryMessagesAfterAnchor, storyMemoryRequestByteLength, storySubtreeAnchorIds,
 } from '../ui/story-memory.js';
 import {
+  canonicalizeStoryMemoryCandidate, canonicalizeStoryMemoryCandidateWithDiagnostics, normalizeStringArray,
   STORY_MEMORY_JSON_SCHEMA, STORY_MEMORY_MAX_ARRAY, STORY_MEMORY_MAX_BYTES, STORY_MEMORY_MAX_CHARACTERS, STORY_MEMORY_MAX_STRING,
-  STORY_MEMORY_PROVIDER_JSON_SCHEMA, StoryMemoryValidationError, storyMemorySystemInstruction, validateStoryMemory,
+  STORY_MEMORY_PROVIDER_JSON_SCHEMA, StoryMemoryCanonicalizationError, StoryMemoryValidationError,
+  storyMemorySystemInstruction, validateStoryMemory,
 } from '../shared/story-memory.js';
 import {
   STORY_MEMORY_MAX_CHUNKS, STORY_MEMORY_SAFE_BODY_BYTES, STORY_MEMORY_SAFE_MESSAGES,
@@ -340,6 +342,61 @@ test('memory schema rejects malformed or oversized model data', () => {
   assert.equal(STORY_MEMORY_MAX_STRING, 800); assert.equal(STORY_MEMORY_MAX_BYTES, 32 * 1024);
 });
 
+test('deterministic canonicalizer preserves valid memory and repairs logged shape variants with neutral defaults', () => {
+  const exact = memory('exact');
+  const unchanged = canonicalizeStoryMemoryCandidateWithDiagnostics(exact);
+  assert.deepEqual(unchanged.memory, exact);
+  assert.deepEqual(unchanged.diagnostics, {
+    canonicalizationApplied: false, missingKeysFilled: 0, stringArraysWrapped: 0, unknownKeysDropped: 0,
+  });
+
+  const candidate = {
+    version: 99,
+    scene: { location: '大厅', presentCharacters: '米拉', providerNote: 'drop' },
+    characters: [{ idOrName: 'mira', name: '米拉', currentClothing: '黑色西装', providerTag: 'drop' }],
+    relationship: { summary: '刚刚见面' },
+    importantEvents: '发现了一封信',
+    knownFacts: null,
+    providerDebug: true,
+  };
+  const { memory: canonical, diagnostics } = canonicalizeStoryMemoryCandidateWithDiagnostics(candidate);
+  assert.deepEqual(canonical.scene, {
+    location: '大厅', time: null, presentCharacters: ['米拉'], relativePositions: [], environmentState: [], importantObjects: [],
+  });
+  assert.deepEqual(canonical.characters[0].currentClothing, ['黑色西装']);
+  assert.deepEqual(canonical.characters[0].identity, []);
+  assert.deepEqual(canonical.relationship, {
+    summary: '刚刚见面', establishedChanges: [], sharedHistory: [], unresolvedTension: [],
+  });
+  assert.deepEqual(canonical.importantEvents, ['发现了一封信']);
+  assert.deepEqual(canonical.knownFacts, []);
+  assert.deepEqual(canonical.unknownOrUnconfirmed, []);
+  assert.deepEqual(canonical.unresolvedThreads, []);
+  assert.equal(canonical.version, 1);
+  assert.equal(Object.hasOwn(canonical, 'providerDebug'), false);
+  assert.equal(Object.hasOwn(canonical.scene, 'providerNote'), false);
+  assert.equal(Object.hasOwn(canonical.characters[0], 'providerTag'), false);
+  assert.deepEqual(validateStoryMemory(canonical), canonical);
+  assert.equal(diagnostics.canonicalizationApplied, true);
+  assert.ok(diagnostics.missingKeysFilled > 0);
+  assert.equal(diagnostics.stringArraysWrapped, 3);
+  assert.equal(diagnostics.unknownKeysDropped, 3);
+  assert.deepEqual(normalizeStringArray('  线索  '), ['线索']);
+  assert.deepEqual(normalizeStringArray(null), []);
+});
+
+test('canonicalizer rejects complex values instead of stringifying or inventing facts', () => {
+  for (const candidate of [
+    { ...memory(), knownFacts: { text: '不得转换' } },
+    { ...memory(), knownFacts: ['安全文本', { text: '不得转换' }] },
+    { ...memory(), scene: { ...memory().scene, location: 42 } },
+    { ...memory(), characters: [{ name: { text: '不得转换' } }] },
+  ]) {
+    assert.throws(() => canonicalizeStoryMemoryCandidate(candidate), error =>
+      error instanceof StoryMemoryCanonicalizationError && /UNSAFE/.test(error.reason));
+  }
+});
+
 test('provider-facing schema uses only Gemini responseJsonSchema keywords while local limits remain strict', () => {
   const supported = new Set(['type', 'properties', 'required', 'additionalProperties', 'enum', 'items']);
   const visit = schema => {
@@ -429,7 +486,7 @@ test('structured HTTP 400 retries exactly once in JSON mode and returns validate
   assert.equal(response.status, 200);
   assert.deepEqual((await response.json()).memory.knownFacts, ['fallback']);
   assert.deepEqual(attempts, ['structured', 'json']);
-  assert.deepEqual(logs.map(([, detail]) => [detail.stage, detail.code]), [
+  assert.deepEqual(logs.filter(([, detail]) => detail.stage !== 'canonicalization').map(([, detail]) => [detail.stage, detail.code]), [
     ['structured', 'MEMORY_REQUEST_REJECTED'], ['fallback', 'ATTEMPTED'], ['fallback', 'SUCCEEDED'],
   ]);
 });
@@ -452,9 +509,8 @@ test('malformed JSON is repaired once without logging raw provider content', asy
   assert.ok(logs.some(([, detail]) => detail.stage === 'repair' && detail.code === 'SUCCEEDED'));
 });
 
-test('schema-invalid candidates expose safe reasons and are repaired without rereading the story', async t => {
-  t.mock.method(console, 'info', () => {});
-  const valid = memory('repaired-schema');
+test('missing nested keys and string arrays canonicalize deterministically without repair', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
   const { time: _time, ...sceneMissingTime } = memory().scene;
   const character = {
     idOrName: 'A', name: 'A', identity: [], visualAnchors: [], publicPersona: [], observedDisposition: [],
@@ -462,11 +518,34 @@ test('schema-invalid candidates expose safe reasons and are repaired without rer
     currentClothing: [], relationshipToProtagonist: [],
   };
   const { currentState: _state, ...characterMissingState } = character;
+  const candidates = [
+    [{ ...memory(), scene: sceneMissingTime }, result => assert.equal(result.scene.time, null)],
+    [{ ...memory(), characters: [characterMissingState] }, result => assert.deepEqual(result.characters[0].currentState, [])],
+    [{ ...memory(), relationship: { summary: '稳定' } }, result => assert.deepEqual(result.relationship.sharedHistory, [])],
+    [{ ...memory(), knownFacts: 'single fact' }, result => assert.deepEqual(result.knownFacts, ['single fact'])],
+    [{ ...memory(), unknownRoot: true }, result => assert.equal(Object.hasOwn(result, 'unknownRoot'), false)],
+  ];
+  for (const [candidate, check] of candidates) {
+    const chat = branchChat().chat, attempts = [];
+    const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+      async (_key, _params, _signal, attempt) => {
+        attempts.push(attempt);
+        assert.equal(attempt, 'structured');
+        return { text: JSON.stringify(candidate) };
+      });
+    assert.equal(response.status, 200);
+    assert.deepEqual(attempts, ['structured']);
+    check((await response.json()).memory);
+  }
+  assert.ok(logs.some(([, detail]) => detail.stage === 'canonicalization'
+    && detail.code === 'COMPLETED' && detail.canonicalizationApplied === true));
+});
+
+test('unsafe complex array content uses at most one repair without rereading the story', async t => {
+  t.mock.method(console, 'info', () => {});
   for (const [candidate, expectedReason] of [
-    [{ ...memory(), scene: sceneMissingTime }, 'SCENE_KEYS_INVALID'],
-    [{ ...memory(), characters: [characterMissingState] }, 'CHARACTER_KEYS_INVALID'],
-    [{ ...memory(), knownFacts: 'wrong-type' }, 'ARRAY_TYPE_INVALID'],
-    [{ ...memory(), knownFacts: [12] }, 'STRING_TYPE_INVALID'],
+    [{ ...memory(), knownFacts: { text: 'unsafe' } }, 'STRING_ARRAY_TYPE_UNSAFE'],
+    [{ ...memory(), knownFacts: [{ text: 'unsafe' }] }, 'STRING_ARRAY_ITEM_TYPE_UNSAFE'],
   ]) {
     const chat = branchChat().chat, attempts = [];
     const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
@@ -476,11 +555,11 @@ test('schema-invalid candidates expose safe reasons and are repaired without rer
         assert.equal(repair.reason, expectedReason);
         assert.equal(Object.hasOwn(repair, 'conversation'), false);
         assert.ok(params.conversation.length > 0);
-        return { text: JSON.stringify(valid) };
+        return { text: JSON.stringify(memory('safely-repaired')) };
       });
     assert.equal(response.status, 200);
     assert.deepEqual(attempts, ['structured', 'repair']);
-    assert.deepEqual((await response.json()).memory.knownFacts, ['repaired-schema']);
+    assert.deepEqual((await response.json()).memory.knownFacts, ['safely-repaired']);
   }
 });
 
@@ -505,7 +584,7 @@ test('invalid JSON fallback may use one repair and respects the three-call chunk
     async (_key, _params, _signal, attempt) => {
       attempts.push(attempt);
       if (attempt === 'structured') throw { status: 400 };
-      if (attempt === 'json') return { text: JSON.stringify({ invalid: true }) };
+      if (attempt === 'json') return { text: JSON.stringify({ ...memory(), knownFacts: { text: 'unsafe' } }) };
       return { text: JSON.stringify(memory('fallback-repaired')) };
     });
   assert.equal(response.status, 200);
@@ -517,7 +596,7 @@ test('invalid JSON fallback may use one repair and respects the three-call chunk
 test('invalid JSON fallback and invalid repair return MEMORY_INVALID after the fixed call cap', async t => {
   t.mock.method(console, 'info', () => {});
   const { chat } = branchChat(), messages = storyMemoryConversation(chat);
-  for (const fallbackText of ['{bad', JSON.stringify({ invalid: true })]) {
+  for (const fallbackText of ['{bad', JSON.stringify({ ...memory(), knownFacts: { text: 'unsafe' } })]) {
     const attempts = [];
     const request = new Request('https://app.example/api/story-memory', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },

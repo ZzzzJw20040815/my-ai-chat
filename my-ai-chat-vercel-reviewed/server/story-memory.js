@@ -1,8 +1,9 @@
 import { GoogleGenAI } from '@google/genai';
 import { isPersistableModelId, modelMetadata } from '../shared/models.js';
 import {
+  canonicalizeStoryMemoryCandidateWithDiagnostics, STORY_MEMORY_CANONICALIZATION_REASONS,
   STORY_MEMORY_PROVIDER_JSON_SCHEMA, STORY_MEMORY_SCHEMA_VERSION, STORY_MEMORY_VALIDATION_REASONS,
-  StoryMemoryValidationError, validateStoryMemory,
+  StoryMemoryCanonicalizationError, StoryMemoryValidationError, validateStoryMemory,
 } from '../shared/story-memory.js';
 import {
   STORY_MEMORY_MAX_BODY_BYTES, STORY_MEMORY_MAX_MESSAGES, STORY_MEMORY_MAX_MESSAGE_CHARACTERS,
@@ -105,22 +106,48 @@ async function inspectProviderResponse(response) {
     responseBytes: new TextEncoder().encode(candidate).byteLength,
   };
   let parsed;
+  const emptyDiagnostics = { canonicalizationApplied: false, missingKeysFilled: 0, stringArraysWrapped: 0, unknownKeysDropped: 0 };
   try { parsed = JSON.parse(candidate); }
-  catch { return { ok: false, code: 'JSON_PARSE_FAILED', reason: 'JSON_PARSE_FAILED', candidate, metadata }; }
-  try { return { ok: true, memory: validateStoryMemory(parsed), metadata }; }
+  catch {
+    return { ok: false, code: 'JSON_PARSE_FAILED', reason: 'JSON_PARSE_FAILED', candidate, metadata, canonicalization: emptyDiagnostics };
+  }
+  let canonical;
+  try { canonical = canonicalizeStoryMemoryCandidateWithDiagnostics(parsed); }
+  catch (error) {
+    if (!(error instanceof StoryMemoryCanonicalizationError)) throw error;
+    return {
+      ok: false, code: 'CANONICALIZATION_UNSAFE', reason: error.reason, candidate, metadata,
+      canonicalization: error.diagnostics,
+    };
+  }
+  try { return { ok: true, memory: validateStoryMemory(canonical.memory), metadata, canonicalization: canonical.diagnostics }; }
   catch (error) {
     if (!(error instanceof StoryMemoryValidationError)) throw error;
-    return { ok: false, code: 'MEMORY_SCHEMA_INVALID', reason: error.reason, candidate, metadata };
+    return {
+      ok: false, code: 'MEMORY_SCHEMA_INVALID', reason: error.reason, candidate, metadata,
+      canonicalization: canonical.diagnostics,
+    };
   }
 }
-const safeValidationReasons = new Set([...STORY_MEMORY_VALIDATION_REASONS, 'JSON_PARSE_FAILED']);
+const safeValidationReasons = new Set([
+  ...STORY_MEMORY_VALIDATION_REASONS, ...STORY_MEMORY_CANONICALIZATION_REASONS, 'JSON_PARSE_FAILED',
+]);
 function providerDiagnostic(stage, code, details = {}) {
   const diagnostic = { stage, code };
   if (safeValidationReasons.has(details.reason)) diagnostic.reason = details.reason;
   if (Number.isSafeInteger(details.responseCharacters)) diagnostic.responseCharacters = details.responseCharacters;
   if (Number.isSafeInteger(details.responseBytes)) diagnostic.responseBytes = details.responseBytes;
   if (Number.isSafeInteger(details.providerCalls)) diagnostic.providerCalls = details.providerCalls;
+  if (typeof details.canonicalizationApplied === 'boolean') diagnostic.canonicalizationApplied = details.canonicalizationApplied;
+  for (const key of ['missingKeysFilled', 'stringArraysWrapped', 'unknownKeysDropped']) {
+    if (Number.isSafeInteger(details[key])) diagnostic[key] = details[key];
+  }
   console.info('[StoryMemoryProvider]', diagnostic);
+}
+function logCanonicalization(result, providerCalls) {
+  const code = result.code === 'JSON_PARSE_FAILED' ? 'SKIPPED'
+    : result.code === 'CANONICALIZATION_UNSAFE' ? 'REJECTED' : 'COMPLETED';
+  providerDiagnostic('canonicalization', code, { ...result.canonicalization, providerCalls });
 }
 
 export function classifyStoryMemoryProviderError(error) {
@@ -186,12 +213,14 @@ export async function handleStoryMemory(request, env, transport = googleExtractS
       response = await callProvider('json');
     }
     let result = await inspectProviderResponse(response);
+    logCanonicalization(result, providerCalls);
     if (!result.ok) {
       providerDiagnostic('validation', result.code, { ...result.metadata, reason: result.reason, providerCalls });
       repairAttempted = true;
       providerDiagnostic('repair', 'ATTEMPTED', { reason: result.reason, providerCalls });
       const repairedResponse = await callProvider('repair', { reason: result.reason, candidate: result.candidate });
       result = await inspectProviderResponse(repairedResponse);
+      logCanonicalization(result, providerCalls);
       if (!result.ok) {
         providerDiagnostic('repair', result.code, { ...result.metadata, reason: result.reason, providerCalls });
         return jsonError('MEMORY_INVALID', 502);
