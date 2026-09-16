@@ -470,6 +470,10 @@ test('provider-facing schema uses only Gemini responseJsonSchema keywords while 
   const depth = value => !value || typeof value !== 'object' ? 0 : 1 + Math.max(0, ...Object.values(value).map(depth));
   assert.ok(JSON.stringify(STORY_MEMORY_PROVIDER_JSON_SCHEMA).length < 1000);
   assert.ok(depth(STORY_MEMORY_PROVIDER_JSON_SCHEMA) <= 4);
+  assert.deepEqual(Object.keys(STORY_MEMORY_JSON_SCHEMA.properties), [
+    'version', 'scene', 'characters', 'relationship', 'importantEvents', 'knownFacts',
+    'unknownOrUnconfirmed', 'unresolvedThreads',
+  ]);
   assert.throws(() => validateStoryMemory({ ...memory(), knownFacts: ['x'.repeat(STORY_MEMORY_MAX_STRING + 1)] }));
   assert.throws(() => validateStoryMemory({ ...memory(), knownFacts: Array(STORY_MEMORY_MAX_ARRAY + 1).fill('x') }));
 });
@@ -582,6 +586,29 @@ test('client sends only Safety Settings with each Story Memory chunk', async () 
   assert.deepEqual(captured[0].safetySettings, safetySettings);
   assert.equal(Object.hasOwn(captured[0], 'settings'), false);
   for (const key of ['temperature', 'topP', 'topK', 'maxOutputTokens']) assert.equal(Object.hasOwn(captured[0], key), false);
+});
+
+test('incremental extraction may restate retained English Memory in Chinese without an extra call', async () => {
+  const { chat, b } = branchChat();
+  const english = memory('Xia Ya gave the protagonist five minutes to ask questions.');
+  english.scene.location = 'A hotel room near Taiguli';
+  const snapshot = createStoryMemorySnapshot({ chatId: chat.id, anchorId: b.id, memory: english, id: 'english-memory' });
+  const attempts = [];
+  const responseMemory = memory('夏雅给了“我”五分钟提问时间。');
+  responseMemory.scene.location = '太古里附近的酒店房间';
+  const result = await runStoryMemoryUpdate({
+    chat, snapshots: [snapshot], save: async () => {},
+    fetchImpl: async (_url, init) => {
+      const payload = JSON.parse(init.body); attempts.push(payload);
+      return Response.json({ memory: responseMemory });
+    },
+  });
+  assert.equal(result.calls, 1);
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].existingMemory.scene.location, 'A hotel room near Taiguli');
+  assert.deepEqual(attempts[0].existingMemory.knownFacts, ['Xia Ya gave the protagonist five minutes to ask questions.']);
+  assert.equal(result.snapshot.memory.scene.location, '太古里附近的酒店房间');
+  assert.deepEqual(result.snapshot.memory.knownFacts, ['夏雅给了“我”五分钟提问时间。']);
 });
 
 test('synthetic long conversation reproduces server CONTEXT_LIMIT without calling Gemini', async () => {
@@ -857,9 +884,17 @@ test('official SDK extraction uses a shallow schema while fallback and repair us
   });
   assert.doesNotMatch(repairBody.contents[0].parts[0].text, /PRIVATE_STORY/);
   assert.match(repairBody.systemInstruction.parts[0].text, /Do not add, infer, embellish, or re-summarize story facts/);
+  assert.match(body.systemInstruction.parts[0].text, /natural, fluent Simplified Chinese/);
+  assert.match(body.systemInstruction.parts[0].text, /keeping all JSON property names exactly as specified in English/);
+  assert.match(body.systemInstruction.parts[0].text, /proper nouns in the form established by the story/);
+  assert.match(body.systemInstruction.parts[0].text, /Do not create repetitive Chinese \(English\) bilingual labels/);
+  assert.match(body.systemInstruction.parts[0].text, /retained English descriptive facts from existingMemory/);
+  assert.match(body.systemInstruction.parts[0].text, /must never add or remove facts/);
+  assert.match(repairBody.systemInstruction.parts[0].text, /natural, fluent Simplified Chinese/);
   const recoveryBody = await captured[3].json();
   assert.equal(Object.hasOwn(recoveryBody.generationConfig, 'responseJsonSchema'), false);
   assert.match(recoveryBody.systemInstruction.parts[0].text, /Do not return an all-empty Story Memory/);
+  assert.match(recoveryBody.systemInstruction.parts[0].text, /natural, fluent Simplified Chinese/);
   assert.match(recoveryBody.contents[0].parts[0].text, /EXPLICIT_STORY_FACT/);
   const safetyBody = await captured[4].json();
   assert.deepEqual(safetyBody.safetySettings, [
