@@ -82,6 +82,7 @@ function normalizeAssistantVariant(variant) {
     ...(variant.updatedAt ? { updatedAt: variant.updatedAt } : {}),
     ...(typeof variant.error === 'string' ? { error: variant.error } : {}),
     ...(typeof variant.notice === 'string' ? { notice: variant.notice } : {}),
+    ...(['complete', 'max_tokens'].includes(variant.completionReason) ? { completionReason: variant.completionReason } : {}),
   };
 }
 
@@ -97,6 +98,7 @@ function normalizeMessage(message) {
     ...(message.updatedAt ? { updatedAt: message.updatedAt } : {}),
     ...(typeof message.error === 'string' ? { error: message.error } : {}),
     ...(typeof message.notice === 'string' ? { notice: message.notice } : {}),
+    ...(['complete', 'max_tokens'].includes(message.completionReason) ? { completionReason: message.completionReason } : {}),
   };
   if (normalized.role === 'assistant' && Array.isArray(message.variants) && message.variants.length) {
     normalized.variants = message.variants.map(normalizeAssistantVariant);

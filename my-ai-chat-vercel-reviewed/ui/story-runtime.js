@@ -3,6 +3,42 @@ import { activeAssistantVariant, createMessage, uniqueId, visibleConversationPat
 
 export const isRuntimeControlMessage = message => message?.role === 'user' && message.kind === 'runtime-control';
 
+export const RUNTIME_CONTROL_LABELS = Object.freeze({
+  start_writing: '开始正文',
+  continue_story: '继续故事',
+  continue_incomplete: '继续未完成',
+});
+
+export const runtimeControlLabel = message => isRuntimeControlMessage(message)
+  ? RUNTIME_CONTROL_LABELS[message.runtimeAction] || null
+  : null;
+
+export const isVisibleRuntimeControlMessage = message => runtimeControlLabel(message) !== null;
+
+function hasVisibleContent(variant) {
+  return typeof variant?.content === 'string' && variant.content.trim().length > 0;
+}
+
+function isTruncatedVariant(variant) {
+  if (variant?.completionReason === 'max_tokens') return true;
+  // Chats saved before completionReason existed only retain this stable notice.
+  return variant?.notice === '回复达到输出长度限制，可继续提问。';
+}
+
+export function continuationAvailability(chat, generationActive = false) {
+  if (generationActive) return { action: null, variant: null, reason: 'generation-active' };
+  const assistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
+  const variant = activeAssistantVariant(assistant);
+  if (!assistant || !variant || !hasVisibleContent(variant)) {
+    return { action: null, variant: variant || null, reason: 'no-visible-content' };
+  }
+  if (isTruncatedVariant(variant) || ['stopped', 'interrupted', 'error'].includes(variant.status)) {
+    return { action: 'continue_incomplete', variant, reason: 'incomplete' };
+  }
+  if (variant.status === 'complete') return { action: 'continue_story', variant, reason: 'complete' };
+  return { action: null, variant, reason: 'unavailable' };
+}
+
 export function storyRuntimeState(chat) {
   const runtime = normalizeStoryRuntime(chat?.storyRuntime);
   const depths = new Map([[null, -1]]);

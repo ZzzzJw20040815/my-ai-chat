@@ -55,9 +55,12 @@ import { hasMeaningfulStoryMemory } from '../shared/story-memory.js';
 import { clearMobileSheetPosition, positionMobileSheet } from './mobile-sheet.js';
 import { REGENERATION_REASON_OPTIONS, styleReferenceRequestItems } from '../shared/response-quality.js';
 import {
-  createRuntimeControl, isRuntimeControlMessage, pruneStoryRuntimeTransitions,
-  setStoryRuntimeMode, storyRuntimeState,
+  continuationAvailability, createRuntimeControl, isRuntimeControlMessage, isVisibleRuntimeControlMessage,
+  pruneStoryRuntimeTransitions, runtimeControlLabel, setStoryRuntimeMode, storyRuntimeState,
 } from './story-runtime.js';
+import {
+  scrollConversationToBottom, scrollToBottomVisible, shouldFollowStreaming,
+} from './scroll-position.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -86,6 +89,7 @@ const storyMemoryFailures = new Map();
 let styleReferences = [];
 let persistenceStatus = { state: 'checking', supported: true };
 let activeSurfaceMenu = null;
+let scrollBottomVisible = false;
 const modelCatalog = createModelCatalog();
 let globalSettings = loadGlobalSettings();
 applyMobileDisplayPreferences(globalSettings);
@@ -154,6 +158,9 @@ function action(action, label, icon, selected = false, disabled = false) {
 function messageHtml(message) {
   const busy = !!generation;
   if (message.role === 'user') {
+    const runtimeLabel = runtimeControlLabel(message);
+    if (runtimeLabel) return '<div class="message-bubble runtime-control-bubble"><small>故事操作</small><p>' +
+      escapeHtml(runtimeLabel) + '</p></div>';
     const draftContent = editDraft?.chatId === activeChat && editDraft.messageId === message.id
       ? editDraft.draftContent : message.content;
     if (editingId === message.id) return '<div class="edit-area"><textarea aria-label="Edit message" maxlength="50000">' + escapeHtml(draftContent) +
@@ -225,8 +232,7 @@ function storyPanelHtml(snapshot, disabled) {
 }
 function storyRuntimeHtml(chat) {
   const runtime = storyRuntimeState(chat);
-  const assistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
-  const ready = assistant && activeAssistantVariant(assistant)?.status === 'complete' && !generation;
+  const continuation = continuationAvailability(chat, !!generation);
   if (!runtime.enabled) return '<div class="story-runtime-control"><button class="small-button" type="button" data-story-runtime-action="prepare_story"' +
     (generation ? ' disabled' : '') + '>开始构思</button></div>';
   if (runtime.mode === 'setup') {
@@ -237,7 +243,7 @@ function storyRuntimeHtml(chat) {
     '<button class="small-button" type="button" data-story-runtime-action="exit_story">退出故事模式</button></div>';
   }
   return '<div class="story-runtime-control"><span class="story-runtime-status"><i></i>正文中</span>' +
-    '<button class="small-button" type="button" data-open-runtime-menu' + (ready ? '' : ' disabled') + ' aria-haspopup="menu" aria-expanded="false">故事操作</button></div>';
+    '<button class="small-button" type="button" data-open-runtime-menu' + (continuation.action ? '' : ' disabled') + ' aria-haspopup="menu" aria-expanded="false">故事操作</button></div>';
 }
 function renderConversation(bottom = false) {
   const chat = current(), saved = conversation.scrollTop;
@@ -247,7 +253,7 @@ function renderConversation(bottom = false) {
     escapeHtml(chat.demo ? 'Demo conversation · ' + modelName(chat.model) : chat.group + ' · ' + modelName(chat.model)) +
     '</p><h1>' + escapeHtml(chat.messages.length ? chat.title : 'What would you like to explore?') +
     '</h1>' + storyRuntimeHtml(chat) + storyPanelHtml(memory, memoryDisabled) + '</div><div class="messages"></div></div>';
-  for (const message of visibleConversationPath(chat).filter(message => !isRuntimeControlMessage(message))) {
+  for (const message of visibleConversationPath(chat).filter(message => !isRuntimeControlMessage(message) || isVisibleRuntimeControlMessage(message))) {
     const article = document.createElement('article'); article.className = 'message ' + message.role;
     article.dataset.messageId = message.id; article.innerHTML = messageHtml(message);
     $('.messages').append(article);
@@ -256,6 +262,13 @@ function renderConversation(bottom = false) {
   resizeEditTextarea($('.edit-area textarea'));
   if (!$('#storyMenu').hidden) renderStoryMenu($('#storyMenu').dataset.view || 'overview');
   conversation.scrollTop = bottom ? conversation.scrollHeight : saved;
+  syncScrollToBottomButton();
+}
+
+function syncScrollToBottomButton() {
+  const button = $('#scrollToBottom');
+  scrollBottomVisible = scrollToBottomVisible(conversation, scrollBottomVisible);
+  button.hidden = !scrollBottomVisible;
 }
 
 function syncMobileStoryButton(chat = current()) {
@@ -339,10 +352,11 @@ async function updateStoryMemory() {
 }
 function updateMessage(chatId, message) {
   if (activeChat !== chatId) return;
-  const nearBottom = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 100;
+  const nearBottom = shouldFollowStreaming(conversation);
   const element = $('[data-message-id="' + message.id + '"]');
   if (element) element.innerHTML = messageHtml(message);
   if (nearBottom) conversation.scrollTop = conversation.scrollHeight;
+  syncScrollToBottomButton();
 }
 function syncComposer() {
   const active = generation?.chatId === activeChat;
@@ -533,7 +547,11 @@ async function generate(chat, user, existingTurn = null, existingVariant = null,
       if (event.type === 'start') variant.status = 'generating';
       if (event.type === 'delta') { variant.status = 'generating'; variant.content += event.text; }
       if (event.type === 'error') { variant.status = 'error'; variant.error = event.message; }
-      if (event.type === 'done') { variant.status = 'complete'; variant.notice = event.notice; }
+      if (event.type === 'done') {
+        variant.status = 'complete';
+        variant.notice = event.notice;
+        variant.completionReason = event.completionReason === 'max_tokens' ? 'max_tokens' : 'complete';
+      }
       updateMessage(chat.id, assistant);
     }, job.abort.signal);
   } catch (error) {
@@ -621,9 +639,11 @@ function closeRuntimeMenu(restoreFocus = false) {
 function openRuntimeMenu(anchor) {
   closeRegenerateMenu();
   const menu = $('#runtimeMenu');
+  const continuation = continuationAvailability(current(), !!generation);
+  if (!continuation.action) return;
+  const label = continuation.action === 'continue_incomplete' ? '继续未完成' : '继续故事';
   menu.innerHTML = '<strong>故事操作</strong>' +
-    '<button type="button" role="menuitem" data-story-runtime-action="continue_story">继续故事</button>' +
-    '<button type="button" role="menuitem" data-story-runtime-action="continue_incomplete">继续未完成</button>' +
+    '<button type="button" role="menuitem" data-story-runtime-action="' + continuation.action + '">' + label + '</button>' +
     '<button type="button" role="menuitem" data-story-runtime-action="exit_story">退出故事模式</button>';
   showSurfaceMenu(menu); anchor.setAttribute('aria-expanded', 'true');
   if (!mobile.matches) {
@@ -705,8 +725,7 @@ function renderStoryMenu(viewName = 'overview') {
       storyStateContent(memory) + storyMemoryFailureHtml(chat.id) + '<div class="story-menu-actions">' +
       storyMemoryAction(canUpdate, true, memory && !storyPanelView(memory)?.hasDisplayableFacts ? '重新更新记忆' : '更新记忆') + '</div>';
   } else {
-    const assistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
-    const ready = assistant && activeAssistantVariant(assistant)?.status === 'complete' && !generation;
+    const continuation = continuationAvailability(chat, !!generation);
     let actions = '';
     if (!runtime.enabled) actions = storyAction('prepare_story', '开始构思', { primary: true, disabled: !!generation });
     if (runtime.mode === 'setup') actions =
@@ -716,8 +735,9 @@ function renderStoryMenu(viewName = 'overview') {
     if (runtime.mode === 'writing') actions =
       '<button class="story-menu-action" type="button" data-open-story-state><span>故事状态</span><small>' + (memory ? '查看当前状态' : '尚未生成记忆') + '</small></button>' +
       storyMemoryAction(canUpdate) +
-      storyAction('continue_story', '继续故事', { primary: true, disabled: !ready }) +
-      storyAction('continue_incomplete', '继续未完成', { disabled: !ready }) + storyAction('exit_story', '退出故事模式');
+      (continuation.action ? storyAction(continuation.action,
+        continuation.action === 'continue_incomplete' ? '继续未完成' : '继续故事', { primary: true }) : '') +
+      storyAction('exit_story', '退出故事模式');
     menu.innerHTML = '<header class="story-menu-head"><div><strong>故事</strong><span>状态：' + status + '</span></div>' +
       '<button class="story-menu-close" type="button" data-close-story-menu aria-label="关闭">×</button></header>' +
       storyMemoryFailureHtml(chat.id) + '<div class="story-menu-actions">' + actions + '</div>';
@@ -748,7 +768,7 @@ async function runStoryRuntimeAction(actionId) {
   const assistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
   const variant = activeAssistantVariant(assistant);
   if (!assistant || !variant || (actionId === 'start_writing' && !startWritingAvailability(chat).enabled)
-    || (actionId !== 'start_writing' && variant.status !== 'complete')) return;
+    || (actionId !== 'start_writing' && continuationAvailability(chat, false).action !== actionId)) return;
   const control = createRuntimeControl(actionId, variant.id);
   chat.messages.push(control);
   if (actionId === 'start_writing') setStoryRuntimeMode(chat, 'writing', actionId, control.id);
@@ -1167,12 +1187,19 @@ $('#storyMenu').addEventListener('click', event => {
 $('#sheetScrim').addEventListener('click', () => {
   closeRegenerateMenu(); closeRuntimeMenu(); closeStoryMenu();
 });
+conversation.addEventListener('scroll', syncScrollToBottomButton, { passive: true });
+$('#scrollToBottom').addEventListener('click', () => {
+  scrollConversationToBottom(conversation, matchMedia('(prefers-reduced-motion: reduce)').matches);
+});
 window.addEventListener('resize', repositionActiveSurfaceMenu);
 window.addEventListener('orientationchange', repositionActiveSurfaceMenu);
 window.visualViewport?.addEventListener('resize', () => { repositionActiveSurfaceMenu(); keepEditControlsVisible(); });
 window.visualViewport?.addEventListener('scroll', () => { repositionActiveSurfaceMenu(); keepEditControlsVisible(); });
 new ResizeObserver(() => {
-  conversation.style.paddingBottom = Math.ceil($('.composer-dock').getBoundingClientRect().height + 28) + 'px';
+  const composerHeight = Math.ceil($('.composer-dock').getBoundingClientRect().height);
+  conversation.style.paddingBottom = composerHeight + 28 + 'px';
+  $('#scrollToBottom').style.bottom = 'calc(' + (composerHeight + 14) + 'px + env(safe-area-inset-bottom, 0px))';
+  syncScrollToBottomButton();
 }).observe($('.composer-dock'));
 window.addEventListener('pagehide', event => { if (!event.persisted) wallpaperPresenter.dispose(); });
 async function initializeApp() {

@@ -258,7 +258,11 @@ export async function handleChat(request, env, transport = googleStream, timeout
           if (finishReason === 'SAFETY') throw { code: 'SAFETY_BLOCKED', message: ERROR_TEXT.SAFETY_BLOCKED };
           if (finishReason && !['STOP', 'MAX_TOKENS'].includes(finishReason)) throw { code: 'BLOCKED' };
           if (!textLength) throw { code: 'BLOCKED' };
-          emit({ type: 'done', notice: finishReason === 'MAX_TOKENS' ? ERROR_TEXT.TRUNCATED : null });
+          emit({
+            type: 'done',
+            notice: finishReason === 'MAX_TOKENS' ? ERROR_TEXT.TRUNCATED : null,
+            completionReason: finishReason === 'MAX_TOKENS' ? 'max_tokens' : 'complete',
+          });
         } catch (error) {
           const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'SAFETY_BLOCKED', 'CONTEXT_LIMIT'].includes(error?.code) ? error.code : classifyError(error)[0];
           const safeMessage = code === 'SAFETY_BLOCKED' && error?.message?.startsWith(ERROR_TEXT.SAFETY_BLOCKED)

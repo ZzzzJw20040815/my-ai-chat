@@ -24,6 +24,7 @@ function responseVariant(message) {
     ...(message.updatedAt ? { updatedAt: message.updatedAt } : {}),
     ...(typeof message.error === 'string' ? { error: message.error } : {}),
     ...(typeof message.notice === 'string' ? { notice: message.notice } : {}),
+    ...(['complete', 'max_tokens'].includes(message.completionReason) ? { completionReason: message.completionReason } : {}),
   };
 }
 export function activeAssistantVariant(message) {
@@ -127,8 +128,6 @@ export function contextFor(chat, userId, contextLimit = 'all') {
   const visibleMessages = visibleConversationPath(chat);
   const end = visibleMessages.findIndex(message => message.id === userId && message.role === 'user');
   if (end < 0) throw new Error('Message not found');
-  const startWritingControl = visibleMessages[end]?.kind === 'runtime-control'
-    && visibleMessages[end]?.runtimeAction === 'start_writing';
   const result = [];
   for (let index = 0; index <= end; index++) {
     const user = visibleMessages[index];
@@ -151,12 +150,39 @@ export function contextFor(chat, userId, contextLimit = 'all') {
     if (assistant?.role === 'assistant' && activeVariant?.status === 'complete' && activeVariant.content.trim()) {
       result.push(user, { ...activeVariant, role: 'assistant' });
       index++;
-    } else if (startWritingControl && index + 2 === end && assistant?.role === 'assistant') {
-      // A failed or stopped setup reply must not strand the user's latest premise.
-      // The hidden start_writing control follows that assistant variant, while the
-      // request context keeps the complete user premise and omits partial output.
-      result.push(user);
-      index++;
+    } else if (assistant?.role === 'assistant' && visibleMessages[index + 2]?.kind === 'runtime-control') {
+      const control = visibleMessages[index + 2];
+      const continuation = visibleMessages[index + 3];
+      const continuationVariant = activeAssistantVariant(continuation);
+      if (control.runtimeAction === 'continue_incomplete' && activeVariant?.content?.trim() && control.id === userId) {
+        // Only an explicit continue_incomplete request may promote this immediate
+        // partial response into request-scoped context.
+        result.push(user, { ...activeVariant, role: 'assistant' });
+        index++;
+      } else if (control.runtimeAction === 'continue_incomplete' && activeVariant?.content?.trim()
+        && continuation?.role === 'assistant' && continuationVariant?.content?.trim()
+        && (continuationVariant.status === 'complete'
+          || visibleMessages[index + 4]?.kind === 'runtime-control'
+            && visibleMessages[index + 4]?.runtimeAction === 'continue_incomplete')) {
+        // Persisted history remains branch-safe while the partial and its successful
+        // (or explicitly continued) response become one legal model turn.
+        result.push(user, {
+          ...continuationVariant,
+          role: 'assistant',
+          content: activeVariant.content + '\n\n' + continuationVariant.content,
+        });
+        index += 3;
+      } else if (control.runtimeAction === 'start_writing' && control.id === userId) {
+        // A failed or stopped setup reply must not strand the user's latest premise.
+        result.push(user);
+        index++;
+      } else if (control.runtimeAction === 'start_writing' && continuation?.role === 'assistant'
+        && continuationVariant?.status === 'complete' && continuationVariant.content.trim()) {
+        // The discarded setup partial remains excluded; its completed start_writing
+        // reply is paired with the retained premise for all later requests.
+        result.push(user, { ...continuationVariant, role: 'assistant' });
+        index += 3;
+      }
     }
   }
   let limited = result;

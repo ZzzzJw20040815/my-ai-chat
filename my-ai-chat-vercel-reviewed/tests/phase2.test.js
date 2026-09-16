@@ -72,6 +72,17 @@ test('transport emits first delta before generation finishes, forwards context a
   let rest = ''; while (true) { const {done,value} = await reader.read(); if(done) break; rest += new TextDecoder().decode(value); }
   assert.match(rest, /明/); assert.match(rest, /"done"/); assert.ok(!rest.includes(testEnv.GEMINI_API_KEY));
 });
+test('done events expose structured completion reasons for normal and truncated output', async () => {
+  for (const [finishReason, completionReason, notice] of [
+    ['STOP', 'complete', null],
+    ['MAX_TOKENS', 'max_tokens', ERROR_TEXT.TRUNCATED],
+  ]) {
+    const output = await events(await handleChat(request(), testEnv, async function* () {
+      yield { text: 'partial', candidates: [{ finishReason }] };
+    }));
+    assert.deepEqual(output.at(-1), { type: 'done', notice, completionReason });
+  }
+});
 test('429, provider request, model, network and server exceptions are sanitized', async () => {
   for (const [error, code] of [[{status:429},'RATE_LIMIT'],[{status:400},'INVALID_REQUEST'],[{status:404},'MODEL_UNAVAILABLE'],[{status:403},'KEY_INVALID'],[new TypeError('secret stack'),'NETWORK_ERROR'],[new Error('secret stack'),'SERVER_ERROR']]) {
     const output = await events(await handleChat(request(),testEnv,async () => { throw error; }));

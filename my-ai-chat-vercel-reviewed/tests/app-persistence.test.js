@@ -310,7 +310,7 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   await closeChatDatabase();
 });
 
-test('Story Runtime UI persists setup/writing and sends branch actions without visible control messages', async () => {
+test('Story Runtime UI persists setup/writing and shows request-only controls as muted user actions', async () => {
   const indexedDB = new IDBFactory(), storage = createMemoryStorage();
   const transport = createFetchMock();
   let dom = installDom(indexedDB, transport.fetchMock, storage);
@@ -328,18 +328,23 @@ test('Story Runtime UI persists setup/writing and sends branch actions without v
   await waitFor(async () => document.querySelector('.story-runtime-control')?.textContent.includes('正文中'));
   const startPayload = transport.payloads.find(payload => payload.storyRuntime?.action === 'start_writing');
   assert.equal(startPayload.messages.at(-1).role, 'assistant');
-  assert.equal(document.querySelectorAll('.message.user').length, 1);
+  let controls = [...document.querySelectorAll('.runtime-control-bubble')];
+  assert.deepEqual(controls.map(node => node.textContent.replace('故事操作', '')), ['开始正文']);
+  assert.equal(controls[0].closest('.message.user').querySelector('.message-actions'), null);
 
   document.querySelector('[data-open-runtime-menu]').click();
   assert.equal(document.querySelector('#runtimeMenu').hidden, false);
   document.querySelector('#runtimeMenu [data-story-runtime-action="continue_story"]').click();
   await waitFor(async () => transport.payloads.some(payload => payload.storyRuntime?.action === 'continue_story'));
   await waitFor(async () => (await loadChats(indexedDB)).find(chat => !chat.demo)?.messages.at(-1)?.status === 'complete');
+  controls = [...document.querySelectorAll('.runtime-control-bubble')];
+  assert.deepEqual(controls.map(node => node.textContent.replace('故事操作', '')), ['开始正文', '继续故事']);
 
   dom.window.close(); dom = installDom(indexedDB, transport.fetchMock, storage);
   await import('../ui/app.js?story-runtime=reopen');
   assert.match(document.querySelector('.story-runtime-control').textContent, /正文中/);
-  assert.equal(document.querySelectorAll('.message.user').length, 1);
+  assert.deepEqual([...document.querySelectorAll('.runtime-control-bubble')]
+    .map(node => node.textContent.replace('故事操作', '')), ['开始正文', '继续故事']);
   dom.window.close(); await closeChatDatabase();
 });
 
