@@ -20,6 +20,12 @@ const memory = (name, location, fact) => ({
   relationship: { summary: 'Trust increased after the meeting.', establishedChanges: ['Agreed to work together'], sharedHistory: ['Met at the station'], unresolvedTension: ['The letter remains unopened'] },
   importantEvents: ['Found the letter'], knownFacts: [fact], unknownOrUnconfirmed: ['Secret motive'], unresolvedThreads: ['Who sent it?'],
 });
+const emptyMemory = () => ({
+  version: 1,
+  scene: { location: null, time: null, presentCharacters: [], relativePositions: [], environmentState: [], importantObjects: [] },
+  characters: [], relationship: { summary: '', establishedChanges: [], sharedHistory: [], unresolvedTension: [] },
+  importantEvents: [], knownFacts: [], unknownOrUnconfirmed: [], unresolvedThreads: [],
+});
 
 function branches() {
   const chat = createChat(MODEL);
@@ -49,6 +55,15 @@ test('Panel view exposes only established display fields and hides unknown/priva
   assert.ok(!visible.includes('Secret preference'));
   assert.ok(!visible.includes('Unshown identity'));
   assert.equal(storyPanelView(null), null);
+  assert.equal(storyPanelView({ memory: emptyMemory() }).hasMeaningfulContent, false);
+  assert.equal(storyPanelView({ memory: emptyMemory() }).hasDisplayableFacts, false);
+  const identityOnly = { ...emptyMemory(), characters: [{
+    idOrName: '', name: '', identity: ['身份明确'], visualAnchors: [], publicPersona: [], observedDisposition: [],
+    speechFingerprint: [], behavioralTells: [], knownPreferences: [], knownBoundaries: [], currentState: [],
+    currentClothing: [], relationshipToProtagonist: [],
+  }] };
+  assert.equal(storyPanelView({ memory: identityOnly }).hasMeaningfulContent, true);
+  assert.equal(storyPanelView({ memory: identityOnly }).hasDisplayableFacts, false);
 });
 
 test('Panel follows active branch, inherits ancestor memory, and never reads sibling memory', () => {
@@ -90,8 +105,14 @@ test('Story Panel uses existing glass tokens and mobile-safe inline layout', asy
   assert.match(css, /\.story-panel-toggle\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px/s);
   assert.match(app, /let storyPanelExpanded = !mobile\.matches/);
   assert.match(app, /case 'variant-prev': case 'variant-next':[\s\S]*renderConversation\(\)/);
-  for (const code of ['MEMORY_INVALID_ANCHOR', 'MEMORY_EXTRACTION_FAILED', 'MEMORY_INVALID_JSON', 'MEMORY_STORAGE_FAILED']) {
+  for (const code of ['CONTEXT_LIMIT', 'TIMEOUT', 'RATE_LIMIT', 'NETWORK_ERROR', 'MODEL_UNAVAILABLE', 'MEMORY_REQUEST_REJECTED', 'MEMORY_EMPTY',
+    'MEMORY_SAFETY_BLOCKED', 'MEMORY_OUTPUT_TRUNCATED', 'MEMORY_PROVIDER_STOPPED',
+    'MEMORY_INVALID_ANCHOR', 'MEMORY_INVALID_JSON', 'MEMORY_STORAGE_FAILED', 'SERVER_ERROR']) {
     assert.match(app + memoryClient, new RegExp(code));
   }
   assert.match(app, /尚未生成故事记忆/);
+  assert.match(app, /这份故事记忆没有提取到可展示的有效状态/);
+  assert.match(app, /重新更新记忆/);
+  assert.match(memoryClient, /MEMORY_EMPTY/);
+  assert.match(app, /上次更新失败/);
 });

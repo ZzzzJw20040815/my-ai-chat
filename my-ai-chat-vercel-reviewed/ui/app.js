@@ -41,18 +41,17 @@ import {
 import { requestStoragePersistence, storagePersistenceStatus } from './storage-persistence.js';
 import { availableDefaultModel, createModelCatalog } from './model-catalog.js';
 import {
-  allStoryAnchors,
   applicableStoryMemory,
-  commitStoryMemoryUpdate,
-  createStoryMemorySnapshot,
   currentStoryAnchor,
   classifyStoryMemoryUpdateError,
   memoryStatusText,
-  StoryMemoryUpdateError,
+  runStoryMemoryUpdate,
+  storyMemoryErrorMessage,
   storyMemoryConversation,
   storySubtreeAnchorIds,
 } from './story-memory.js';
 import { storyPanelView } from './story-panel.js';
+import { hasMeaningfulStoryMemory } from '../shared/story-memory.js';
 import { clearMobileSheetPosition, positionMobileSheet } from './mobile-sheet.js';
 import { REGENERATION_REASON_OPTIONS, styleReferenceRequestItems } from '../shared/response-quality.js';
 import {
@@ -82,7 +81,8 @@ let activeChat, generation = null, editingId = null, editDraft = null, toastTime
 let wallpaperRecord = null, wallpaperBusy = false;
 let dataTransferBusy = false, persistenceRequestBusy = false;
 let modelCatalogBusy = false;
-let storyMemoryBusy = false, storyMemoryLoaded = false, storyMemorySnapshots = [];
+let storyMemoryBusy = false, storyMemoryLoaded = false, storyMemorySnapshots = [], storyMemoryProgress = null;
+const storyMemoryFailures = new Map();
 let styleReferences = [];
 let persistenceStatus = { state: 'checking', supported: true };
 let activeSurfaceMenu = null;
@@ -302,55 +302,37 @@ function clearHistoricalEdit() {
 async function updateStoryMemory() {
   const chat = current();
   if (storyMemoryBusy || generation || !chat) return;
-  let stage = 'anchor';
-  const anchorId = currentStoryAnchor(chat);
-  const messages = storyMemoryConversation(chat);
-  if (!anchorId || !messages.some(message => message.id === anchorId)) {
-    const error = new StoryMemoryUpdateError('MEMORY_INVALID_ANCHOR');
-    console.error('[StoryMemoryUpdate]', { code: error.code, stage });
-    toast('暂时无法更新故事记忆，对话未受影响。');
-    return;
-  }
-  const applicable = applicableStoryMemory(chat, storyMemorySnapshots);
+  let stage = 'planning';
   storyMemoryBusy = true; renderConversation();
   if (!$('#storyMenu').hidden) renderStoryMenu($('#storyMenu').dataset.view || 'overview');
   try {
     stage = 'extraction';
-    const response = await fetch('/api/story-memory', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: chat.model, chatId: chat.id, anchorId,
-        messages, existingMemory: applicable?.memory || null,
-      }),
+    const result = await runStoryMemoryUpdate({
+      chat, snapshots: storyMemorySnapshots, fetchImpl: fetch,
+      safetySettings: requestSettings(globalSettings, modelCatalog.metadata(chat.model) || {
+        source: 'discovered', capabilities: { thinkingLevels: [], samplingOverrides: false, safetySettings: false },
+      }).safetySettings,
+      save: snapshot => replaceStoryMemorySnapshot(snapshot),
+      onProgress: progress => {
+        storyMemoryProgress = progress;
+        if (current()?.id === chat.id) renderConversation();
+        if (!$('#storyMenu').hidden) renderStoryMenu($('#storyMenu').dataset.view || 'overview');
+      },
     });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      const serverCode = payload?.error?.code;
-      throw new StoryMemoryUpdateError(serverCode === 'MEMORY_INVALID' ? 'MEMORY_INVALID_JSON' : 'MEMORY_EXTRACTION_FAILED', {
-        serverCode: typeof serverCode === 'string' ? serverCode : null, status: response.status,
-      });
-    }
-    if (!payload?.memory) throw new StoryMemoryUpdateError('MEMORY_INVALID_JSON');
-    stage = 'validation';
-    let snapshot;
-    try { snapshot = createStoryMemorySnapshot({ chatId: chat.id, anchorId, memory: payload.memory }); }
-    catch { throw new StoryMemoryUpdateError('MEMORY_INVALID_JSON'); }
-    stage = 'anchor';
-    if (!allStoryAnchors(chat).has(anchorId)) throw new StoryMemoryUpdateError('MEMORY_INVALID_ANCHOR');
-    stage = 'storage';
-    storyMemorySnapshots = await commitStoryMemoryUpdate(
-      storyMemorySnapshots, snapshot, item => replaceStoryMemorySnapshot(item),
-    );
-    toast('故事记忆已更新');
+    if (result.updated) storyMemorySnapshots = result.snapshots;
+    storyMemoryFailures.delete(chat.id);
+    toast(result.updated ? '故事记忆已更新' : '故事记忆已经是最新状态。');
   } catch (error) {
     const code = classifyStoryMemoryUpdateError(error, stage);
+    storyMemoryFailures.set(chat.id, { code, message: storyMemoryErrorMessage(code) });
     console.error('[StoryMemoryUpdate]', {
       code, stage, serverCode: error?.details?.serverCode || null,
-      status: error?.details?.status || null, name: error?.name || 'Error',
+      status: error?.details?.status || null, reason: error?.details?.reason || null,
+      chunkIndex: storyMemoryProgress?.index || null, chunkTotal: storyMemoryProgress?.total || null,
     });
-    toast('无法更新故事记忆，对话未受影响。');
+    toast(storyMemoryErrorMessage(code) + ' 错误代码：' + code);
   } finally {
-    storyMemoryBusy = false;
+    storyMemoryBusy = false; storyMemoryProgress = null;
     if (current()?.id === chat.id) renderConversation();
     if (!$('#storyMenu').hidden) renderStoryMenu($('#storyMenu').dataset.view || 'overview');
   }
@@ -527,7 +509,10 @@ async function generate(chat, user, existingTurn = null, existingVariant = null,
       body: JSON.stringify({
         model: chat.model,
         messages: contextFor(chat, user.id, runtimeAction === 'start_writing' ? 'all' : globalSettings.contextLimit),
-        storyMemory: applicableStoryMemory(chat, storyMemorySnapshots)?.memory || null,
+        storyMemory: (() => {
+          const memory = applicableStoryMemory(chat, storyMemorySnapshots)?.memory;
+          return memory && hasMeaningfulStoryMemory(memory) ? memory : null;
+        })(),
         styleReferences: styleReferenceRequestItems(styleReferences),
         ...(regenerationReason ? { regenerationReason } : {}),
         ...(storyRuntimeState(chat).enabled ? { storyRuntime: {
@@ -671,16 +656,26 @@ function startWritingAction(chat) {
     primary: true, disabled: !availability.enabled, detail: availability.reason,
   });
 }
-function storyMemoryAction(canUpdate, primary = false) {
+function storyMemoryAction(canUpdate, primary = false, label = '更新记忆') {
   const disabled = storyMemoryBusy || !canUpdate;
-  const detail = storyMemoryBusy ? '正在处理' : generation ? '等待当前回复完成' : canUpdate ? '' : '暂无可更新内容';
+  const progress = storyMemoryProgress;
+  const detail = storyMemoryBusy
+    ? (progress?.total > 1 ? `正在整理故事记忆 ${progress.index}/${progress.total}` : '正在处理')
+    : generation ? '等待当前回复完成' : canUpdate ? '' : '暂无可更新内容';
   return '<button class="story-menu-action' + (primary ? ' primary' : '') + '" type="button" data-update-story-memory' +
-    (disabled ? ' disabled' : '') + '><span>' + (storyMemoryBusy ? '正在更新…' : '更新记忆') + '</span>' +
+    (disabled ? ' disabled' : '') + '><span>' + (storyMemoryBusy ? '正在更新…' : escapeHtml(label)) + '</span>' +
     (detail ? '<small>' + escapeHtml(detail) + '</small>' : '') + '</button>';
+}
+function storyMemoryFailureHtml(chatId) {
+  const failure = storyMemoryFailures.get(chatId);
+  if (!failure) return '';
+  return '<div class="story-memory-failure" role="status"><strong>上次更新失败：' + escapeHtml(failure.code) + '</strong>' +
+    '<p>' + escapeHtml(failure.message) + '</p><small>错误代码：' + escapeHtml(failure.code) + '</small></div>';
 }
 function storyStateContent(snapshot) {
   const view = storyPanelView(snapshot);
   if (!view) return '<div class="story-state-empty"><strong>尚未生成故事记忆</strong><p>更新记忆后，这里会显示当前分支中已经明确发生的故事状态。</p></div>';
+  if (!view.hasDisplayableFacts) return '<div class="story-state-empty"><strong>没有可展示的有效状态</strong><p>这份故事记忆没有提取到可展示的有效状态。</p></div>';
   const sceneFacts = [
     ...(view.location ? ['地点：' + view.location] : []), ...(view.time ? ['时间：' + view.time] : []), ...view.sceneState,
   ];
@@ -707,7 +702,8 @@ function renderStoryMenu(viewName = 'overview') {
   if (viewName === 'state') {
     menu.innerHTML = '<header class="story-menu-head"><button class="story-menu-back" type="button" data-story-menu-back aria-label="返回">‹</button>' +
       '<div><strong>故事状态</strong><span>当前分支</span></div><button class="story-menu-close" type="button" data-close-story-menu aria-label="关闭">×</button></header>' +
-      storyStateContent(memory) + '<div class="story-menu-actions">' + storyMemoryAction(canUpdate, true) + '</div>';
+      storyStateContent(memory) + storyMemoryFailureHtml(chat.id) + '<div class="story-menu-actions">' +
+      storyMemoryAction(canUpdate, true, memory && !storyPanelView(memory)?.hasDisplayableFacts ? '重新更新记忆' : '更新记忆') + '</div>';
   } else {
     const assistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
     const ready = assistant && activeAssistantVariant(assistant)?.status === 'complete' && !generation;
@@ -723,7 +719,8 @@ function renderStoryMenu(viewName = 'overview') {
       storyAction('continue_story', '继续故事', { primary: true, disabled: !ready }) +
       storyAction('continue_incomplete', '继续未完成', { disabled: !ready }) + storyAction('exit_story', '退出故事模式');
     menu.innerHTML = '<header class="story-menu-head"><div><strong>故事</strong><span>状态：' + status + '</span></div>' +
-      '<button class="story-menu-close" type="button" data-close-story-menu aria-label="关闭">×</button></header><div class="story-menu-actions">' + actions + '</div>';
+      '<button class="story-menu-close" type="button" data-close-story-menu aria-label="关闭">×</button></header>' +
+      storyMemoryFailureHtml(chat.id) + '<div class="story-menu-actions">' + actions + '</div>';
   }
   repositionActiveSurfaceMenu();
 }

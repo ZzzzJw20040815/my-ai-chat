@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { IDBFactory } from 'fake-indexeddb';
-import { googleExtractStoryMemory, handleStoryMemory } from '../server/story-memory.js';
+import {
+  classifyStoryMemoryProviderError, googleExtractStoryMemory, handleStoryMemory,
+  STORY_MEMORY_MAX_PROVIDER_CALLS_PER_CHUNK, validateStoryMemoryRequest,
+} from '../server/story-memory.js';
 import { validatePayload } from '../server/chat.js';
-import { createChat, createMessage, addAssistantVariant } from '../ui/state.js';
+import { createChat, createMessage, addAssistantVariant, visibleConversationPath } from '../ui/state.js';
 import {
   CHAT_DB_NAME, STORY_MEMORY_STORE_NAME, deleteChat, deleteStoryMemoriesByAnchors,
   loadChats, loadStoryMemories, loadWallpaperAsset, openChatDatabase,
@@ -11,11 +14,23 @@ import {
 } from '../ui/storage.js';
 import {
   applicableStoryMemory, commitStoryMemoryUpdate, createStoryMemorySnapshot,
-  currentStoryAnchor, storyMemoryConversation, storySubtreeAnchorIds,
+  chunkStoryMemoryMessages, currentStoryAnchor, runStoryMemoryUpdate, storyMemoryConversation,
+  storyMemoryMessagesAfterAnchor, storyMemoryRequestByteLength, storySubtreeAnchorIds,
 } from '../ui/story-memory.js';
-import { storyMemorySystemInstruction, validateStoryMemory } from '../shared/story-memory.js';
+import {
+  canonicalizeStoryMemoryCandidate, canonicalizeStoryMemoryCandidateWithDiagnostics, normalizeStringArray,
+  hasMeaningfulStoryMemory, meaningfulStoryMemoryFieldCount,
+  STORY_MEMORY_JSON_SCHEMA, STORY_MEMORY_MAX_ARRAY, STORY_MEMORY_MAX_BYTES, STORY_MEMORY_MAX_CHARACTERS, STORY_MEMORY_MAX_STRING,
+  STORY_MEMORY_PROVIDER_JSON_SCHEMA, StoryMemoryCanonicalizationError, StoryMemoryValidationError,
+  storyMemorySystemInstruction, validateStoryMemory,
+} from '../shared/story-memory.js';
+import {
+  STORY_MEMORY_MAX_CHUNKS, STORY_MEMORY_SAFE_BODY_BYTES, STORY_MEMORY_SAFE_MESSAGES,
+  STORY_MEMORY_SAFE_TOTAL_CHARACTERS,
+} from '../shared/story-memory-transport.js';
+import { SAFETY_CATEGORIES } from '../shared/settings.js';
 
-const MODEL = 'gemini-3.7-flash';
+const MODEL = 'gemini-3.6-flash';
 const memory = (fact = 'A met B.') => ({
   version: 1,
   scene: { location: 'Library', time: null, presentCharacters: ['A', 'B'], relativePositions: [], environmentState: [], importantObjects: [] },
@@ -37,6 +52,208 @@ function branchChat() {
   chat.messages.push(a, bTurn, c, d, c2, d2);
   return { chat, a, bTurn, b: bTurn.variants[0], b2, c, d, c2, d2 };
 }
+
+function linearChat(turns, content = index => `message-${index}`) {
+  const chat = createChat(MODEL);
+  let parentVariantId = null;
+  for (let index = 0; index < turns; index++) {
+    const user = createMessage('user', content(index * 2)); user.parentVariantId = parentVariantId;
+    const assistant = createMessage('assistant', content(index * 2 + 1), MODEL); assistant.parentUserId = user.id;
+    chat.messages.push(user, assistant); parentVariantId = assistant.id;
+  }
+  return chat;
+}
+
+function successfulMemoryFetch(captured = []) {
+  return async (_, init) => {
+    const payload = JSON.parse(init.body); captured.push(payload);
+    return Response.json({ memory: memory(`call-${captured.length}`) });
+  };
+}
+
+function storyMemoryEndpointRequest(chat, extra = {}) {
+  const messages = storyMemoryConversation(chat);
+  return new Request('https://app.example/api/story-memory', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },
+    body: JSON.stringify({ model: MODEL, chatId: chat.id, anchorId: currentStoryAnchor(chat), messages, ...extra }),
+  });
+}
+
+function validationReason(value) {
+  try { validateStoryMemory(value); }
+  catch (error) {
+    assert.ok(error instanceof StoryMemoryValidationError);
+    return error.reason;
+  }
+  assert.fail('Expected StoryMemory validation to fail');
+}
+
+test('client bootstrap sends a short active branch once and saves one final snapshot', async () => {
+  const chat = linearChat(2), captured = [], saved = [];
+  const result = await runStoryMemoryUpdate({
+    chat, fetchImpl: successfulMemoryFetch(captured), save: async snapshot => saved.push(snapshot),
+  });
+  assert.equal(result.calls, 1); assert.equal(saved.length, 1);
+  assert.deepEqual(captured[0].messages.map(item => item.content), ['message-0', 'message-1', 'message-2', 'message-3']);
+  assert.equal(captured[0].existingMemory, null);
+  assert.equal(saved[0].anchorId, currentStoryAnchor(chat));
+});
+const emptyMemory = () => ({
+  version: 1,
+  scene: { location: null, time: null, presentCharacters: [], relativePositions: [], environmentState: [], importantObjects: [] },
+  characters: [],
+  relationship: { summary: '', establishedChanges: [], sharedHistory: [], unresolvedTension: [] },
+  importantEvents: [], knownFacts: [], unknownOrUnconfirmed: [], unresolvedThreads: [],
+});
+
+test('branch-safe delta handles user and active assistant anchors without resending old history', () => {
+  const { chat, a, b, c, d } = branchChat();
+  assert.deepEqual(storyMemoryMessagesAfterAnchor(visibleConversationPath(chat), a.id).map(item => item.content), ['B', 'C', 'D']);
+  assert.deepEqual(storyMemoryMessagesAfterAnchor(visibleConversationPath(chat), b.id).map(item => item.content), ['C', 'D']);
+  assert.deepEqual(storyMemoryMessagesAfterAnchor(visibleConversationPath(chat), c.id).map(item => item.content), ['D']);
+  assert.equal(storyMemoryMessagesAfterAnchor(visibleConversationPath(chat), d.id).length, 0);
+  assert.throws(() => storyMemoryMessagesAfterAnchor(visibleConversationPath(chat), 'sibling-anchor'), error => error.code === 'MEMORY_INVALID_ANCHOR');
+});
+
+test('inherited ancestor memory supplies only descendant delta and excludes sibling variants', async () => {
+  const { chat, a, bTurn, b2 } = branchChat();
+  const ancestor = createStoryMemorySnapshot({ chatId: chat.id, anchorId: a.id, memory: memory('ancestor'), id: 'ancestor' });
+  bTurn.activeVariantId = b2.id;
+  const captured = [];
+  const result = await runStoryMemoryUpdate({ chat, snapshots: [ancestor], fetchImpl: successfulMemoryFetch(captured), save: async () => {} });
+  assert.equal(result.calls, 1);
+  assert.deepEqual(captured[0].messages.map(item => item.content), ['B2', 'C2', 'D2']);
+  assert.deepEqual(captured[0].existingMemory.knownFacts, ['ancestor']);
+  assert.ok(!captured[0].messages.some(item => ['B', 'C', 'D'].includes(item.content)));
+});
+
+test('an up-to-date applicable memory performs zero requests and zero writes', async () => {
+  const chat = linearChat(1), anchorId = currentStoryAnchor(chat);
+  const snapshot = createStoryMemorySnapshot({ chatId: chat.id, anchorId, memory: memory('current') });
+  let calls = 0, writes = 0;
+  const result = await runStoryMemoryUpdate({
+    chat, snapshots: [snapshot], fetchImpl: async () => { calls++; }, save: async () => { writes++; },
+  });
+  assert.equal(result.updated, false); assert.equal(result.calls, 0); assert.equal(calls, 0); assert.equal(writes, 0);
+});
+
+test('runtime controls never enter bootstrap or incremental extraction payloads', async () => {
+  const chat = linearChat(2);
+  chat.messages[2].kind = 'runtime-control'; chat.messages[2].runtimeAction = 'continue_story';
+  const captured = [];
+  await runStoryMemoryUpdate({ chat, fetchImpl: successfulMemoryFetch(captured), save: async () => {} });
+  assert.ok(captured.flatMap(payload => payload.messages).every(item => item.content !== 'message-2'));
+});
+
+test('chunk planner preserves message boundaries and enforces count, character, and UTF-8 byte budgets', () => {
+  const now = new Date().toISOString();
+  const make = (prefix, count, size) => Array.from({ length: count }, (_, index) => ({
+    id: `${prefix}-${index}`, role: index % 2 ? 'assistant' : 'user', content: prefix.repeat(size), status: 'complete', createdAt: now,
+  }));
+  const ascii = chunkStoryMemoryMessages({ model: MODEL, chatId: 'chat', messages: make('a', 2, 40000) });
+  const chineseMessages = make('中', 2, 40000);
+  const chinese = chunkStoryMemoryMessages({ model: MODEL, chatId: 'chat', messages: chineseMessages });
+  assert.equal(ascii.length, 1); assert.equal(chinese.length, 2);
+  assert.deepEqual(chinese.flat().map(item => item.id), chineseMessages.map(item => item.id));
+  for (const chunk of chinese) {
+    assert.ok(chunk.length <= STORY_MEMORY_SAFE_MESSAGES);
+    assert.ok(chunk.reduce((sum, item) => sum + item.content.length, 0) <= STORY_MEMORY_SAFE_TOTAL_CHARACTERS);
+    const payload = { model: MODEL, chatId: 'chat', anchorId: chunk.at(-1).id, messages: chunk, existingMemory: null };
+    assert.ok(storyMemoryRequestByteLength(payload) < STORY_MEMORY_SAFE_BODY_BYTES);
+  }
+});
+
+test('oversized bootstrap and oversized delta are processed sequentially then saved once', async () => {
+  const bootstrapChat = linearChat(45, index => `段${index}-` + '中'.repeat(1800));
+  const bootstrapCalls = [], bootstrapWrites = [];
+  const bootstrap = await runStoryMemoryUpdate({
+    chat: bootstrapChat, fetchImpl: successfulMemoryFetch(bootstrapCalls), save: async value => bootstrapWrites.push(value),
+  });
+  assert.ok(bootstrap.calls > 1); assert.equal(bootstrap.calls, bootstrap.chunks); assert.equal(bootstrapWrites.length, 1);
+  assert.equal(bootstrapWrites[0].anchorId, currentStoryAnchor(bootstrapChat));
+  for (let index = 1; index < bootstrapCalls.length; index++) {
+    assert.deepEqual(bootstrapCalls[index].existingMemory.knownFacts, [`call-${index}`]);
+  }
+
+  const deltaChat = linearChat(46, index => `续${index}-` + '中'.repeat(1800));
+  const firstAnchor = deltaChat.messages[1].id;
+  const old = createStoryMemorySnapshot({ chatId: deltaChat.id, anchorId: firstAnchor, memory: memory('old'), id: 'old' });
+  const deltaCalls = [], deltaWrites = [];
+  const delta = await runStoryMemoryUpdate({
+    chat: deltaChat, snapshots: [old], fetchImpl: successfulMemoryFetch(deltaCalls), save: async value => deltaWrites.push(value),
+  });
+  assert.ok(delta.calls > 1); assert.equal(deltaWrites.length, 1);
+  assert.equal(deltaCalls[0].messages[0].id, deltaChat.messages[2].id);
+  assert.deepEqual(deltaCalls[0].existingMemory.knownFacts, ['old']);
+});
+
+test('a later chunk failure preserves old memory and never writes an intermediate snapshot', async () => {
+  const chat = linearChat(45, index => `段${index}-` + '中'.repeat(1800));
+  const old = createStoryMemorySnapshot({ chatId: chat.id, anchorId: chat.messages[1].id, memory: memory('old'), id: 'old' });
+  let calls = 0, writes = 0;
+  await assert.rejects(runStoryMemoryUpdate({
+    chat, snapshots: [old],
+    fetchImpl: async () => ++calls === 2
+      ? Response.json({ error: { code: 'TIMEOUT' } }, { status: 504 })
+      : Response.json({ memory: memory('intermediate') }),
+    save: async () => { writes++; },
+  }), error => error.code === 'TIMEOUT');
+  assert.equal(calls, 2); assert.equal(writes, 0); assert.deepEqual(old.memory.knownFacts, ['old']);
+});
+
+test('an active-path change during extraction prevents a stale snapshot write', async () => {
+  const { chat, bTurn, b2 } = branchChat(); let writes = 0;
+  await assert.rejects(runStoryMemoryUpdate({
+    chat,
+    fetchImpl: async () => {
+      bTurn.activeVariantId = b2.id;
+      return Response.json({ memory: memory('stale') });
+    },
+    save: async () => { writes++; },
+  }), error => error.code === 'MEMORY_INVALID_ANCHOR');
+  assert.equal(writes, 0);
+});
+
+test('malformed model memory and storage failures preserve the previous snapshot', async () => {
+  const chat = linearChat(2), old = createStoryMemorySnapshot({ chatId: chat.id, anchorId: chat.messages[1].id, memory: memory('old') });
+  let writes = 0;
+  await assert.rejects(runStoryMemoryUpdate({
+    chat, snapshots: [old], fetchImpl: async () => Response.json({ memory: { invalid: true } }), save: async () => { writes++; },
+  }), error => error.code === 'MEMORY_INVALID_JSON');
+  assert.equal(writes, 0);
+  await assert.rejects(runStoryMemoryUpdate({
+    chat, snapshots: [old], fetchImpl: successfulMemoryFetch(), save: async () => { throw new Error('quota'); },
+  }), error => error.code === 'MEMORY_STORAGE_FAILED');
+});
+
+test('server error codes retain stable client classifications', async () => {
+  for (const [serverCode, clientCode] of [
+    ['CONTEXT_LIMIT', 'CONTEXT_LIMIT'], ['TIMEOUT', 'TIMEOUT'], ['RATE_LIMIT', 'RATE_LIMIT'],
+    ['NETWORK_ERROR', 'NETWORK_ERROR'], ['MODEL_UNAVAILABLE', 'MODEL_UNAVAILABLE'],
+    ['MEMORY_REQUEST_REJECTED', 'MEMORY_REQUEST_REJECTED'],
+    ['MEMORY_INVALID', 'MEMORY_INVALID_JSON'], ['MEMORY_EMPTY', 'MEMORY_EMPTY'],
+    ['MEMORY_SAFETY_BLOCKED', 'MEMORY_SAFETY_BLOCKED'], ['MEMORY_OUTPUT_TRUNCATED', 'MEMORY_OUTPUT_TRUNCATED'],
+    ['MEMORY_PROVIDER_STOPPED', 'MEMORY_PROVIDER_STOPPED'],
+    ['SERVER_ERROR', 'SERVER_ERROR'], ['INVALID_REQUEST', 'SERVER_ERROR'],
+  ]) {
+    const chat = linearChat(1);
+    await assert.rejects(runStoryMemoryUpdate({
+      chat, fetchImpl: async () => Response.json({ error: { code: serverCode } }, { status: 502 }), save: async () => {},
+    }), error => error.code === clientCode);
+  }
+  const chat = linearChat(1);
+  await assert.rejects(runStoryMemoryUpdate({
+    chat, fetchImpl: async () => { throw new TypeError('private network detail'); }, save: async () => {},
+  }), error => error.code === 'NETWORK_ERROR');
+});
+
+test('chunk work budget rejects data requiring more than the guarded maximum calls', () => {
+  const now = new Date().toISOString();
+  const messages = Array.from({ length: STORY_MEMORY_MAX_CHUNKS + 1 }, (_, index) => ({
+    id: `huge-${index}`, role: index % 2 ? 'assistant' : 'user', content: '中'.repeat(50000), status: 'complete', createdAt: now,
+  }));
+  assert.throws(() => chunkStoryMemoryMessages({ model: MODEL, chatId: 'chat', messages }), error => error.code === 'CONTEXT_LIMIT');
+});
 
 test('IndexedDB v3 preserves v2 chats and wallpaper while adding indexed story memories', async () => {
   const indexedDB = new IDBFactory();
@@ -115,8 +332,150 @@ test('failed storage commit leaves previous in-memory snapshot unchanged', async
 });
 
 test('memory schema rejects malformed or oversized model data', () => {
-  assert.throws(() => validateStoryMemory({ ...memory(), invented: true }));
-  assert.throws(() => validateStoryMemory({ ...memory(), knownFacts: ['x'.repeat(801)] }));
+  assert.equal(validationReason({ ...memory(), invented: true }), 'ROOT_KEYS_INVALID');
+  assert.equal(validationReason({ ...memory(), version: 2 }), 'VERSION_INVALID');
+  assert.equal(validationReason({ ...memory(), scene: { ...memory().scene, time: 42 } }), 'STRING_TYPE_INVALID');
+  const { time: _time, ...missingSceneField } = memory().scene;
+  assert.equal(validationReason({ ...memory(), scene: missingSceneField }), 'SCENE_KEYS_INVALID');
+  assert.equal(validationReason({ ...memory(), knownFacts: 'not-an-array' }), 'ARRAY_TYPE_INVALID');
+  assert.equal(validationReason({ ...memory(), knownFacts: [42] }), 'STRING_TYPE_INVALID');
+  assert.equal(validationReason({ ...memory(), knownFacts: ['x'.repeat(801)] }), 'STRING_TOO_LONG');
+  assert.equal(validationReason({ ...memory(), knownFacts: Array(STORY_MEMORY_MAX_ARRAY + 1).fill('x') }), 'ARRAY_TOO_LONG');
+  const character = {
+    idOrName: 'A', name: 'A', identity: [], visualAnchors: [], publicPersona: [], observedDisposition: [],
+    speechFingerprint: [], behavioralTells: [], knownPreferences: [], knownBoundaries: [], currentState: [],
+    currentClothing: [], relationshipToProtagonist: [],
+  };
+  assert.equal(validationReason({ ...memory(), characters: 'not-an-array' }), 'CHARACTERS_TYPE_INVALID');
+  assert.equal(validationReason({ ...memory(), characters: Array(STORY_MEMORY_MAX_CHARACTERS + 1).fill(character) }), 'TOO_MANY_CHARACTERS');
+  const { currentClothing: _clothing, ...missingCharacterField } = character;
+  assert.equal(validationReason({ ...memory(), characters: [missingCharacterField] }), 'CHARACTER_KEYS_INVALID');
+  assert.equal(validationReason({ ...memory(), knownFacts: Array(STORY_MEMORY_MAX_ARRAY).fill('中'.repeat(STORY_MEMORY_MAX_STRING)) }), 'MEMORY_TOO_LARGE');
+  assert.equal(STORY_MEMORY_MAX_STRING, 800); assert.equal(STORY_MEMORY_MAX_BYTES, 32 * 1024);
+});
+
+test('deterministic canonicalizer preserves valid memory and repairs logged shape variants with neutral defaults', () => {
+  const exact = memory('exact');
+  const unchanged = canonicalizeStoryMemoryCandidateWithDiagnostics(exact);
+  assert.deepEqual(unchanged.memory, exact);
+  assert.deepEqual(unchanged.diagnostics, {
+    canonicalizationApplied: false, missingKeysFilled: 0, stringArraysWrapped: 0, unknownKeysDropped: 0,
+  });
+
+  const candidate = {
+    version: 99,
+    scene: { location: '大厅', presentCharacters: '米拉', providerNote: 'drop' },
+    characters: [{ idOrName: 'mira', name: '米拉', currentClothing: '黑色西装', providerTag: 'drop' }],
+    relationship: { summary: '刚刚见面' },
+    importantEvents: '发现了一封信',
+    knownFacts: null,
+    providerDebug: true,
+  };
+  const { memory: canonical, diagnostics } = canonicalizeStoryMemoryCandidateWithDiagnostics(candidate);
+  assert.deepEqual(canonical.scene, {
+    location: '大厅', time: null, presentCharacters: ['米拉'], relativePositions: [], environmentState: [], importantObjects: [],
+  });
+  assert.deepEqual(canonical.characters[0].currentClothing, ['黑色西装']);
+  assert.deepEqual(canonical.characters[0].identity, []);
+  assert.deepEqual(canonical.relationship, {
+    summary: '刚刚见面', establishedChanges: [], sharedHistory: [], unresolvedTension: [],
+  });
+  assert.deepEqual(canonical.importantEvents, ['发现了一封信']);
+  assert.deepEqual(canonical.knownFacts, []);
+  assert.deepEqual(canonical.unknownOrUnconfirmed, []);
+  assert.deepEqual(canonical.unresolvedThreads, []);
+  assert.equal(canonical.version, 1);
+  assert.equal(Object.hasOwn(canonical, 'providerDebug'), false);
+  assert.equal(Object.hasOwn(canonical.scene, 'providerNote'), false);
+  assert.equal(Object.hasOwn(canonical.characters[0], 'providerTag'), false);
+  assert.deepEqual(validateStoryMemory(canonical), canonical);
+  assert.equal(diagnostics.canonicalizationApplied, true);
+  assert.ok(diagnostics.missingKeysFilled > 0);
+  assert.equal(diagnostics.stringArraysWrapped, 3);
+  assert.equal(diagnostics.unknownKeysDropped, 3);
+  assert.deepEqual(normalizeStringArray('  线索  '), ['线索']);
+  assert.deepEqual(normalizeStringArray(null), []);
+});
+
+test('meaningful quality accepts any displayable fact but excludes empty and unknown-only memory', () => {
+  assert.equal(hasMeaningfulStoryMemory(memory()), true);
+  assert.equal(hasMeaningfulStoryMemory({ ...emptyMemory(), scene: { ...emptyMemory().scene, location: '车站' } }), true);
+  assert.equal(hasMeaningfulStoryMemory({ ...emptyMemory(), characters: [{
+    idOrName: '', name: '米拉', identity: [], visualAnchors: [], publicPersona: [], observedDisposition: [],
+    speechFingerprint: [], behavioralTells: [], knownPreferences: [], knownBoundaries: [], currentState: [],
+    currentClothing: [], relationshipToProtagonist: [],
+  }] }), true);
+  assert.equal(hasMeaningfulStoryMemory({ ...emptyMemory(), knownFacts: ['钟停在九点。'] }), true);
+  assert.equal(hasMeaningfulStoryMemory(emptyMemory()), false);
+  assert.equal(hasMeaningfulStoryMemory({ ...emptyMemory(), unknownOrUnconfirmed: ['身份未知'] }), false);
+  assert.equal(meaningfulStoryMemoryFieldCount(emptyMemory()), 0);
+});
+
+test('an applicable empty snapshot bootstraps from the full branch and is replaced only after meaningful success', async () => {
+  const chat = linearChat(2), anchorId = currentStoryAnchor(chat);
+  const old = createStoryMemorySnapshot({ chatId: chat.id, anchorId, memory: emptyMemory(), id: 'empty-old' });
+  const captured = [], saved = [];
+  const result = await runStoryMemoryUpdate({
+    chat, snapshots: [old], fetchImpl: successfulMemoryFetch(captured), save: async snapshot => saved.push(snapshot),
+  });
+  assert.equal(result.updated, true);
+  assert.equal(result.upToDate, false);
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].existingMemory, null);
+  assert.deepEqual(captured[0].messages.map(item => item.content), ['message-0', 'message-1', 'message-2', 'message-3']);
+  assert.equal(saved.length, 1);
+  assert.equal(result.snapshots.some(item => item.id === 'empty-old'), false);
+  assert.equal(hasMeaningfulStoryMemory(result.snapshot.memory), true);
+});
+
+test('failed recovery of an applicable empty snapshot preserves the old snapshot and performs no write', async () => {
+  const chat = linearChat(1), old = createStoryMemorySnapshot({
+    chatId: chat.id, anchorId: currentStoryAnchor(chat), memory: emptyMemory(), id: 'empty-old',
+  });
+  let saves = 0;
+  await assert.rejects(runStoryMemoryUpdate({
+    chat, snapshots: [old], save: async () => { saves++; },
+    fetchImpl: async () => Response.json({ error: { code: 'MEMORY_EMPTY' } }, { status: 502 }),
+  }), error => error.code === 'MEMORY_EMPTY');
+  assert.equal(saves, 0);
+  assert.equal(old.memory.knownFacts.length, 0);
+});
+
+test('canonicalizer rejects complex values instead of stringifying or inventing facts', () => {
+  for (const candidate of [
+    { ...memory(), knownFacts: { text: '不得转换' } },
+    { ...memory(), knownFacts: ['安全文本', { text: '不得转换' }] },
+    { ...memory(), scene: { ...memory().scene, location: 42 } },
+    { ...memory(), characters: [{ name: { text: '不得转换' } }] },
+  ]) {
+    assert.throws(() => canonicalizeStoryMemoryCandidate(candidate), error =>
+      error instanceof StoryMemoryCanonicalizationError && /UNSAFE/.test(error.reason));
+  }
+});
+
+test('provider-facing schema uses only Gemini responseJsonSchema keywords while local limits remain strict', () => {
+  const supported = new Set(['type', 'properties', 'required', 'additionalProperties', 'enum', 'items']);
+  const visit = schema => {
+    for (const key of Object.keys(schema)) assert.ok(supported.has(key), `unsupported provider keyword: ${key}`);
+    if (schema.properties) for (const child of Object.values(schema.properties)) visit(child);
+    if (schema.items) visit(schema.items);
+  };
+  visit(STORY_MEMORY_PROVIDER_JSON_SCHEMA);
+  assert.equal(JSON.stringify(STORY_MEMORY_PROVIDER_JSON_SCHEMA).includes('maxLength'), false);
+  assert.equal(JSON.stringify(STORY_MEMORY_JSON_SCHEMA).includes('maxLength'), true);
+  assert.deepEqual(STORY_MEMORY_PROVIDER_JSON_SCHEMA.required, Object.keys(memory()));
+  assert.deepEqual(STORY_MEMORY_PROVIDER_JSON_SCHEMA.properties.scene, { type: 'object' });
+  assert.deepEqual(STORY_MEMORY_PROVIDER_JSON_SCHEMA.properties.characters.items, { type: 'object' });
+  assert.equal(JSON.stringify(STORY_MEMORY_PROVIDER_JSON_SCHEMA).includes('maxItems'), false);
+  const depth = value => !value || typeof value !== 'object' ? 0 : 1 + Math.max(0, ...Object.values(value).map(depth));
+  assert.ok(JSON.stringify(STORY_MEMORY_PROVIDER_JSON_SCHEMA).length < 1000);
+  assert.ok(depth(STORY_MEMORY_PROVIDER_JSON_SCHEMA) <= 4);
+  assert.deepEqual(Object.keys(STORY_MEMORY_JSON_SCHEMA.properties), [
+    'version', 'scene', 'characters', 'relationship', 'importantEvents', 'knownFacts',
+    'unknownOrUnconfirmed', 'unresolvedThreads',
+  ]);
+  assert.throws(() => validateStoryMemory({ ...memory(), knownFacts: ['x'.repeat(STORY_MEMORY_MAX_STRING + 1)] }));
+  assert.throws(() => validateStoryMemory({ ...memory(), knownFacts: Array(STORY_MEMORY_MAX_ARRAY + 1).fill('x') }));
 });
 
 test('story-memory endpoint authorizes model, sends only supplied active path, and validates JSON before returning', async () => {
@@ -127,10 +486,12 @@ test('story-memory endpoint authorizes model, sends only supplied active path, a
     method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },
     body: JSON.stringify({ model: MODEL, chatId: chat.id, anchorId, messages, existingMemory: null }),
   });
-  const response = await handleStoryMemory(request, { GEMINI_API_KEY: 'test-only' }, async (key, params) => {
-    assert.equal(key, 'test-only'); captured = params; return { text: JSON.stringify(memory()) };
+  const attempts = [];
+  const response = await handleStoryMemory(request, { GEMINI_API_KEY: 'test-only' }, async (key, params, _signal, attempt) => {
+    assert.equal(key, 'test-only'); captured = params; attempts.push(attempt); return { text: JSON.stringify(memory()) };
   });
   assert.equal(response.status, 200);
+  assert.deepEqual(attempts, ['structured']);
   assert.deepEqual(captured.conversation.map(item => item.content), ['A', 'B', 'C', 'D']);
   assert.deepEqual((await response.json()).memory.knownFacts, ['A met B.']);
 
@@ -142,10 +503,345 @@ test('story-memory endpoint authorizes model, sends only supplied active path, a
   assert.equal((await invalid.json()).error.code, 'MEMORY_INVALID');
 });
 
-test('official SDK extraction requests structured JSON without exposing the server key', async t => {
-  let captured;
+test('provider metadata classifies safety, truncation, and no-text stops before JSON parsing', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
+  const chat = branchChat().chat;
+  const cases = [
+    [{ promptFeedback: { blockReason: 'SAFETY', safetyRatings: [{
+      category: 'HARM_CATEGORY_HATE_SPEECH', probability: 'HIGH', blocked: true,
+    }] }, get text() { throw new Error('text must not be read'); } }, 'MEMORY_SAFETY_BLOCKED'],
+    [{ candidates: [{ finishReason: 'SAFETY' }], get text() { throw new Error('text must not be read'); } }, 'MEMORY_SAFETY_BLOCKED'],
+    [{ candidates: [{ finishReason: 'MAX_TOKENS' }], get text() { throw new Error('text must not be read'); } }, 'MEMORY_OUTPUT_TRUNCATED'],
+    [{ candidates: [{ finishReason: 'RECITATION' }], get text() { throw new Error('text must not be read'); } }, 'MEMORY_PROVIDER_STOPPED'],
+    [{ candidates: [{ finishReason: 'STOP' }], get text() { throw new Error('SDK no-text getter'); } }, 'MEMORY_PROVIDER_STOPPED'],
+  ];
+  for (const [providerResponse, expectedCode] of cases) {
+    let calls = 0;
+    const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' }, async () => {
+      calls++; return providerResponse;
+    });
+    assert.equal(response.status, 502);
+    assert.equal((await response.json()).error.code, expectedCode);
+    assert.equal(calls, 1);
+  }
+  assert.ok(logs.some(([, detail]) => detail.code === 'MEMORY_SAFETY_BLOCKED'
+    && detail.blockReason === 'SAFETY' && detail.safetyCategory === 'HARM_CATEGORY_HATE_SPEECH'
+    && detail.safetyProbability === 'HIGH'));
+  assert.equal(logs.some(([, detail]) => detail.code === 'JSON_PARSE_FAILED'), false);
+});
+
+test('normal STOP preserves the valid JSON path while invalid JSON remains MEMORY_INVALID', async t => {
+  t.mock.method(console, 'info', () => {});
+  const chat = branchChat().chat;
+  const valid = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+    async () => ({ text: JSON.stringify(memory('stop-success')), candidates: [{ finishReason: 'STOP' }] }));
+  assert.equal(valid.status, 200);
+  assert.deepEqual((await valid.json()).memory.knownFacts, ['stop-success']);
+
+  let calls = 0;
+  const invalid = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' }, async () => {
+    calls++; return { text: '{bad', candidates: [{ finishReason: 'STOP' }] };
+  });
+  assert.equal((await invalid.json()).error.code, 'MEMORY_INVALID');
+  assert.equal(calls, 2);
+});
+
+test('Story Memory validates and forwards only capability-approved Safety Settings', async () => {
+  const custom = {
+    mode: 'custom', harassment: 'BLOCK_ONLY_HIGH', hateSpeech: 'BLOCK_MEDIUM_AND_ABOVE',
+    sexuallyExplicit: 'BLOCK_LOW_AND_ABOVE', dangerousContent: 'OFF',
+  };
+  const expected = SAFETY_CATEGORIES.map(({ key, category }) => ({ category, threshold: custom[key] }));
+  const chat = branchChat().chat; let captured;
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat, { safetySettings: custom }),
+    { GEMINI_API_KEY: 'test-only' }, async (_key, params) => {
+      captured = params; return { text: JSON.stringify(memory()), candidates: [{ finishReason: 'STOP' }] };
+    });
+  assert.equal(response.status, 200);
+  assert.deepEqual(captured.safetySettings, expected);
+
+  const messages = storyMemoryConversation(chat);
+  const base = { model: MODEL, chatId: chat.id, anchorId: currentStoryAnchor(chat), messages };
+  const unsupported = { id: MODEL, capabilities: { safetySettings: false } };
+  assert.equal(validateStoryMemoryRequest({ ...base, safetySettings: { ...custom, mode: 'default' } }, unsupported).safetySettings, undefined);
+  assert.throws(() => validateStoryMemoryRequest({ ...base, safetySettings: custom }, unsupported), /INVALID_REQUEST/);
+  assert.throws(() => validateStoryMemoryRequest({ ...base, safetySettings: { ...custom, extraCategory: 'OFF' } }, {
+    id: MODEL, capabilities: { safetySettings: true },
+  }), /INVALID_REQUEST/);
+  assert.throws(() => validateStoryMemoryRequest({ ...base, safetySettings: { ...custom, harassment: 'ALLOW_ALL' } }, {
+    id: MODEL, capabilities: { safetySettings: true },
+  }), /INVALID_REQUEST/);
+  assert.throws(() => validateStoryMemoryRequest({ ...base, temperature: 0 }, {
+    id: MODEL, capabilities: { safetySettings: true },
+  }), /INVALID_REQUEST/);
+});
+
+test('client sends only Safety Settings with each Story Memory chunk', async () => {
+  const chat = linearChat(1), captured = [];
+  const safetySettings = {
+    mode: 'custom', harassment: 'BLOCK_ONLY_HIGH', hateSpeech: 'BLOCK_ONLY_HIGH',
+    sexuallyExplicit: 'BLOCK_ONLY_HIGH', dangerousContent: 'BLOCK_ONLY_HIGH',
+  };
+  await runStoryMemoryUpdate({ chat, safetySettings, fetchImpl: successfulMemoryFetch(captured), save: async () => {} });
+  assert.deepEqual(captured[0].safetySettings, safetySettings);
+  assert.equal(Object.hasOwn(captured[0], 'settings'), false);
+  for (const key of ['temperature', 'topP', 'topK', 'maxOutputTokens']) assert.equal(Object.hasOwn(captured[0], key), false);
+});
+
+test('incremental extraction may restate retained English Memory in Chinese without an extra call', async () => {
+  const { chat, b } = branchChat();
+  const english = memory('Xia Ya gave the protagonist five minutes to ask questions.');
+  english.scene.location = 'A hotel room near Taiguli';
+  const snapshot = createStoryMemorySnapshot({ chatId: chat.id, anchorId: b.id, memory: english, id: 'english-memory' });
+  const attempts = [];
+  const responseMemory = memory('夏雅给了“我”五分钟提问时间。');
+  responseMemory.scene.location = '太古里附近的酒店房间';
+  const result = await runStoryMemoryUpdate({
+    chat, snapshots: [snapshot], save: async () => {},
+    fetchImpl: async (_url, init) => {
+      const payload = JSON.parse(init.body); attempts.push(payload);
+      return Response.json({ memory: responseMemory });
+    },
+  });
+  assert.equal(result.calls, 1);
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].existingMemory.scene.location, 'A hotel room near Taiguli');
+  assert.deepEqual(attempts[0].existingMemory.knownFacts, ['Xia Ya gave the protagonist five minutes to ask questions.']);
+  assert.equal(result.snapshot.memory.scene.location, '太古里附近的酒店房间');
+  assert.deepEqual(result.snapshot.memory.knownFacts, ['夏雅给了“我”五分钟提问时间。']);
+});
+
+test('synthetic long conversation reproduces server CONTEXT_LIMIT without calling Gemini', async () => {
+  const createdAt = new Date().toISOString(); let transportCalls = 0;
+  const messages = Array.from({ length: 4 }, (_, index) => ({
+    id: `long-${index}`, role: index % 2 ? 'assistant' : 'user', content: 'x'.repeat(46000), status: 'complete', createdAt,
+  }));
+  const request = new Request('https://app.example/api/story-memory', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },
+    body: JSON.stringify({ model: MODEL, chatId: 'synthetic', anchorId: messages.at(-1).id, messages }),
+  });
+  const response = await handleStoryMemory(request, { GEMINI_API_KEY: 'test-only' }, async () => { transportCalls++; });
+  assert.equal(response.status, 413); assert.equal((await response.json()).error.code, 'CONTEXT_LIMIT');
+  assert.equal(transportCalls, 0);
+});
+
+test('provider HTTP 404 means model unavailable while HTTP 400 means request rejected', async () => {
+  assert.deepEqual(classifyStoryMemoryProviderError({ status: 404 }), ['MODEL_UNAVAILABLE', 502]);
+  assert.deepEqual(classifyStoryMemoryProviderError({ status: 400 }), ['MEMORY_REQUEST_REJECTED', 502]);
+  const { chat } = branchChat(), messages = storyMemoryConversation(chat), anchorId = currentStoryAnchor(chat);
+  for (const [status, code] of [[404, 'MODEL_UNAVAILABLE'], [400, 'MEMORY_REQUEST_REJECTED']]) {
+    const request = new Request('https://app.example/api/story-memory', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },
+      body: JSON.stringify({ model: MODEL, chatId: chat.id, anchorId, messages }),
+    });
+    const response = await handleStoryMemory(request, { GEMINI_API_KEY: 'test-only' }, async () => { throw { status }; });
+    assert.equal(response.status, 502); assert.equal((await response.json()).error.code, code);
+  }
+});
+
+test('structured HTTP 400 retries exactly once in JSON mode and returns validated memory', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
+  const { chat } = branchChat(), messages = storyMemoryConversation(chat), attempts = [];
+  const request = new Request('https://app.example/api/story-memory', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },
+    body: JSON.stringify({ model: MODEL, chatId: chat.id, anchorId: currentStoryAnchor(chat), messages }),
+  });
+  const response = await handleStoryMemory(request, { GEMINI_API_KEY: 'test-only' }, async (_key, _params, _signal, attempt) => {
+    attempts.push(attempt);
+    if (attempt === 'structured') throw { status: 400 };
+    return { text: JSON.stringify(memory('fallback')) };
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).memory.knownFacts, ['fallback']);
+  assert.deepEqual(attempts, ['structured', 'json']);
+  assert.deepEqual(logs.filter(([, detail]) => detail.stage !== 'canonicalization').map(([, detail]) => [detail.stage, detail.code]), [
+    ['structured', 'MEMORY_REQUEST_REJECTED'], ['fallback', 'ATTEMPTED'], ['fallback', 'SUCCEEDED'],
+  ]);
+});
+
+test('malformed JSON is repaired once without logging raw provider content', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
+  const chat = branchChat().chat, attempts = [], raw = 'PRIVATE_STORY_TEXT_{bad';
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+    async (_key, _params, _signal, attempt, repair) => {
+      attempts.push(attempt);
+      if (attempt === 'structured') return { text: raw };
+      assert.equal(repair.reason, 'JSON_PARSE_FAILED'); assert.equal(repair.candidate, raw);
+      return { text: JSON.stringify(memory('repaired-json')) };
+    });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).memory.knownFacts, ['repaired-json']);
+  assert.deepEqual(attempts, ['structured', 'repair']);
+  assert.equal(JSON.stringify(logs).includes(raw), false);
+  assert.ok(logs.some(([, detail]) => detail.stage === 'validation' && detail.code === 'JSON_PARSE_FAILED'));
+  assert.ok(logs.some(([, detail]) => detail.stage === 'repair' && detail.code === 'SUCCEEDED'));
+});
+
+test('missing nested keys and string arrays canonicalize deterministically without repair', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
+  const { time: _time, ...sceneMissingTime } = memory().scene;
+  const character = {
+    idOrName: 'A', name: 'A', identity: [], visualAnchors: [], publicPersona: [], observedDisposition: [],
+    speechFingerprint: [], behavioralTells: [], knownPreferences: [], knownBoundaries: [], currentState: [],
+    currentClothing: [], relationshipToProtagonist: [],
+  };
+  const { currentState: _state, ...characterMissingState } = character;
+  const candidates = [
+    [{ ...memory(), scene: sceneMissingTime }, result => assert.equal(result.scene.time, null)],
+    [{ ...memory(), characters: [characterMissingState] }, result => assert.deepEqual(result.characters[0].currentState, [])],
+    [{ ...memory(), relationship: { summary: '稳定' } }, result => assert.deepEqual(result.relationship.sharedHistory, [])],
+    [{ ...memory(), knownFacts: 'single fact' }, result => assert.deepEqual(result.knownFacts, ['single fact'])],
+    [{ ...memory(), unknownRoot: true }, result => assert.equal(Object.hasOwn(result, 'unknownRoot'), false)],
+  ];
+  for (const [candidate, check] of candidates) {
+    const chat = branchChat().chat, attempts = [];
+    const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+      async (_key, _params, _signal, attempt) => {
+        attempts.push(attempt);
+        assert.equal(attempt, 'structured');
+        return { text: JSON.stringify(candidate) };
+      });
+    assert.equal(response.status, 200);
+    assert.deepEqual(attempts, ['structured']);
+    check((await response.json()).memory);
+  }
+  assert.ok(logs.some(([, detail]) => detail.stage === 'canonicalization'
+    && detail.code === 'COMPLETED' && detail.canonicalizationApplied === true));
+});
+
+test('structurally valid empty response performs one content recovery and then succeeds', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
+  const chat = branchChat().chat, attempts = [];
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+    async (_key, params, _signal, attempt, repair) => {
+      attempts.push(attempt);
+      assert.equal(repair, undefined);
+      assert.ok(params.conversation.length > 0);
+      return { text: JSON.stringify(attempt === 'content-recovery' ? memory('recovered fact') : emptyMemory()) };
+    });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).memory.knownFacts, ['recovered fact']);
+  assert.deepEqual(attempts, ['structured', 'content-recovery']);
+  assert.ok(logs.some(([, detail]) => detail.stage === 'quality' && detail.code === 'MEMORY_EMPTY'
+    && detail.meaningfulFieldCount === 0));
+  assert.ok(logs.some(([, detail]) => detail.stage === 'content-recovery' && detail.code === 'SUCCEEDED'));
+});
+
+test('content recovery is attempted once and a second empty result returns MEMORY_EMPTY', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
+  const chat = branchChat().chat, attempts = [];
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+    async (_key, _params, _signal, attempt) => { attempts.push(attempt); return { text: JSON.stringify(emptyMemory()) }; });
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).error.code, 'MEMORY_EMPTY');
+  assert.deepEqual(attempts, ['structured', 'content-recovery']);
+  assert.equal(logs.filter(([, detail]) => detail.stage === 'content-recovery' && detail.code === 'ATTEMPTED').length, 1);
+  assert.ok(logs.some(([, detail]) => detail.stage === 'content-recovery' && detail.code === 'EMPTY'));
+});
+
+test('structured rejection, empty fallback, and content recovery respect the three-call cap', async t => {
+  t.mock.method(console, 'info', () => {});
+  const chat = branchChat().chat, attempts = [];
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+    async (_key, _params, _signal, attempt) => {
+      attempts.push(attempt);
+      if (attempt === 'structured') throw { status: 400 };
+      return { text: JSON.stringify(attempt === 'content-recovery' ? memory('recovered after fallback') : emptyMemory()) };
+    });
+  assert.equal(response.status, 200);
+  assert.deepEqual(attempts, ['structured', 'json', 'content-recovery']);
+  assert.equal(attempts.length, STORY_MEMORY_MAX_PROVIDER_CALLS_PER_CHUNK);
+});
+
+test('unsafe complex array content uses at most one repair without rereading the story', async t => {
+  t.mock.method(console, 'info', () => {});
+  for (const [candidate, expectedReason] of [
+    [{ ...memory(), knownFacts: { text: 'unsafe' } }, 'STRING_ARRAY_TYPE_UNSAFE'],
+    [{ ...memory(), knownFacts: [{ text: 'unsafe' }] }, 'STRING_ARRAY_ITEM_TYPE_UNSAFE'],
+  ]) {
+    const chat = branchChat().chat, attempts = [];
+    const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+      async (_key, params, _signal, attempt, repair) => {
+        attempts.push(attempt);
+        if (attempt === 'structured') return { text: JSON.stringify(candidate) };
+        assert.equal(repair.reason, expectedReason);
+        assert.equal(Object.hasOwn(repair, 'conversation'), false);
+        assert.ok(params.conversation.length > 0);
+        return { text: JSON.stringify(memory('safely-repaired')) };
+      });
+    assert.equal(response.status, 200);
+    assert.deepEqual(attempts, ['structured', 'repair']);
+    assert.deepEqual((await response.json()).memory.knownFacts, ['safely-repaired']);
+  }
+});
+
+test('repair cannot bypass string limits and is attempted only once', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
+  const chat = branchChat().chat, oversized = { ...memory(), knownFacts: ['x'.repeat(STORY_MEMORY_MAX_STRING + 1)] };
+  let calls = 0;
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' }, async () => {
+    calls++; return { text: JSON.stringify(oversized) };
+  });
+  assert.equal((await response.json()).error.code, 'MEMORY_INVALID');
+  assert.equal(calls, 2);
+  assert.equal(logs.filter(([, detail]) => detail.stage === 'repair' && detail.code === 'ATTEMPTED').length, 1);
+  assert.equal(logs.filter(([, detail]) => detail.reason === 'STRING_TOO_LONG'
+    && detail.code === 'MEMORY_SCHEMA_INVALID').length, 2);
+});
+
+test('invalid JSON fallback may use one repair and respects the three-call chunk cap', async t => {
+  t.mock.method(console, 'info', () => {});
+  const chat = branchChat().chat, attempts = [];
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+    async (_key, _params, _signal, attempt) => {
+      attempts.push(attempt);
+      if (attempt === 'structured') throw { status: 400 };
+      if (attempt === 'json') return { text: JSON.stringify({ ...memory(), knownFacts: { text: 'unsafe' } }) };
+      return { text: JSON.stringify(memory('fallback-repaired')) };
+    });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).memory.knownFacts, ['fallback-repaired']);
+  assert.deepEqual(attempts, ['structured', 'json', 'repair']);
+  assert.equal(attempts.length, STORY_MEMORY_MAX_PROVIDER_CALLS_PER_CHUNK);
+});
+
+test('invalid JSON fallback and invalid repair return MEMORY_INVALID after the fixed call cap', async t => {
+  t.mock.method(console, 'info', () => {});
+  const { chat } = branchChat(), messages = storyMemoryConversation(chat);
+  for (const fallbackText of ['{bad', JSON.stringify({ ...memory(), knownFacts: { text: 'unsafe' } })]) {
+    const attempts = [];
+    const request = new Request('https://app.example/api/story-memory', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },
+      body: JSON.stringify({ model: MODEL, chatId: chat.id, anchorId: currentStoryAnchor(chat), messages }),
+    });
+    const response = await handleStoryMemory(request, { GEMINI_API_KEY: 'test-only' }, async (_key, _params, _signal, attempt) => {
+      attempts.push(attempt);
+      if (attempt === 'structured') throw { status: 400 };
+      return { text: fallbackText };
+    });
+    assert.equal((await response.json()).error.code, 'MEMORY_INVALID');
+    assert.deepEqual(attempts, ['structured', 'json', 'repair']);
+  }
+});
+
+test('a rejected JSON fallback stops after two total provider calls', async t => {
+  t.mock.method(console, 'info', () => {});
+  const { chat } = branchChat(), messages = storyMemoryConversation(chat); let calls = 0;
+  const request = new Request('https://app.example/api/story-memory', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },
+    body: JSON.stringify({ model: MODEL, chatId: chat.id, anchorId: currentStoryAnchor(chat), messages }),
+  });
+  const response = await handleStoryMemory(request, { GEMINI_API_KEY: 'test-only' }, async () => {
+    calls++; throw { status: 400 };
+  });
+  assert.equal((await response.json()).error.code, 'MEMORY_REQUEST_REJECTED');
+  assert.equal(calls, 2);
+});
+
+test('official SDK extraction uses a shallow schema while fallback and repair use JSON mode', async t => {
+  const captured = [];
   t.mock.method(globalThis, 'fetch', async (input, init) => {
-    captured = new Request(input, init);
+    captured.push(new Request(input, init));
     return Response.json({ candidates: [{
       content: { role: 'model', parts: [{ text: JSON.stringify(memory()) }] }, finishReason: 'STOP',
     }] });
@@ -155,11 +851,72 @@ test('official SDK extraction requests structured JSON without exposing the serv
     conversation: [{ id: 'u', role: 'user', content: 'A', status: 'complete', createdAt: new Date().toISOString() }],
   }, new AbortController().signal);
   assert.deepEqual(validateStoryMemory(JSON.parse(response.text)).knownFacts, ['A met B.']);
-  const body = await captured.json();
+  await googleExtractStoryMemory('unit-test-sentinel', {
+    model: MODEL, existingMemory: null,
+    conversation: [{ id: 'u', role: 'user', content: 'A', status: 'complete', createdAt: new Date().toISOString() }],
+  }, new AbortController().signal, 'json');
+  await googleExtractStoryMemory('unit-test-sentinel', {
+    model: MODEL, existingMemory: null,
+    conversation: [{ id: 'u', role: 'user', content: 'PRIVATE_STORY', status: 'complete', createdAt: new Date().toISOString() }],
+  }, new AbortController().signal, 'repair', { reason: 'SCENE_KEYS_INVALID', candidate: '{"version":1}' });
+  await googleExtractStoryMemory('unit-test-sentinel', {
+    model: MODEL, existingMemory: null,
+    conversation: [{ id: 'u', role: 'user', content: 'EXPLICIT_STORY_FACT', status: 'complete', createdAt: new Date().toISOString() }],
+  }, new AbortController().signal, 'content-recovery');
+  await googleExtractStoryMemory('unit-test-sentinel', {
+    model: MODEL, existingMemory: null,
+    safetySettings: [{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' }],
+    conversation: [{ id: 'u', role: 'user', content: 'A', status: 'complete', createdAt: new Date().toISOString() }],
+  }, new AbortController().signal);
+  const body = await captured[0].json();
   assert.equal(body.generationConfig.responseMimeType, 'application/json');
   assert.equal(body.generationConfig.responseJsonSchema.additionalProperties, false);
+  assert.equal(JSON.stringify(body.generationConfig.responseJsonSchema).includes('maxLength'), false);
+  assert.deepEqual(body.generationConfig.responseJsonSchema.properties.scene, { type: 'object' });
+  const fallbackBody = await captured[1].json();
+  assert.equal(fallbackBody.generationConfig.responseMimeType, 'application/json');
+  assert.equal(Object.hasOwn(fallbackBody.generationConfig, 'responseJsonSchema'), false);
+  const repairBody = await captured[2].json();
+  assert.equal(repairBody.generationConfig.responseMimeType, 'application/json');
+  assert.equal(Object.hasOwn(repairBody.generationConfig, 'responseJsonSchema'), false);
+  assert.deepEqual(JSON.parse(repairBody.contents[0].parts[0].text), {
+    validationReason: 'SCENE_KEYS_INVALID', candidateOutput: '{"version":1}',
+  });
+  assert.doesNotMatch(repairBody.contents[0].parts[0].text, /PRIVATE_STORY/);
+  assert.match(repairBody.systemInstruction.parts[0].text, /Do not add, infer, embellish, or re-summarize story facts/);
+  assert.match(body.systemInstruction.parts[0].text, /natural, fluent Simplified Chinese/);
+  assert.match(body.systemInstruction.parts[0].text, /keeping all JSON property names exactly as specified in English/);
+  assert.match(body.systemInstruction.parts[0].text, /proper nouns in the form established by the story/);
+  assert.match(body.systemInstruction.parts[0].text, /Do not create repetitive Chinese \(English\) bilingual labels/);
+  assert.match(body.systemInstruction.parts[0].text, /retained English descriptive facts from existingMemory/);
+  assert.match(body.systemInstruction.parts[0].text, /must never add or remove facts/);
+  assert.match(repairBody.systemInstruction.parts[0].text, /natural, fluent Simplified Chinese/);
+  const recoveryBody = await captured[3].json();
+  assert.equal(Object.hasOwn(recoveryBody.generationConfig, 'responseJsonSchema'), false);
+  assert.match(recoveryBody.systemInstruction.parts[0].text, /Do not return an all-empty Story Memory/);
+  assert.match(recoveryBody.systemInstruction.parts[0].text, /natural, fluent Simplified Chinese/);
+  assert.match(recoveryBody.contents[0].parts[0].text, /EXPLICIT_STORY_FACT/);
+  const safetyBody = await captured[4].json();
+  assert.deepEqual(safetyBody.safetySettings, [
+    { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+  ]);
+  assert.equal(Object.hasOwn(body, 'safetySettings'), false);
   assert.match(body.systemInstruction.parts[0].text, /never invent/i);
-  assert.ok(!JSON.stringify(body).includes('unit-test-sentinel'));
+  assert.match(body.systemInstruction.parts[0].text, /exactly these keys and value shapes/i);
+  assert.ok(!JSON.stringify([body, fallbackBody, repairBody, recoveryBody, safetyBody]).includes('unit-test-sentinel'));
+});
+
+test('normal chat ignores empty memory but injects meaningful memory', () => {
+  const base = {
+    model: MODEL,
+    messages: [{ id: 'u', role: 'user', content: 'Continue', status: 'complete' }],
+    settings: {}, styleReferences: [],
+  };
+  const empty = validatePayload({ ...base, storyMemory: emptyMemory() });
+  assert.doesNotMatch(empty.config.systemInstruction || '', /STORY MEMORY DATA/);
+  const meaningful = validatePayload({ ...base, storyMemory: memory('kept fact') });
+  assert.match(meaningful.config.systemInstruction, /STORY MEMORY DATA/);
+  assert.match(meaningful.config.systemInstruction, /kept fact/);
 });
 
 test('story-memory endpoint enforces same-origin and missing-key boundaries', async () => {
