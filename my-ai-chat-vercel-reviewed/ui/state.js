@@ -90,6 +90,9 @@ export function visibleConversationPath(chat) {
   }
   return path;
 }
+export function visibleAssistantTurn(chat, messageId) {
+  return visibleConversationPath(chat).find(message => message.role === 'assistant' && message.id === messageId) || null;
+}
 export function removeUserDescendants(chat, userId) {
   ensureBranchLineage(chat);
   const removed = new Set();
@@ -157,7 +160,7 @@ export function contextFor(chat, userId, contextLimit = 'all') {
       if (control.runtimeAction === 'continue_incomplete' && activeVariant?.content?.trim() && control.id === userId) {
         // Only an explicit continue_incomplete request may promote this immediate
         // partial response into request-scoped context.
-        result.push(user, { ...activeVariant, role: 'assistant' });
+        result.push(user, { ...activeVariant, role: 'assistant', status: 'complete' });
         index++;
       } else if (control.runtimeAction === 'continue_incomplete' && activeVariant?.content?.trim()
         && continuation?.role === 'assistant' && continuationVariant?.content?.trim()
@@ -169,6 +172,7 @@ export function contextFor(chat, userId, contextLimit = 'all') {
         result.push(user, {
           ...continuationVariant,
           role: 'assistant',
+          status: 'complete',
           content: activeVariant.content + '\n\n' + continuationVariant.content,
         });
         index += 3;

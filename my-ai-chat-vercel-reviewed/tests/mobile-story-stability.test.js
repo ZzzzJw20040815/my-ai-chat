@@ -147,6 +147,8 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
   document.querySelector('#composerForm').requestSubmit();
   await waitFor(() => menu.querySelector('[data-story-runtime-action="start_writing"]')?.disabled);
   assert.match(menu.textContent, /等待当前回复完成/);
+  assert.ok([...document.querySelectorAll('.message.assistant [data-action="regenerate"]')]
+    .every(button => button.disabled));
   transport.releaseChat();
   await waitFor(() => menu.querySelector('[data-story-runtime-action="start_writing"]')?.disabled === false);
   assert.ok(transport.payloads.some(payload => payload.storyRuntime?.mode === 'setup' && !payload.storyRuntime.action));

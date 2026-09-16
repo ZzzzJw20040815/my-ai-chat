@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { IDBFactory } from 'fake-indexeddb';
 import { validatePayload } from '../server/chat.js';
-import { createChat, createMessage, addAssistantVariant, activeAssistantVariant, visibleConversationPath } from '../ui/state.js';
+import {
+  createChat, createMessage, addAssistantVariant, activeAssistantVariant, visibleAssistantTurn, visibleConversationPath,
+} from '../ui/state.js';
 import {
   CHAT_DB_NAME, STYLE_REFERENCE_STORE_NAME, deleteStyleReference, loadChats, loadStoryMemories,
   loadStyleReferences, loadWallpaperAsset, openChatDatabase, saveStyleReference,
@@ -113,6 +115,35 @@ test('regenerate remains a sibling variant and existing branch descendants stay 
   assert.deepEqual(visibleConversationPath(chat).map(item => item.content), ['A', 'B']);
   turn.activeVariantId = originalId;
   assert.deepEqual(visibleConversationPath(chat).map(item => item.content), ['A', 'B', 'C']);
+});
+
+test('regeneration eligibility includes historical visible turns but excludes hidden sibling descendants', () => {
+  const chat = createChat(MODEL);
+  const a = createMessage('user', 'A');
+  const b = createMessage('assistant', 'B', MODEL); b.parentUserId = a.id;
+  const c = createMessage('user', 'C'); c.parentVariantId = b.id;
+  const d = createMessage('assistant', 'D', MODEL); d.parentUserId = c.id;
+  chat.messages.push(a, b, c, d);
+  const b2 = createMessage('assistant', 'B2', MODEL); addAssistantVariant(b, b2);
+  assert.equal(visibleAssistantTurn(chat, b.id), b);
+  assert.equal(visibleAssistantTurn(chat, d.id), null);
+  b.activeVariantId = b.variants[0].id;
+  assert.equal(visibleAssistantTurn(chat, d.id), d);
+});
+
+test('failed historical regeneration keeps the original variant and its descendants intact', () => {
+  const chat = createChat(MODEL);
+  const a = createMessage('user', 'A');
+  const b = createMessage('assistant', 'B', MODEL); b.parentUserId = a.id;
+  const c = createMessage('user', 'C'); c.parentVariantId = b.id;
+  const d = createMessage('assistant', 'D', MODEL); d.parentUserId = c.id;
+  chat.messages.push(a, b, c, d);
+  const failed = createMessage('assistant', 'partial B2', MODEL); failed.status = 'error';
+  addAssistantVariant(b, failed);
+  assert.equal(activeAssistantVariant(b).status, 'error');
+  assert.deepEqual(chat.messages.map(message => message.content), ['A', 'B', 'C', 'D']);
+  b.activeVariantId = b.variants[0].id;
+  assert.deepEqual(visibleConversationPath(chat).map(message => message.content), ['A', 'B', 'C', 'D']);
 });
 
 test('new response-quality UI is Chinese and mobile-safe without changing Retry semantics', async () => {

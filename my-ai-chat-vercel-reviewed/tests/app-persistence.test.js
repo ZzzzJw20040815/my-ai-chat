@@ -768,6 +768,66 @@ test('variant switching restores independent descendant branches and persists th
   await closeChatDatabase();
 });
 
+test('historical Assistant regeneration preserves descendants and switches whole visible branches', async () => {
+  const indexedDB = new IDBFactory();
+  const { fetchMock, contexts, payloads } = createFetchMock();
+  const storage = createMemoryStorage();
+  const dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?historical-assistant-regeneration');
+  document.querySelector('#newChatButton').click();
+
+  submitMessage('A');
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 2);
+  submitMessage('C');
+  const original = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+    return chat?.messages.length === 4 && chat.messages.at(-1).status === 'complete' ? chat : null;
+  });
+  const [a, b, c, d] = original.messages;
+  const originalVariantId = activeAssistantVariant(b).id;
+  const firstAssistant = document.querySelector('.message.assistant');
+  assert.ok(firstAssistant.querySelector('[data-action="regenerate"]'));
+  firstAssistant.querySelector('[data-action="regenerate"]').click();
+  assert.equal(document.querySelector('#regenerateMenu').hidden, false);
+  document.querySelector('[data-regeneration-reason="continuity_issue"]').click();
+
+  const branched = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+    const turn = chat?.messages.find(message => message.id === b.id);
+    return turn?.variants?.length === 2 && activeAssistantVariant(turn).status === 'complete' ? chat : null;
+  });
+  const turn = branched.messages.find(message => message.id === b.id);
+  const regeneratedVariantId = turn.activeVariantId;
+  assert.notEqual(regeneratedVariantId, originalVariantId);
+  assert.equal(turn.variants[0].content, b.content);
+  assert.ok(branched.messages.some(message => message.id === c.id));
+  assert.ok(branched.messages.some(message => message.id === d.id));
+  assert.deepEqual(contexts.at(-1), ['A']);
+  assert.equal(payloads.at(-1).regenerationReason, 'continuity_issue');
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(node => node.textContent), ['A']);
+
+  document.querySelector('.message.assistant [data-action="variant-prev"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(node => node.textContent), ['A', 'C']);
+  assert.equal(document.querySelectorAll('.message.assistant').length, 2);
+  document.querySelector('.message.assistant [data-action="variant-next"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(node => node.textContent), ['A']);
+
+  submitMessage('E');
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 6);
+  document.querySelector('.message.assistant [data-action="variant-prev"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(node => node.textContent), ['A', 'C']);
+  document.querySelector('.message.assistant [data-action="variant-next"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(node => node.textContent), ['A', 'E']);
+
+  const finalChat = (await loadChats(indexedDB)).find(item => !item.demo);
+  assert.equal(finalChat.messages.length, 6);
+  assert.ok(finalChat.messages.some(message => message.id === c.id && message.parentVariantId === originalVariantId));
+  assert.ok(finalChat.messages.some(message => message.id === d.id && message.parentUserId === c.id));
+  const e = finalChat.messages.find(message => message.content === 'E');
+  assert.equal(e.parentVariantId, regeneratedVariantId);
+  dom.window.close(); await closeChatDatabase();
+});
+
 test('Wallpaper Settings persists, restores, replaces and removes a local Blob', async () => {
   const indexedDB = new IDBFactory();
   const { fetchMock } = createFetchMock();

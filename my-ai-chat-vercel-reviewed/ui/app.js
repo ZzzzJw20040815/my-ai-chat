@@ -13,6 +13,7 @@ import {
   formatLocalChatTitle,
   removeUserDescendants,
   uniqueId,
+  visibleAssistantTurn,
   visibleConversationPath,
 } from './state.js';
 import {
@@ -56,7 +57,7 @@ import { clearMobileSheetPosition, positionMobileSheet } from './mobile-sheet.js
 import { REGENERATION_REASON_OPTIONS, styleReferenceRequestItems } from '../shared/response-quality.js';
 import {
   continuationAvailability, createRuntimeControl, isRuntimeControlMessage, isVisibleRuntimeControlMessage,
-  pruneStoryRuntimeTransitions, runtimeControlLabel, setStoryRuntimeMode, storyRuntimeState,
+  pruneStoryRuntimeTransitions, regenerationRuntimeAction, runtimeControlLabel, setStoryRuntimeMode, storyRuntimeState,
 } from './story-runtime.js';
 import {
   scrollConversationToBottom, scrollToBottomVisible, shouldFollowStreaming,
@@ -171,7 +172,6 @@ function messageHtml(message) {
   const variant = activeAssistantVariant(message);
   const variants = Array.isArray(message.variants) && message.variants.length ? message.variants : [message];
   const variantIndex = Math.max(0, variants.findIndex(item => item.id === variant.id));
-  const latestAssistant = visibleConversationPath(current()).filter(m => m.role === 'assistant').at(-1)?.id === message.id;
   const generating = ['sending','generating'].includes(variant.status);
   const styleSaved = styleReferences.some(reference => reference.sourceVariantId === variant.id);
   const status = generating ? '<span class="generation-status">' + (variant.status === 'sending' ? 'Sending…' : 'Generating…') + '</span>' :
@@ -184,7 +184,7 @@ function messageHtml(message) {
     (variant.content ? renderMarkdown(variant.content) : generating ? '<div class="typing" aria-label="Generating"><i></i><i></i><i></i></div>' : '') +
     '</div>' + status + error + (variant.notice ? '<p class="generation-status">' + escapeHtml(variant.notice) + '</p>' : '') +
     '<div class="message-actions">' + action('copy', 'Copy', icons.copy, false, !variant.content) +
-    (latestAssistant ? action('regenerate', variant.status === 'error' || variant.status === 'stopped' ? 'Retry' : '重新生成', icons.redo, false, busy) : '') +
+    action('regenerate', variant.status === 'error' || variant.status === 'stopped' ? 'Retry' : '重新生成', icons.redo, false, busy) +
     action('save-style', styleSaved ? '已保存' : '保存风格', icons.bookmark, styleSaved, generating || !variant.content) +
     action('like', 'Like', icons.like, variant.feedback === 'like', generating) +
     action('dislike', 'Dislike', icons.dislike, variant.feedback === 'dislike', generating) + variantNav +
@@ -576,16 +576,16 @@ function stopGeneration() {
 }
 async function retry(messageId, regenerationReason = null) {
   if (generation) return;
-  const chat = current(), path = visibleConversationPath(chat);
-  const message = chat.messages.find(item => item.id === messageId);
-  if (!message || message.role !== 'assistant' || path.filter(item => item.role === 'assistant').at(-1)?.id !== messageId) return;
+  const chat = current();
+  const message = visibleAssistantTurn(chat, messageId);
+  if (!message) return;
   const user = chat.messages.find(item => item.id === message.parentUserId && item.role === 'user');
   if (!user) return;
   const variantMessage = createMessage('assistant', '', chat.model);
   variantMessage.status = 'sending';
   const variant = addAssistantVariant(message, variantMessage);
   renderConversation(true); await persistChat(chat);
-  void generate(chat, user, message, variant, regenerationReason, isRuntimeControlMessage(user) ? user.runtimeAction : null);
+  void generate(chat, user, message, variant, regenerationReason, regenerationRuntimeAction(user));
 }
 
 function hideSurfaceMenu(menu) {

@@ -14,6 +14,9 @@ export const runtimeControlLabel = message => isRuntimeControlMessage(message)
   : null;
 
 export const isVisibleRuntimeControlMessage = message => runtimeControlLabel(message) !== null;
+export const regenerationRuntimeAction = message => isVisibleRuntimeControlMessage(message)
+  ? message.runtimeAction
+  : null;
 
 function hasVisibleContent(variant) {
   return typeof variant?.content === 'string' && variant.content.trim().length > 0;

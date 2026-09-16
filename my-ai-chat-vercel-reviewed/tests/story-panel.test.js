@@ -116,3 +116,16 @@ test('Story Panel uses existing glass tokens and mobile-safe inline layout', asy
   assert.match(memoryClient, /MEMORY_EMPTY/);
   assert.match(app, /上次更新失败/);
 });
+
+test('historical regeneration keeps sibling memory stored but only applies it on its original branch', () => {
+  const { chat, turn, b, b2, d } = branches();
+  const snapshots = [
+    createStoryMemorySnapshot({ chatId: chat.id, anchorId: d.id, memory: memory('Mira', 'Library', 'Original branch'), id: 'original-memory' }),
+  ];
+  assert.equal(applicableStoryMemory(chat, snapshots).id, 'original-memory');
+  turn.activeVariantId = b2.id;
+  assert.equal(snapshots.length, 1);
+  assert.equal(applicableStoryMemory(chat, snapshots), null);
+  turn.activeVariantId = b.id;
+  assert.equal(applicableStoryMemory(chat, snapshots).id, 'original-memory');
+});

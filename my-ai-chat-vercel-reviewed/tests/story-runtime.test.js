@@ -13,7 +13,7 @@ import {
 } from '../ui/state.js';
 import {
   continuationAvailability, createRuntimeControl, isVisibleRuntimeControlMessage, pruneStoryRuntimeTransitions,
-  runtimeControlLabel, setStoryRuntimeMode, storyRuntimeState,
+  regenerationRuntimeAction, runtimeControlLabel, setStoryRuntimeMode, storyRuntimeState,
 } from '../ui/story-runtime.js';
 import { storyMemoryConversation, storySubtreeAnchorIds } from '../ui/story-memory.js';
 import { CHAT_DB_VERSION, loadChats, saveChat } from '../ui/storage.js';
@@ -146,6 +146,7 @@ test('only generation runtime controls expose user-side Chinese operation labels
     const control = createRuntimeControl(action, 'variant');
     assert.equal(isVisibleRuntimeControlMessage(control), true);
     assert.equal(runtimeControlLabel(control), label);
+    assert.equal(regenerationRuntimeAction(control), action);
     assert.equal(control.kind, 'runtime-control');
     assert.equal(control.content, '');
   }
@@ -153,6 +154,7 @@ test('only generation runtime controls expose user-side Chinese operation labels
     const control = createRuntimeControl(action, 'variant');
     assert.equal(isVisibleRuntimeControlMessage(control), false);
     assert.equal(runtimeControlLabel(control), null);
+    assert.equal(regenerationRuntimeAction(control), null);
   }
 });
 
@@ -220,6 +222,34 @@ test('continue actions keep the active assistant and append a request-only opera
     assert.match(result.contents[2].parts[0].text, /immediately above/);
     assert.doesNotMatch(result.contents[2].parts[0].text, /准备.*设定/);
     assert.notEqual(result.contents.at(-1).parts[0].text, setupPrompt);
+  }
+});
+
+test('regenerating runtime-generated Assistants reuses the original request-scoped action semantics', () => {
+  const cases = [
+    { action: 'start_writing', status: 'complete', prior: 'Setup answer', instruction: /Begin the formal story now/ },
+    { action: 'continue_story', status: 'complete', prior: 'Complete scene.', instruction: /one natural, modest beat/ },
+    { action: 'continue_incomplete', status: 'stopped', prior: 'Partial scene—', instruction: /Continue directly from the end/ },
+  ];
+  for (const item of cases) {
+    const chat = createChat(MODEL);
+    const user = createMessage('user', 'Premise');
+    const prior = createMessage('assistant', item.prior, MODEL);
+    prior.parentUserId = user.id; prior.status = item.status;
+    const control = createRuntimeControl(item.action, prior.id);
+    const generated = createMessage('assistant', 'Generated result', MODEL); generated.parentUserId = control.id;
+    chat.messages.push(user, prior, control, generated);
+    const parent = chat.messages.find(message => message.id === generated.parentUserId);
+    const runtimeAction = regenerationRuntimeAction(parent);
+    assert.equal(runtimeAction, item.action);
+    const context = contextFor(chat, parent.id, 'all');
+    const result = validatePayload({
+      model: MODEL, messages: context, storyRuntime: { mode: 'writing', action: runtimeAction },
+    });
+    assert.equal(result.contents.at(-1).role, 'user');
+    if (item.action === 'continue_incomplete') assert.equal(context.at(-1).content, item.prior);
+    assert.match(result.config.systemInstruction, item.instruction);
+    assert.doesNotMatch(JSON.stringify(result.contents), /开始正文|继续故事|继续未完成/);
   }
 });
 
