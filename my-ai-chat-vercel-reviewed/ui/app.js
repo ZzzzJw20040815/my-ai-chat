@@ -309,6 +309,9 @@ async function updateStoryMemory() {
     stage = 'extraction';
     const result = await runStoryMemoryUpdate({
       chat, snapshots: storyMemorySnapshots, fetchImpl: fetch,
+      safetySettings: requestSettings(globalSettings, modelCatalog.metadata(chat.model) || {
+        source: 'discovered', capabilities: { thinkingLevels: [], samplingOverrides: false, safetySettings: false },
+      }).safetySettings,
       save: snapshot => replaceStoryMemorySnapshot(snapshot),
       onProgress: progress => {
         storyMemoryProgress = progress;

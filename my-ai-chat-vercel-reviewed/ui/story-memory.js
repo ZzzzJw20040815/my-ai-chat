@@ -13,7 +13,8 @@ export function visibleStoryAnchors(chat) {
 
 export const STORY_MEMORY_UPDATE_ERROR_CODES = Object.freeze([
   'CONTEXT_LIMIT', 'TIMEOUT', 'RATE_LIMIT', 'NETWORK_ERROR', 'MODEL_UNAVAILABLE', 'MEMORY_REQUEST_REJECTED', 'KEY_MISSING',
-  'MEMORY_INVALID_ANCHOR', 'MEMORY_INVALID_JSON', 'MEMORY_EMPTY', 'MEMORY_STORAGE_FAILED', 'SERVER_ERROR',
+  'MEMORY_INVALID_ANCHOR', 'MEMORY_INVALID_JSON', 'MEMORY_EMPTY', 'MEMORY_SAFETY_BLOCKED',
+  'MEMORY_OUTPUT_TRUNCATED', 'MEMORY_PROVIDER_STOPPED', 'MEMORY_STORAGE_FAILED', 'SERVER_ERROR',
 ]);
 
 export const STORY_MEMORY_ERROR_MESSAGES = Object.freeze({
@@ -26,6 +27,9 @@ export const STORY_MEMORY_ERROR_MESSAGES = Object.freeze({
   KEY_MISSING: '故事记忆服务尚未配置，请联系站点管理员。',
   MEMORY_INVALID_JSON: 'Gemini 返回的故事记忆格式无效，原记忆已保留。',
   MEMORY_EMPTY: 'Gemini 没有提取到可用的故事记忆，原记忆已保留。',
+  MEMORY_SAFETY_BLOCKED: 'Gemini 的内容安全机制阻止了这次故事记忆整理，原记忆已保留。',
+  MEMORY_OUTPUT_TRUNCATED: 'Gemini 的故事记忆输出未完整生成，原记忆已保留。',
+  MEMORY_PROVIDER_STOPPED: 'Gemini 未完成这次故事记忆整理，原记忆已保留。',
   MEMORY_STORAGE_FAILED: '故事记忆已生成，但无法保存到此设备。',
   MEMORY_INVALID_ANCHOR: '当前故事分支状态异常，无法建立记忆锚点。',
   SERVER_ERROR: '故事记忆暂时无法更新，请稍后重试。',
@@ -118,14 +122,17 @@ function reservedRequestBytes(payload) {
   return storyMemoryRequestByteLength(payload) + Math.max(0, STORY_MEMORY_MAX_BYTES - memoryBytes);
 }
 
-export function chunkStoryMemoryMessages({ model, chatId, messages, existingMemory = null }) {
+export function chunkStoryMemoryMessages({ model, chatId, messages, existingMemory = null, safetySettings }) {
   if (!Array.isArray(messages) || !messages.length) return [];
   const chunks = [];
   let chunk = [];
   const fits = candidate => {
     const totalCharacters = candidate.reduce((sum, message) => sum + message.content.length, 0);
     if (candidate.length > STORY_MEMORY_SAFE_MESSAGES || totalCharacters > STORY_MEMORY_SAFE_TOTAL_CHARACTERS) return false;
-    const payload = { model, chatId, anchorId: candidate.at(-1).id, messages: candidate, existingMemory };
+    const payload = {
+      model, chatId, anchorId: candidate.at(-1).id, messages: candidate, existingMemory,
+      ...(safetySettings ? { safetySettings } : {}),
+    };
     return reservedRequestBytes(payload) <= STORY_MEMORY_SAFE_BODY_BYTES;
   };
   for (const message of messages) {
@@ -152,7 +159,9 @@ const SERVER_ERROR_CODES = Object.freeze({
   CONTEXT_LIMIT: 'CONTEXT_LIMIT', TIMEOUT: 'TIMEOUT', RATE_LIMIT: 'RATE_LIMIT',
   NETWORK_ERROR: 'NETWORK_ERROR', MODEL_UNAVAILABLE: 'MODEL_UNAVAILABLE', MEMORY_REQUEST_REJECTED: 'MEMORY_REQUEST_REJECTED',
   KEY_MISSING: 'KEY_MISSING',
-  MEMORY_INVALID: 'MEMORY_INVALID_JSON', MEMORY_EMPTY: 'MEMORY_EMPTY', SERVER_ERROR: 'SERVER_ERROR',
+  MEMORY_INVALID: 'MEMORY_INVALID_JSON', MEMORY_EMPTY: 'MEMORY_EMPTY',
+  MEMORY_SAFETY_BLOCKED: 'MEMORY_SAFETY_BLOCKED', MEMORY_OUTPUT_TRUNCATED: 'MEMORY_OUTPUT_TRUNCATED',
+  MEMORY_PROVIDER_STOPPED: 'MEMORY_PROVIDER_STOPPED', SERVER_ERROR: 'SERVER_ERROR',
 });
 
 async function requestStoryMemoryChunk(payload, fetchImpl) {
@@ -178,12 +187,15 @@ async function requestStoryMemoryChunk(payload, fetchImpl) {
   return memory;
 }
 
-export async function runStoryMemoryUpdate({ chat, snapshots = [], fetchImpl = fetch, save, onProgress = () => {} }) {
+export async function runStoryMemoryUpdate({
+  chat, snapshots = [], safetySettings, fetchImpl = fetch, save, onProgress = () => {},
+}) {
   const plan = storyMemoryUpdatePlan(chat, snapshots);
   if (plan.upToDate) return { ...plan, updated: false, calls: 0, chunks: 0, snapshots };
   const activePathRevision = JSON.stringify(storyMemoryConversation(chat));
   const chunks = chunkStoryMemoryMessages({
-    model: chat.model, chatId: chat.id, messages: plan.pendingMessages, existingMemory: plan.applicable?.memory || null,
+    model: chat.model, chatId: chat.id, messages: plan.pendingMessages,
+    existingMemory: plan.applicable?.memory || null, safetySettings,
   });
   let nextMemory = plan.applicable?.memory || null;
   for (let index = 0; index < chunks.length; index++) {
@@ -191,6 +203,7 @@ export async function runStoryMemoryUpdate({ chat, snapshots = [], fetchImpl = f
     const messages = chunks[index];
     nextMemory = await requestStoryMemoryChunk({
       model: chat.model, chatId: chat.id, anchorId: messages.at(-1).id, messages, existingMemory: nextMemory,
+      ...(safetySettings ? { safetySettings } : {}),
     }, fetchImpl);
   }
   if (currentStoryAnchor(chat) !== plan.anchorId || JSON.stringify(storyMemoryConversation(chat)) !== activePathRevision) {

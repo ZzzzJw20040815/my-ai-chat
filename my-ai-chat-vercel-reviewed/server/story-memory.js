@@ -11,7 +11,7 @@ import {
   STORY_MEMORY_MAX_TOTAL_CHARACTERS,
 } from '../shared/story-memory-transport.js';
 import { trustedModelMetadata } from './model-catalog.js';
-import { classifyError, readPayload } from './chat.js';
+import { classifyError, readPayload, validateGenerationSettings } from './chat.js';
 
 export { STORY_MEMORY_MAX_BODY_BYTES, STORY_MEMORY_MAX_MESSAGES } from '../shared/story-memory-transport.js';
 export const STORY_MEMORY_MAX_PROVIDER_CALLS_PER_CHUNK = 3;
@@ -24,6 +24,9 @@ const ERROR_MESSAGES = Object.freeze({
   MEMORY_REQUEST_REJECTED: 'Gemini rejected the story memory request. Your previous memory was kept.',
   MEMORY_INVALID: 'Gemini returned an invalid story memory. Your previous memory was kept.',
   MEMORY_EMPTY: 'Gemini did not extract usable story memory. Your previous memory was kept.',
+  MEMORY_SAFETY_BLOCKED: 'Gemini safety filters blocked this story memory update. Your previous memory was kept.',
+  MEMORY_OUTPUT_TRUNCATED: 'Gemini did not finish the story memory output. Your previous memory was kept.',
+  MEMORY_PROVIDER_STOPPED: 'Gemini stopped before producing story memory. Your previous memory was kept.',
   RATE_LIMIT: 'Gemini is temporarily rate limited. Your previous memory was kept.',
   NETWORK_ERROR: 'Could not connect to Gemini. Your previous memory was kept.',
   TIMEOUT: 'Story memory generation timed out. Your previous memory was kept.',
@@ -35,7 +38,9 @@ const jsonError = (code, status) => Response.json({ error: { code, message: ERRO
 const validId = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
 
 export function validateStoryMemoryRequest(payload, authorizedModel) {
+  const allowedPayloadKeys = new Set(['model', 'chatId', 'anchorId', 'messages', 'existingMemory', 'safetySettings']);
   if (!payload || !authorizedModel || authorizedModel.id !== payload.model || !validId(payload.chatId)
+    || Object.keys(payload).some(key => !allowedPayloadKeys.has(key))
     || !validId(payload.anchorId) || !Array.isArray(payload.messages) || !payload.messages.length) throw new Error('INVALID_REQUEST');
   if (payload.messages.length > STORY_MEMORY_MAX_MESSAGES) throw new Error('CONTEXT_LIMIT');
   let total = 0;
@@ -55,9 +60,13 @@ export function validateStoryMemoryRequest(payload, authorizedModel) {
   });
   if (!ids.has(payload.anchorId)) throw new Error('INVALID_REQUEST');
   const existingMemory = payload.existingMemory == null ? null : validateStoryMemory(payload.existingMemory);
+  const safetyConfig = Object.hasOwn(payload, 'safetySettings')
+    ? validateGenerationSettings({ safetySettings: payload.safetySettings }, authorizedModel)
+    : {};
   return {
     model: payload.model, chatId: payload.chatId, anchorId: payload.anchorId, conversation,
     existingMemory: existingMemory && hasMeaningfulStoryMemory(existingMemory) ? existingMemory : null,
+    safetySettings: safetyConfig.safetySettings,
   };
 }
 
@@ -85,6 +94,7 @@ export async function googleExtractStoryMemory(apiKey, params, signal, attempt =
     systemInstruction: attempt === 'repair' ? REPAIR_INSTRUCTION
       : attempt === 'content-recovery' ? CONTENT_RECOVERY_INSTRUCTION : EXTRACTION_INSTRUCTION,
     responseMimeType: 'application/json',
+    ...(params.safetySettings ? { safetySettings: params.safetySettings } : {}),
   };
   if (attempt === 'structured') config.responseJsonSchema = STORY_MEMORY_PROVIDER_JSON_SCHEMA;
   const input = attempt === 'repair'
@@ -103,15 +113,45 @@ export async function googleExtractStoryMemory(apiKey, params, signal, attempt =
 
 function providerStatus(error) { return Number(error?.status || error?.code); }
 function responseText(response) {
-  return typeof response?.text === 'string' ? response.text : response?.text?.();
+  try { return typeof response?.text === 'string' ? response.text : response?.text?.(); }
+  catch { return undefined; }
+}
+const safeProviderReason = value => typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(value) ? value : null;
+const safeSafetyCategory = value => typeof value === 'string' && /^HARM_CATEGORY_[A-Z_]{1,48}$/.test(value) ? value : null;
+const safeSafetyProbability = value => ['NEGLIGIBLE', 'LOW', 'MEDIUM', 'HIGH'].includes(value) ? value : null;
+function providerResponseMetadata(response) {
+  const candidate = response?.candidates?.[0];
+  const finishReason = safeProviderReason(candidate?.finishReason);
+  const blockReason = safeProviderReason(response?.promptFeedback?.blockReason);
+  const ratings = candidate?.safetyRatings || response?.promptFeedback?.safetyRatings || [];
+  const rating = ratings.find(item => item?.blocked && safeSafetyCategory(item.category))
+    || ratings.find(item => safeSafetyCategory(item?.category) && safeSafetyProbability(item?.probability));
+  return {
+    finishReason,
+    blockReason,
+    safetyCategory: safeSafetyCategory(rating?.category),
+    safetyProbability: safeSafetyProbability(rating?.probability),
+  };
 }
 async function inspectProviderResponse(response) {
+  const providerMetadata = providerResponseMetadata(response);
+  if (providerMetadata.blockReason || providerMetadata.finishReason === 'SAFETY') {
+    return { ok: false, providerError: 'MEMORY_SAFETY_BLOCKED', metadata: providerMetadata };
+  }
+  if (providerMetadata.finishReason === 'MAX_TOKENS') {
+    return { ok: false, providerError: 'MEMORY_OUTPUT_TRUNCATED', metadata: providerMetadata };
+  }
+  if (providerMetadata.finishReason && providerMetadata.finishReason !== 'STOP') {
+    return { ok: false, providerError: 'MEMORY_PROVIDER_STOPPED', metadata: providerMetadata };
+  }
   const raw = await responseText(response);
   const candidate = typeof raw === 'string' ? raw : '';
   const metadata = {
+    ...providerMetadata,
     responseCharacters: candidate.length,
     responseBytes: new TextEncoder().encode(candidate).byteLength,
   };
+  if (!candidate) return { ok: false, providerError: 'MEMORY_PROVIDER_STOPPED', metadata };
   let parsed;
   const emptyDiagnostics = { canonicalizationApplied: false, missingKeysFilled: 0, stringArraysWrapped: 0, unknownKeysDropped: 0 };
   try { parsed = JSON.parse(candidate); }
@@ -146,6 +186,9 @@ function providerDiagnostic(stage, code, details = {}) {
   if (Number.isSafeInteger(details.responseBytes)) diagnostic.responseBytes = details.responseBytes;
   if (Number.isSafeInteger(details.providerCalls)) diagnostic.providerCalls = details.providerCalls;
   if (Number.isSafeInteger(details.meaningfulFieldCount)) diagnostic.meaningfulFieldCount = details.meaningfulFieldCount;
+  for (const key of ['finishReason', 'blockReason', 'safetyCategory', 'safetyProbability']) {
+    if (typeof details[key] === 'string') diagnostic[key] = details[key];
+  }
   if (typeof details.canonicalizationApplied === 'boolean') diagnostic.canonicalizationApplied = details.canonicalizationApplied;
   for (const key of ['missingKeysFilled', 'stringArraysWrapped', 'unknownKeysDropped']) {
     if (Number.isSafeInteger(details[key])) diagnostic[key] = details[key];
@@ -153,9 +196,16 @@ function providerDiagnostic(stage, code, details = {}) {
   console.info('[StoryMemoryProvider]', diagnostic);
 }
 function logCanonicalization(result, providerCalls) {
+  if (result.providerError) return;
   const code = result.code === 'JSON_PARSE_FAILED' ? 'SKIPPED'
     : result.code === 'CANONICALIZATION_UNSAFE' ? 'REJECTED' : 'COMPLETED';
   providerDiagnostic('canonicalization', code, { ...result.canonicalization, providerCalls });
+}
+
+function providerResponseError(result, stage, providerCalls) {
+  if (!result.providerError) return null;
+  providerDiagnostic(stage, result.providerError, { ...result.metadata, providerCalls });
+  return jsonError(result.providerError, 502);
 }
 
 export function classifyStoryMemoryProviderError(error) {
@@ -222,6 +272,8 @@ export async function handleStoryMemory(request, env, transport = googleExtractS
       response = await callProvider('json');
     }
     let result = await inspectProviderResponse(response);
+    let providerErrorResponse = providerResponseError(result, providerStage, providerCalls);
+    if (providerErrorResponse) return providerErrorResponse;
     logCanonicalization(result, providerCalls);
     if (!result.ok) {
       providerDiagnostic('validation', result.code, { ...result.metadata, reason: result.reason, providerCalls });
@@ -229,6 +281,8 @@ export async function handleStoryMemory(request, env, transport = googleExtractS
       providerDiagnostic('repair', 'ATTEMPTED', { reason: result.reason, providerCalls });
       const repairedResponse = await callProvider('repair', { reason: result.reason, candidate: result.candidate });
       result = await inspectProviderResponse(repairedResponse);
+      providerErrorResponse = providerResponseError(result, 'repair', providerCalls);
+      if (providerErrorResponse) return providerErrorResponse;
       logCanonicalization(result, providerCalls);
       if (!result.ok) {
         providerDiagnostic('repair', result.code, { ...result.metadata, reason: result.reason, providerCalls });
@@ -246,6 +300,8 @@ export async function handleStoryMemory(request, env, transport = googleExtractS
       providerDiagnostic('content-recovery', 'ATTEMPTED', { providerCalls, meaningfulFieldCount });
       const recoveredResponse = await callProvider('content-recovery');
       result = await inspectProviderResponse(recoveredResponse);
+      providerErrorResponse = providerResponseError(result, 'content-recovery', providerCalls);
+      if (providerErrorResponse) return providerErrorResponse;
       logCanonicalization(result, providerCalls);
       if (!result.ok) {
         providerDiagnostic('content-recovery', 'INVALID', {

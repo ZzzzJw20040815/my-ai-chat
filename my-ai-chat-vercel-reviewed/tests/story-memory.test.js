@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { IDBFactory } from 'fake-indexeddb';
 import {
   classifyStoryMemoryProviderError, googleExtractStoryMemory, handleStoryMemory,
-  STORY_MEMORY_MAX_PROVIDER_CALLS_PER_CHUNK,
+  STORY_MEMORY_MAX_PROVIDER_CALLS_PER_CHUNK, validateStoryMemoryRequest,
 } from '../server/story-memory.js';
 import { validatePayload } from '../server/chat.js';
 import { createChat, createMessage, addAssistantVariant, visibleConversationPath } from '../ui/state.js';
@@ -28,6 +28,7 @@ import {
   STORY_MEMORY_MAX_CHUNKS, STORY_MEMORY_SAFE_BODY_BYTES, STORY_MEMORY_SAFE_MESSAGES,
   STORY_MEMORY_SAFE_TOTAL_CHARACTERS,
 } from '../shared/story-memory-transport.js';
+import { SAFETY_CATEGORIES } from '../shared/settings.js';
 
 const MODEL = 'gemini-3.6-flash';
 const memory = (fact = 'A met B.') => ({
@@ -70,11 +71,11 @@ function successfulMemoryFetch(captured = []) {
   };
 }
 
-function storyMemoryEndpointRequest(chat) {
+function storyMemoryEndpointRequest(chat, extra = {}) {
   const messages = storyMemoryConversation(chat);
   return new Request('https://app.example/api/story-memory', {
     method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },
-    body: JSON.stringify({ model: MODEL, chatId: chat.id, anchorId: currentStoryAnchor(chat), messages }),
+    body: JSON.stringify({ model: MODEL, chatId: chat.id, anchorId: currentStoryAnchor(chat), messages, ...extra }),
   });
 }
 
@@ -231,6 +232,8 @@ test('server error codes retain stable client classifications', async () => {
     ['NETWORK_ERROR', 'NETWORK_ERROR'], ['MODEL_UNAVAILABLE', 'MODEL_UNAVAILABLE'],
     ['MEMORY_REQUEST_REJECTED', 'MEMORY_REQUEST_REJECTED'],
     ['MEMORY_INVALID', 'MEMORY_INVALID_JSON'], ['MEMORY_EMPTY', 'MEMORY_EMPTY'],
+    ['MEMORY_SAFETY_BLOCKED', 'MEMORY_SAFETY_BLOCKED'], ['MEMORY_OUTPUT_TRUNCATED', 'MEMORY_OUTPUT_TRUNCATED'],
+    ['MEMORY_PROVIDER_STOPPED', 'MEMORY_PROVIDER_STOPPED'],
     ['SERVER_ERROR', 'SERVER_ERROR'], ['INVALID_REQUEST', 'SERVER_ERROR'],
   ]) {
     const chat = linearChat(1);
@@ -496,6 +499,91 @@ test('story-memory endpoint authorizes model, sends only supplied active path, a
   assert.equal((await invalid.json()).error.code, 'MEMORY_INVALID');
 });
 
+test('provider metadata classifies safety, truncation, and no-text stops before JSON parsing', async t => {
+  const logs = []; t.mock.method(console, 'info', (label, detail) => logs.push([label, detail]));
+  const chat = branchChat().chat;
+  const cases = [
+    [{ promptFeedback: { blockReason: 'SAFETY', safetyRatings: [{
+      category: 'HARM_CATEGORY_HATE_SPEECH', probability: 'HIGH', blocked: true,
+    }] }, get text() { throw new Error('text must not be read'); } }, 'MEMORY_SAFETY_BLOCKED'],
+    [{ candidates: [{ finishReason: 'SAFETY' }], get text() { throw new Error('text must not be read'); } }, 'MEMORY_SAFETY_BLOCKED'],
+    [{ candidates: [{ finishReason: 'MAX_TOKENS' }], get text() { throw new Error('text must not be read'); } }, 'MEMORY_OUTPUT_TRUNCATED'],
+    [{ candidates: [{ finishReason: 'RECITATION' }], get text() { throw new Error('text must not be read'); } }, 'MEMORY_PROVIDER_STOPPED'],
+    [{ candidates: [{ finishReason: 'STOP' }], get text() { throw new Error('SDK no-text getter'); } }, 'MEMORY_PROVIDER_STOPPED'],
+  ];
+  for (const [providerResponse, expectedCode] of cases) {
+    let calls = 0;
+    const response = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' }, async () => {
+      calls++; return providerResponse;
+    });
+    assert.equal(response.status, 502);
+    assert.equal((await response.json()).error.code, expectedCode);
+    assert.equal(calls, 1);
+  }
+  assert.ok(logs.some(([, detail]) => detail.code === 'MEMORY_SAFETY_BLOCKED'
+    && detail.blockReason === 'SAFETY' && detail.safetyCategory === 'HARM_CATEGORY_HATE_SPEECH'
+    && detail.safetyProbability === 'HIGH'));
+  assert.equal(logs.some(([, detail]) => detail.code === 'JSON_PARSE_FAILED'), false);
+});
+
+test('normal STOP preserves the valid JSON path while invalid JSON remains MEMORY_INVALID', async t => {
+  t.mock.method(console, 'info', () => {});
+  const chat = branchChat().chat;
+  const valid = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' },
+    async () => ({ text: JSON.stringify(memory('stop-success')), candidates: [{ finishReason: 'STOP' }] }));
+  assert.equal(valid.status, 200);
+  assert.deepEqual((await valid.json()).memory.knownFacts, ['stop-success']);
+
+  let calls = 0;
+  const invalid = await handleStoryMemory(storyMemoryEndpointRequest(chat), { GEMINI_API_KEY: 'test-only' }, async () => {
+    calls++; return { text: '{bad', candidates: [{ finishReason: 'STOP' }] };
+  });
+  assert.equal((await invalid.json()).error.code, 'MEMORY_INVALID');
+  assert.equal(calls, 2);
+});
+
+test('Story Memory validates and forwards only capability-approved Safety Settings', async () => {
+  const custom = {
+    mode: 'custom', harassment: 'BLOCK_ONLY_HIGH', hateSpeech: 'BLOCK_MEDIUM_AND_ABOVE',
+    sexuallyExplicit: 'BLOCK_LOW_AND_ABOVE', dangerousContent: 'OFF',
+  };
+  const expected = SAFETY_CATEGORIES.map(({ key, category }) => ({ category, threshold: custom[key] }));
+  const chat = branchChat().chat; let captured;
+  const response = await handleStoryMemory(storyMemoryEndpointRequest(chat, { safetySettings: custom }),
+    { GEMINI_API_KEY: 'test-only' }, async (_key, params) => {
+      captured = params; return { text: JSON.stringify(memory()), candidates: [{ finishReason: 'STOP' }] };
+    });
+  assert.equal(response.status, 200);
+  assert.deepEqual(captured.safetySettings, expected);
+
+  const messages = storyMemoryConversation(chat);
+  const base = { model: MODEL, chatId: chat.id, anchorId: currentStoryAnchor(chat), messages };
+  const unsupported = { id: MODEL, capabilities: { safetySettings: false } };
+  assert.equal(validateStoryMemoryRequest({ ...base, safetySettings: { ...custom, mode: 'default' } }, unsupported).safetySettings, undefined);
+  assert.throws(() => validateStoryMemoryRequest({ ...base, safetySettings: custom }, unsupported), /INVALID_REQUEST/);
+  assert.throws(() => validateStoryMemoryRequest({ ...base, safetySettings: { ...custom, extraCategory: 'OFF' } }, {
+    id: MODEL, capabilities: { safetySettings: true },
+  }), /INVALID_REQUEST/);
+  assert.throws(() => validateStoryMemoryRequest({ ...base, safetySettings: { ...custom, harassment: 'ALLOW_ALL' } }, {
+    id: MODEL, capabilities: { safetySettings: true },
+  }), /INVALID_REQUEST/);
+  assert.throws(() => validateStoryMemoryRequest({ ...base, temperature: 0 }, {
+    id: MODEL, capabilities: { safetySettings: true },
+  }), /INVALID_REQUEST/);
+});
+
+test('client sends only Safety Settings with each Story Memory chunk', async () => {
+  const chat = linearChat(1), captured = [];
+  const safetySettings = {
+    mode: 'custom', harassment: 'BLOCK_ONLY_HIGH', hateSpeech: 'BLOCK_ONLY_HIGH',
+    sexuallyExplicit: 'BLOCK_ONLY_HIGH', dangerousContent: 'BLOCK_ONLY_HIGH',
+  };
+  await runStoryMemoryUpdate({ chat, safetySettings, fetchImpl: successfulMemoryFetch(captured), save: async () => {} });
+  assert.deepEqual(captured[0].safetySettings, safetySettings);
+  assert.equal(Object.hasOwn(captured[0], 'settings'), false);
+  for (const key of ['temperature', 'topP', 'topK', 'maxOutputTokens']) assert.equal(Object.hasOwn(captured[0], key), false);
+});
+
 test('synthetic long conversation reproduces server CONTEXT_LIMIT without calling Gemini', async () => {
   const createdAt = new Date().toISOString(); let transportCalls = 0;
   const messages = Array.from({ length: 4 }, (_, index) => ({
@@ -748,6 +836,11 @@ test('official SDK extraction uses a shallow schema while fallback and repair us
     model: MODEL, existingMemory: null,
     conversation: [{ id: 'u', role: 'user', content: 'EXPLICIT_STORY_FACT', status: 'complete', createdAt: new Date().toISOString() }],
   }, new AbortController().signal, 'content-recovery');
+  await googleExtractStoryMemory('unit-test-sentinel', {
+    model: MODEL, existingMemory: null,
+    safetySettings: [{ category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' }],
+    conversation: [{ id: 'u', role: 'user', content: 'A', status: 'complete', createdAt: new Date().toISOString() }],
+  }, new AbortController().signal);
   const body = await captured[0].json();
   assert.equal(body.generationConfig.responseMimeType, 'application/json');
   assert.equal(body.generationConfig.responseJsonSchema.additionalProperties, false);
@@ -768,9 +861,14 @@ test('official SDK extraction uses a shallow schema while fallback and repair us
   assert.equal(Object.hasOwn(recoveryBody.generationConfig, 'responseJsonSchema'), false);
   assert.match(recoveryBody.systemInstruction.parts[0].text, /Do not return an all-empty Story Memory/);
   assert.match(recoveryBody.contents[0].parts[0].text, /EXPLICIT_STORY_FACT/);
+  const safetyBody = await captured[4].json();
+  assert.deepEqual(safetyBody.safetySettings, [
+    { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+  ]);
+  assert.equal(Object.hasOwn(body, 'safetySettings'), false);
   assert.match(body.systemInstruction.parts[0].text, /never invent/i);
   assert.match(body.systemInstruction.parts[0].text, /exactly these keys and value shapes/i);
-  assert.ok(!JSON.stringify([body, fallbackBody, repairBody, recoveryBody]).includes('unit-test-sentinel'));
+  assert.ok(!JSON.stringify([body, fallbackBody, repairBody, recoveryBody, safetyBody]).includes('unit-test-sentinel'));
 });
 
 test('normal chat ignores empty memory but injects meaningful memory', () => {

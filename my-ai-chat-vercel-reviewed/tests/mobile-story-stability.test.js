@@ -255,7 +255,9 @@ test('memory error copy is specific, includes safe codes, and the Story sheet cl
   const expected = {
     CONTEXT_LIMIT: '当前故事内容过长', TIMEOUT: '生成超时', RATE_LIMIT: '暂时繁忙', NETWORK_ERROR: '无法连接 Gemini',
     MODEL_UNAVAILABLE: '当前模型暂不可用', MEMORY_REQUEST_REJECTED: '拒绝了故事记忆请求',
-    MEMORY_INVALID_JSON: '格式无效', MEMORY_EMPTY: '没有提取到可用的故事记忆', MEMORY_STORAGE_FAILED: '无法保存到此设备',
+    MEMORY_INVALID_JSON: '格式无效', MEMORY_EMPTY: '没有提取到可用的故事记忆',
+    MEMORY_SAFETY_BLOCKED: '内容安全机制阻止', MEMORY_OUTPUT_TRUNCATED: '输出未完整生成',
+    MEMORY_PROVIDER_STOPPED: '未完成这次故事记忆整理', MEMORY_STORAGE_FAILED: '无法保存到此设备',
     MEMORY_INVALID_ANCHOR: '分支状态异常', SERVER_ERROR: '暂时无法更新',
   };
   for (const [code, text] of Object.entries(expected)) assert.match(storyMemoryErrorMessage(code), new RegExp(text));
