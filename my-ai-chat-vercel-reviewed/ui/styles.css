@@ -287,6 +287,9 @@ html[data-theme="light"] .moon-icon { display: none; }
   overflow-wrap: anywhere;
 }
 .message-bubble p { margin: 0; white-space: pre-wrap; }
+.runtime-control-bubble { padding: 10px 14px; background: var(--glass-bg-soft); color: var(--muted); }
+.runtime-control-bubble small { display: block; margin-bottom: 2px; color: var(--muted-2); font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+.runtime-control-bubble p { color: var(--text); font-size: 13px; font-weight: 650; }
 .message.assistant { display: grid; grid-template-columns: 31px minmax(0,1fr); gap: 13px; }
 .assistant-mark {
   width: 31px; height: 31px; display: grid; place-items: center; border: 1px solid var(--glass-border-strong);
@@ -337,6 +340,17 @@ html[data-theme="light"] .moon-icon { display: none; }
   background: linear-gradient(to bottom, transparent, var(--dock-fade) 42%, var(--dock-fade));
   pointer-events: none;
 }
+.scroll-to-bottom {
+  position: absolute; right: max(18px, calc((100% - 800px) / 2)); bottom: 150px; z-index: 16;
+  width: 46px; height: 46px; display: grid; place-items: center; border: 1px solid var(--glass-border);
+  border-radius: 50%; background: var(--glass-bg-strong); color: var(--text); box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(var(--glass-blur-light)) saturate(120%); backdrop-filter: blur(var(--glass-blur-light)) saturate(120%);
+  cursor: pointer;
+}
+.scroll-to-bottom[hidden] { display: none; }
+.scroll-to-bottom:hover { background: var(--control-glass-bg); }
+.scroll-to-bottom:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.scroll-to-bottom svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 .composer-wrap { width: min(100%, 820px); margin: 0 auto; pointer-events: auto; }
 .composer {
   padding: 12px; border: 1px solid var(--glass-border-strong); border-radius: 18px;
@@ -502,6 +516,7 @@ html[data-theme="light"] .moon-icon { display: none; }
   .sidebar .sidebar-close, .menu-button { display: grid; }
   .topbar { padding: 0 12px; }
   .conversation { padding: 24px 18px 218px; }
+  .scroll-to-bottom { right: 14px; width: 46px; height: 46px; }
   .chat-heading { margin-bottom: 34px; }
   .composer-dock { padding-right: 12px; padding-left: 12px; }
 }

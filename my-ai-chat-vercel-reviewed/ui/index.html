@@ -115,6 +115,10 @@
 
         <section class="conversation" id="conversation" aria-live="polite"></section>
 
+        <button class="scroll-to-bottom" id="scrollToBottom" type="button" aria-label="滚动到最新消息" title="滚动到最新消息" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6.5 13.5 12 19l5.5-5.5"/></svg>
+        </button>
+
         <div class="composer-dock">
           <div class="composer-wrap">
             <div class="attachment-chip" id="attachmentChip" hidden>
@@ -313,11 +317,7 @@
 
     <div class="sheet-scrim" id="sheetScrim" aria-hidden="true" hidden></div>
     <div class="surface-menu regenerate-menu" id="regenerateMenu" role="menu" aria-label="重新生成" hidden></div>
-    <div class="surface-menu runtime-menu" id="runtimeMenu" role="menu" aria-label="故事操作" hidden>
-      <strong>故事操作</strong>
-      <button type="button" role="menuitem" data-story-runtime-action="continue_story">继续故事</button>
-      <button type="button" role="menuitem" data-story-runtime-action="continue_incomplete">继续未完成</button>
-    </div>
+    <div class="surface-menu runtime-menu" id="runtimeMenu" role="menu" aria-label="故事操作" hidden></div>
     <section class="surface-menu story-menu" id="storyMenu" role="dialog" aria-modal="true" aria-label="故事" hidden></section>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>

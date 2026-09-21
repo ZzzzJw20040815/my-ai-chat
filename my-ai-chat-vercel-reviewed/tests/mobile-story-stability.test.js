@@ -147,6 +147,8 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
   document.querySelector('#composerForm').requestSubmit();
   await waitFor(() => menu.querySelector('[data-story-runtime-action="start_writing"]')?.disabled);
   assert.match(menu.textContent, /等待当前回复完成/);
+  assert.ok([...document.querySelectorAll('.message.assistant [data-action="regenerate"]')]
+    .every(button => button.disabled));
   transport.releaseChat();
   await waitFor(() => menu.querySelector('[data-story-runtime-action="start_writing"]')?.disabled === false);
   assert.ok(transport.payloads.some(payload => payload.storyRuntime?.mode === 'setup' && !payload.storyRuntime.action));
@@ -163,7 +165,7 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
   menu = document.querySelector('#storyMenu');
   assert.match(menu.textContent, /状态：正文中/);
   assert.equal(document.querySelector('#mobileStoryLabel').textContent, '故事 · 正文中');
-  assert.deepEqual([...menu.querySelectorAll('[data-story-runtime-action]')].map(button => button.dataset.storyRuntimeAction), ['continue_story', 'continue_incomplete', 'exit_story']);
+  assert.deepEqual([...menu.querySelectorAll('[data-story-runtime-action]')].map(button => button.dataset.storyRuntimeAction), ['continue_story', 'exit_story']);
   assert.equal(menu.querySelector('[data-story-runtime-action="start_writing"]'), null);
   assert.ok(menu.querySelector('[data-open-story-state]'));
   assert.ok(menu.querySelector('[data-update-story-memory]'));

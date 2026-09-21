@@ -12,7 +12,8 @@ import {
   removeUserDescendants, visibleConversationPath,
 } from '../ui/state.js';
 import {
-  createRuntimeControl, pruneStoryRuntimeTransitions, setStoryRuntimeMode, storyRuntimeState,
+  continuationAvailability, createRuntimeControl, isVisibleRuntimeControlMessage, pruneStoryRuntimeTransitions,
+  regenerationRuntimeAction, runtimeControlLabel, setStoryRuntimeMode, storyRuntimeState,
 } from '../ui/story-runtime.js';
 import { storyMemoryConversation, storySubtreeAnchorIds } from '../ui/story-memory.js';
 import { CHAT_DB_VERSION, loadChats, saveChat } from '../ui/storage.js';
@@ -126,6 +127,86 @@ test('runtime is supplemental system context, not fake messages, and disabled re
   assert.doesNotMatch(JSON.stringify(action.contents), /continue_incomplete|STORY RUNTIME/);
 });
 
+test('structured completion reason persists without an IndexedDB or backup schema upgrade', async () => {
+  const indexedDB = new IDBFactory(), chat = createChat(MODEL);
+  const user = createMessage('user', 'A');
+  const assistant = createMessage('assistant', 'partial', MODEL);
+  assistant.parentUserId = user.id; assistant.completionReason = 'max_tokens';
+  chat.messages.push(user, assistant);
+  await saveChat(chat, indexedDB);
+  const restored = (await loadChats(indexedDB))[0];
+  assert.equal(restored.messages[1].completionReason, 'max_tokens');
+  assert.equal(CHAT_DB_VERSION, 4);
+});
+
+test('only generation runtime controls expose user-side Chinese operation labels', () => {
+  for (const [action, label] of [
+    ['start_writing', '开始正文'], ['continue_story', '继续故事'], ['continue_incomplete', '继续未完成'],
+  ]) {
+    const control = createRuntimeControl(action, 'variant');
+    assert.equal(isVisibleRuntimeControlMessage(control), true);
+    assert.equal(runtimeControlLabel(control), label);
+    assert.equal(regenerationRuntimeAction(control), action);
+    assert.equal(control.kind, 'runtime-control');
+    assert.equal(control.content, '');
+  }
+  for (const action of ['prepare_story', 'exit_story', 'update_memory', 'view_story_state']) {
+    const control = createRuntimeControl(action, 'variant');
+    assert.equal(isVisibleRuntimeControlMessage(control), false);
+    assert.equal(runtimeControlLabel(control), null);
+    assert.equal(regenerationRuntimeAction(control), null);
+  }
+});
+
+test('continuation availability is deterministic for complete, partial, truncated, empty and active generation states', () => {
+  const chat = createChat(MODEL), user = createMessage('user', 'A');
+  const assistant = createMessage('assistant', 'B', MODEL); assistant.parentUserId = user.id;
+  chat.messages.push(user, assistant);
+  assert.equal(continuationAvailability(chat).action, 'continue_story');
+  for (const status of ['stopped', 'interrupted', 'error']) {
+    assistant.status = status;
+    assert.equal(continuationAvailability(chat).action, 'continue_incomplete');
+  }
+  assistant.status = 'complete'; assistant.completionReason = 'max_tokens';
+  assert.equal(continuationAvailability(chat).action, 'continue_incomplete');
+  delete assistant.completionReason; assistant.status = 'error'; assistant.content = '';
+  assert.equal(continuationAvailability(chat).action, null);
+  assistant.content = 'partial';
+  assert.equal(continuationAvailability(chat, true).action, null);
+});
+
+test('continue_incomplete promotes only the immediate partial and folds successful continuation for later context', () => {
+  const chat = createChat(MODEL), userA = createMessage('user', 'A');
+  const partialB = createMessage('assistant', 'B partial—', MODEL);
+  partialB.parentUserId = userA.id; partialB.status = 'stopped';
+  chat.messages.push(userA, partialB);
+
+  const ordinary = createMessage('user', 'ordinary'); ordinary.parentVariantId = partialB.id;
+  chat.messages.push(ordinary);
+  assert.deepEqual(contextFor(chat, ordinary.id).map(item => item.content), ['ordinary']);
+  chat.messages.pop();
+
+  const control = createRuntimeControl('continue_incomplete', partialB.id); chat.messages.push(control);
+  assert.deepEqual(contextFor(chat, control.id).map(item => item.content), ['A', 'B partial—']);
+  const continuation = createMessage('assistant', 'and then completed.', MODEL);
+  continuation.parentUserId = control.id; chat.messages.push(continuation);
+  const userD = createMessage('user', 'D'); userD.parentVariantId = continuation.id; chat.messages.push(userD);
+  const future = contextFor(chat, userD.id);
+  assert.deepEqual(future.map(item => item.role), ['user', 'assistant', 'user']);
+  assert.deepEqual(future.map(item => item.content), ['A', 'B partial—\n\nand then completed.', 'D']);
+  assert.doesNotMatch(JSON.stringify(future), /继续未完成|continue_incomplete/);
+});
+
+test('a second explicit incomplete continuation retains both earlier partial segments', () => {
+  const chat = createChat(MODEL), user = createMessage('user', 'A');
+  const first = createMessage('assistant', 'B—', MODEL); first.parentUserId = user.id; first.status = 'stopped';
+  const controlOne = createRuntimeControl('continue_incomplete', first.id);
+  const second = createMessage('assistant', 'C—', MODEL); second.parentUserId = controlOne.id; second.status = 'error';
+  const controlTwo = createRuntimeControl('continue_incomplete', second.id);
+  chat.messages.push(user, first, controlOne, second, controlTwo);
+  assert.deepEqual(contextFor(chat, controlTwo.id).map(item => item.content), ['A', 'B—\n\nC—']);
+});
+
 test('continue actions keep the active assistant and append a request-only operational user turn', () => {
   const setupPrompt = '请帮我准备一个适合测试 Story Memory 的故事设定。';
   const setupReply = '已经为你准备好了一段测试设定。';
@@ -141,6 +222,34 @@ test('continue actions keep the active assistant and append a request-only opera
     assert.match(result.contents[2].parts[0].text, /immediately above/);
     assert.doesNotMatch(result.contents[2].parts[0].text, /准备.*设定/);
     assert.notEqual(result.contents.at(-1).parts[0].text, setupPrompt);
+  }
+});
+
+test('regenerating runtime-generated Assistants reuses the original request-scoped action semantics', () => {
+  const cases = [
+    { action: 'start_writing', status: 'complete', prior: 'Setup answer', instruction: /Begin the formal story now/ },
+    { action: 'continue_story', status: 'complete', prior: 'Complete scene.', instruction: /one natural, modest beat/ },
+    { action: 'continue_incomplete', status: 'stopped', prior: 'Partial scene—', instruction: /Continue directly from the end/ },
+  ];
+  for (const item of cases) {
+    const chat = createChat(MODEL);
+    const user = createMessage('user', 'Premise');
+    const prior = createMessage('assistant', item.prior, MODEL);
+    prior.parentUserId = user.id; prior.status = item.status;
+    const control = createRuntimeControl(item.action, prior.id);
+    const generated = createMessage('assistant', 'Generated result', MODEL); generated.parentUserId = control.id;
+    chat.messages.push(user, prior, control, generated);
+    const parent = chat.messages.find(message => message.id === generated.parentUserId);
+    const runtimeAction = regenerationRuntimeAction(parent);
+    assert.equal(runtimeAction, item.action);
+    const context = contextFor(chat, parent.id, 'all');
+    const result = validatePayload({
+      model: MODEL, messages: context, storyRuntime: { mode: 'writing', action: runtimeAction },
+    });
+    assert.equal(result.contents.at(-1).role, 'user');
+    if (item.action === 'continue_incomplete') assert.equal(context.at(-1).content, item.prior);
+    assert.match(result.config.systemInstruction, item.instruction);
+    assert.doesNotMatch(JSON.stringify(result.contents), /开始正文|继续故事|继续未完成/);
   }
 });
 
@@ -189,6 +298,11 @@ test('start_writing may use a valid premise after a stopped setup reply without 
   assert.equal(result.contents[0].parts[0].text, user.content);
   assert.match(result.contents[0].parts[1].text, /Begin the formal story now/);
   assert.match(result.config.systemInstruction, /Begin the formal story now/);
+
+  const opening = createMessage('assistant', '正式开场。', MODEL);
+  opening.parentUserId = control.id; chat.messages.push(opening);
+  const next = createMessage('user', '我推开门。'); next.parentVariantId = opening.id; chat.messages.push(next);
+  assert.deepEqual(contextFor(chat, next.id, 'all').map(item => item.content), [user.content, opening.content, next.content]);
 });
 
 test('writing rules preserve agency, limited POV, continuity and one-call action semantics', () => {
