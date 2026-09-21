@@ -157,6 +157,40 @@ test('manual Story Memory update persists and becomes supplemental context after
   dom.window.close(); await closeChatDatabase();
 });
 
+test('user revision preserves sibling Story Memory and navigation restores its branch', async () => {
+  const indexedDB = new IDBFactory(); const storage = createMemoryStorage();
+  const chatFetch = createFetchMock();
+  const fetchMock = (url, init) => String(url).includes('/api/story-memory')
+    ? Promise.resolve(Response.json({ memory: storyMemoryFixture() }))
+    : chatFetch.fetchMock(url, init);
+  const dom = installDom(indexedDB, fetchMock, storage);
+  await import('../ui/app.js?user-branch-memory-preservation');
+  document.querySelector('#newChatButton').click();
+  submitMessage('原始故事开场');
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.at(-1)?.status === 'complete');
+  document.querySelector('[data-update-story-memory]').click();
+  const originalSnapshot = await waitFor(async () => (await loadStoryMemories(null, indexedDB))[0]);
+
+  document.querySelector('.message.user [data-action="edit"]').click();
+  document.querySelector('.edit-area textarea').value = '新的故事开场';
+  document.querySelector('[data-action="edit-save"]').click();
+  const branched = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => !item.demo);
+    return chat?.messages.length === 4 && chat.messages.at(-1)?.status === 'complete' ? chat : null;
+  });
+  assert.deepEqual(branched.messages.filter(message => message.role === 'user').map(message => message.content), ['原始故事开场', '新的故事开场']);
+  assert.equal((await loadStoryMemories(null, indexedDB))[0].id, originalSnapshot.id);
+  assert.match(document.querySelector('.story-panel').textContent, /Story Memory not created yet/);
+  assert.match(document.querySelector('.message.user .variant-nav').textContent, /2\s*\/\s*2/);
+
+  document.querySelector('[data-action="user-variant-prev"]').click();
+  assert.match(document.querySelector('.story-panel').textContent, /Mira/);
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(node => node.textContent), ['原始故事开场']);
+  document.querySelector('[data-action="user-variant-next"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(node => node.textContent), ['新的故事开场']);
+  dom.window.close(); await closeChatDatabase();
+});
+
 test('new chat lifecycle persists across refresh/reopen without duplicating demos', async () => {
   const indexedDB = new IDBFactory();
   const { fetchMock, contexts, payloads } = createFetchMock();
@@ -215,7 +249,7 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   document.querySelector('[data-action="edit-save"]').click();
   await waitFor(async () => {
     const chat = (await loadChats(indexedDB)).find(item => !item.demo);
-    return chat?.messages[2]?.content.includes('刚才') && chat.messages.at(-1)?.role === 'assistant'
+    return chat?.messages.some(message => message.content.includes('刚才')) && chat.messages.at(-1)?.role === 'assistant'
       && chat.messages.at(-1).status === 'complete';
   });
 
@@ -244,7 +278,7 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   });
   assert.equal(regeneratedChat.model, 'gemini-3.1-pro-preview');
   assert.equal(activeAssistantVariant(regeneratedChat.messages.at(-1)).model, 'gemini-3.1-pro-preview');
-  assert.match(document.querySelector('.variant-nav').textContent, /3\s*\/\s*3/);
+  assert.match(document.querySelector('.message.assistant .variant-nav').textContent, /3\s*\/\s*3/);
   document.querySelector('[data-action="variant-prev"]').click();
   const selectedOlder = await waitFor(async () => {
     const turn = (await loadChats(indexedDB)).find(item => !item.demo)?.messages.at(-1);
@@ -262,7 +296,7 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
     return turn?.activeVariantId === retryId;
   });
   submitMessage('只使用当前回复版本');
-  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 8);
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 10);
   assert.ok(contexts.at(-1).includes('可控回复 2。'));
   assert.ok(!contexts.at(-1).includes('可控回复 3。'));
   assert.ok(!contexts.at(-1).some(content => content.includes('段落')));
@@ -348,7 +382,7 @@ test('Story Runtime UI persists setup/writing and shows request-only controls as
   dom.window.close(); await closeChatDatabase();
 });
 
-test('Edit and resend works for first, middle and last historical user messages', async () => {
+test('Historical Edit creates non-destructive user branches for first, middle and latest turns', async () => {
   const indexedDB = new IDBFactory();
   const { fetchMock, contexts } = createFetchMock();
   const storage = createMemoryStorage();
@@ -379,12 +413,13 @@ test('Edit and resend works for first, middle and last historical user messages'
   document.querySelector('[data-action="edit-save"]').click();
   let edited = await waitFor(async () => {
     const chat = (await loadChats(indexedDB)).find(item => !item.demo);
-    return chat?.messages.length === 4 && chat.messages.at(-1).status === 'complete' ? chat : null;
+    return chat?.messages.length === 8 && chat.messages.at(-1).status === 'complete' ? chat : null;
   });
-  assert.deepEqual(edited.messages.filter(message => message.role === 'user').map(message => message.content), ['A1', 'A2 revised']);
+  assert.deepEqual(edited.messages.filter(message => message.role === 'user').map(message => message.content), ['A1', 'A2', 'A3', 'A2 revised']);
   assert.deepEqual(contexts.at(-1), ['A1', '可控回复 1。', 'A2 revised']);
   assert.ok(!contexts.at(-1).includes('A2'));
   assert.ok(!contexts.at(-1).includes('A3'));
+  assert.match(document.querySelector('.message.user .variant-nav')?.textContent || '', /2\s*\/\s*2/);
 
   users = [...document.querySelectorAll('.message.user')];
   users[0].querySelector('[data-action="edit"]').click();
@@ -392,26 +427,28 @@ test('Edit and resend works for first, middle and last historical user messages'
   document.querySelector('[data-action="edit-save"]').click();
   edited = await waitFor(async () => {
     const chat = (await loadChats(indexedDB)).find(item => !item.demo);
-    return chat?.messages.length === 2 && chat.messages[0].content === 'A1 revised' && chat.messages.at(-1).status === 'complete' ? chat : null;
+    return chat?.messages.length === 10 && chat.messages.some(message => message.content === 'A1 revised')
+      && chat.messages.at(-1).status === 'complete' ? chat : null;
   });
   assert.deepEqual(contexts.at(-1), ['A1 revised']);
   assert.equal(edited.title, stableTitle);
+  assert.equal(edited.messages[0].content, 'A1');
 
   submitMessage('last user');
-  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 4);
+  await waitFor(async () => (await loadChats(indexedDB)).find(item => !item.demo)?.messages.length === 12);
   users = [...document.querySelectorAll('.message.user')];
   users.at(-1).querySelector('[data-action="edit"]').click();
   document.querySelector('.edit-area textarea').value = 'last user revised';
   document.querySelector('[data-action="edit-save"]').click();
   edited = await waitFor(async () => {
     const chat = (await loadChats(indexedDB)).find(item => !item.demo);
-    return chat?.messages.length === 4 && chat.messages[2].content === 'last user revised'
+    return chat?.messages.length === 14 && chat.messages.some(message => message.content === 'last user revised')
       && chat.messages.at(-1).status === 'complete' ? chat : null;
   });
   assert.deepEqual(contexts.at(-1), ['A1 revised', '可控回复 1。', 'last user revised']);
   assert.ok(!contexts.at(-1).includes('last user'));
   assert.equal(edited.messages.at(-1).model, edited.model);
-  assert.ok(edited.messages[2].updatedAt);
+  assert.ok(edited.messages.some(message => message.content === 'last user'));
   dom.window.close();
   await closeChatDatabase();
 });
@@ -453,23 +490,33 @@ test('Historical Edit draft survives model switch and saves with the newly selec
   document.querySelector('[data-action="edit-save"]').click();
   const saved = await waitFor(async () => {
     const chat = (await loadChats(indexedDB)).find(item => !item.demo);
-    return chat?.messages[0]?.content === '修改后但尚未保存的角色设定'
+    return chat?.messages.some(message => message.content === '修改后但尚未保存的角色设定')
       && chat.messages.at(-1)?.status === 'complete' ? chat : null;
   });
   assert.equal(saved.messages[0].id, originalUserId);
+  assert.equal(saved.messages[0].content, '原始角色设定');
   assert.equal(saved.messages.at(-1).model, selectedModel);
   assert.equal(payloads.at(-1).model, selectedModel);
   assert.equal(document.querySelector('.edit-area'), null);
 
-  document.querySelector('.message.user [data-action="edit"]').click();
+  const messagesBeforeNoop = saved.messages.length;
+  const requestsBeforeNoop = payloads.length;
+  [...document.querySelectorAll('.message.user')].at(-1).querySelector('[data-action="edit"]').click();
+  document.querySelector('[data-action="edit-save"]').click();
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(document.querySelector('.edit-area'), null);
+  assert.equal((await loadChats(indexedDB)).find(item => !item.demo).messages.length, messagesBeforeNoop);
+  assert.equal(payloads.length, requestsBeforeNoop);
+
+  [...document.querySelectorAll('.message.user')].at(-1).querySelector('[data-action="edit"]').click();
   editor = document.querySelector('.edit-area textarea');
   assert.equal(editor.value, '修改后但尚未保存的角色设定');
   editor.value = '应被取消的临时文字';
   editor.dispatchEvent(new window.Event('input', { bubbles: true }));
   document.querySelector('[data-action="edit-cancel"]').click();
   assert.equal(document.querySelector('.edit-area'), null);
-  assert.match(document.querySelector('.message.user .message-bubble').textContent, /修改后但尚未保存的角色设定/);
-  document.querySelector('.message.user [data-action="edit"]').click();
+  assert.match([...document.querySelectorAll('.message.user .message-bubble')].at(-1).textContent, /修改后但尚未保存的角色设定/);
+  [...document.querySelectorAll('.message.user')].at(-1).querySelector('[data-action="edit"]').click();
   assert.equal(document.querySelector('.edit-area textarea').value, '修改后但尚未保存的角色设定');
   document.querySelector('[data-action="edit-cancel"]').click();
 
@@ -761,7 +808,12 @@ test('variant switching restores independent descendant branches and persists th
       && chat.messages.some(message => message.id === originalC2.id)
       && chat.messages.some(message => message.id === originalD2.id) ? chat : null;
   });
-  assert.ok(!afterEdit.messages.some(message => message.id === originalD.id));
+  assert.ok(afterEdit.messages.some(message => message.id === originalD.id));
+  assert.ok(afterEdit.messages.some(message => message.id === originalC.id));
+  document.querySelector('[data-action="user-variant-prev"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A', 'branch C']);
+  document.querySelector('[data-action="user-variant-next"]').click();
+  assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A', 'branch C edited']);
   document.querySelector('.message.assistant [data-action="variant-next"]').click();
   assert.deepEqual([...document.querySelectorAll('.message.user .message-bubble p')].map(item => item.textContent), ['branch A', 'branch C2']);
   dom.window.close();

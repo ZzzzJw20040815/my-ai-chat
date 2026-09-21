@@ -216,7 +216,7 @@ test('mobile long-message editor grows to a visual-viewport cap and keeps action
   editor.dispatchEvent(new window.Event('input', { bubbles: true }));
   assert.equal(editor.style.height, '380px');
   assert.equal(editor.style.overflowY, 'auto');
-  assert.deepEqual([...document.querySelectorAll('.edit-controls button')].map(button => button.textContent), ['Cancel', 'Save & resend']);
+  assert.deepEqual([...document.querySelectorAll('.edit-controls button')].map(button => button.textContent), ['取消', '保存并重新生成']);
   document.querySelector('[data-action="edit-cancel"]').click();
   assert.equal(document.querySelector('.edit-area'), null);
 

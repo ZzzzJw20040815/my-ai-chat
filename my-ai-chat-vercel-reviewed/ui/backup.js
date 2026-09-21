@@ -18,14 +18,18 @@ function invalid(message = 'This backup file could not be imported.') {
   throw new BackupValidationError(message);
 }
 
-function validateVariant(variant, variantIds) {
+function validateVariant(variant, variantIds, childSelections) {
   if (!isRecord(variant) || !validId(variant.id) || variantIds.has(variant.id)) invalid();
   if (typeof variant.content !== 'string' || !isValidDate(variant.createdAt)) invalid();
   if (!MESSAGE_STATUSES.has(variant.status) || (variant.model != null && !isPersistableModelId(variant.model))) invalid();
+  if (Object.hasOwn(variant, 'activeChildUserId')) {
+    if (!validId(variant.activeChildUserId)) invalid();
+    childSelections.push([variant.id, variant.activeChildUserId]);
+  }
   variantIds.add(variant.id);
 }
 
-function validateMessage(message, messageIds, userIds, variantIds) {
+function validateMessage(message, messageIds, userIds, variantIds, userParents, childSelections) {
   if (!isRecord(message) || !validId(message.id) || messageIds.has(message.id)) invalid();
   if (!['user', 'assistant'].includes(message.role) || typeof message.content !== 'string') invalid();
   if (!isValidDate(message.createdAt) || !MESSAGE_STATUSES.has(message.status)) invalid();
@@ -34,15 +38,21 @@ function validateMessage(message, messageIds, userIds, variantIds) {
   if (message.role === 'user') {
     userIds.add(message.id);
     if (Object.hasOwn(message, 'parentVariantId') && message.parentVariantId != null && !validId(message.parentVariantId)) invalid();
+    userParents.set(message.id, message.parentVariantId ?? null);
     return;
   }
   if (Object.hasOwn(message, 'parentUserId') && message.parentUserId != null && !validId(message.parentUserId)) invalid();
   if (Object.hasOwn(message, 'variants')) {
     if (!Array.isArray(message.variants) || !message.variants.length) invalid();
-    for (const variant of message.variants) validateVariant(variant, variantIds);
+    if (Object.hasOwn(message, 'activeChildUserId')) invalid();
+    for (const variant of message.variants) validateVariant(variant, variantIds, childSelections);
     if (!validId(message.activeVariantId) || !message.variants.some(variant => variant.id === message.activeVariantId)) invalid();
   } else {
     if (variantIds.has(message.id)) invalid();
+    if (Object.hasOwn(message, 'activeChildUserId')) {
+      if (!validId(message.activeChildUserId)) invalid();
+      childSelections.push([message.id, message.activeChildUserId]);
+    }
     variantIds.add(message.id);
   }
 }
@@ -52,12 +62,17 @@ function validateChat(chat, chatIds) {
   if (typeof chat.title !== 'string' || !chat.title || !isValidDate(chat.createdAt) || !isValidDate(chat.updatedAt)) invalid();
   if (!isPersistableModelId(chat.model) || !Array.isArray(chat.messages)) invalid();
   if (chat.folderId != null && !validId(chat.folderId)) invalid();
+  if (Object.hasOwn(chat, 'activeRootUserId') && !validId(chat.activeRootUserId)) invalid();
   chatIds.add(chat.id);
-  const messageIds = new Set(), userIds = new Set(), variantIds = new Set();
-  for (const message of chat.messages) validateMessage(message, messageIds, userIds, variantIds);
+  const messageIds = new Set(), userIds = new Set(), variantIds = new Set(), userParents = new Map(), childSelections = [];
+  for (const message of chat.messages) validateMessage(message, messageIds, userIds, variantIds, userParents, childSelections);
   for (const message of chat.messages) {
     if (message.role === 'user' && message.parentVariantId != null && !variantIds.has(message.parentVariantId)) invalid();
     if (message.role === 'assistant' && message.parentUserId != null && !userIds.has(message.parentUserId)) invalid();
+  }
+  if (chat.activeRootUserId != null && userParents.get(chat.activeRootUserId) !== null) invalid();
+  for (const [variantId, userId] of childSelections) {
+    if (userParents.get(userId) !== variantId) invalid();
   }
 }
 
