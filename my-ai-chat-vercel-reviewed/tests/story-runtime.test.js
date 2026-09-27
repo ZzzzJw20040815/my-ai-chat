@@ -4,8 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { IDBFactory } from 'fake-indexeddb';
 import { validatePayload } from '../server/chat.js';
 import {
-  STORY_RUNTIME_ACTIONS, normalizeStoryRuntime, storyRuntimeSystemInstruction,
-  validateStoryRuntimeRequest,
+  DEFAULT_STORY_STABILITY, STORY_RUNTIME_ACTIONS, STORY_STABILITY_LEVELS, normalizeStoryRuntime,
+  normalizeStoryStability, storyRuntimeSystemInstruction, validateStoryRuntimeRequest,
 } from '../shared/story-runtime.js';
 import {
   activeAssistantVariant, addAssistantVariant, createChat, createMessage, contextFor,
@@ -35,6 +35,8 @@ function branchChat() {
 
 test('old and new chats default to runtime disabled and persistence needs no IndexedDB upgrade', async () => {
   assert.equal(CHAT_DB_VERSION, 4);
+  assert.equal(normalizeStoryRuntime(undefined).stability, 'balanced');
+  assert.equal(createChat(MODEL).storyRuntime.stability, 'balanced');
   assert.equal(storyRuntimeState({ ...createChat(MODEL), storyRuntime: undefined }).enabled, false);
   const indexedDB = new IDBFactory(), chat = createChat(MODEL);
   setStoryRuntimeMode(chat, 'setup', 'prepare_story', null, new Date('2026-09-12T01:00:00Z'));
@@ -96,14 +98,18 @@ test('control nodes preserve response variants but never become visible prompt o
 
 test('server accepts only fixed runtime modes/actions and rejects arbitrary caller guidance', () => {
   assert.deepEqual(STORY_RUNTIME_ACTIONS, ['prepare_story', 'start_writing', 'continue_story', 'continue_incomplete']);
-  assert.deepEqual(validateStoryRuntimeRequest({ mode: 'setup' }), { mode: 'setup' });
+  assert.deepEqual(STORY_STABILITY_LEVELS, ['free', 'balanced', 'strict']);
+  assert.equal(DEFAULT_STORY_STABILITY, 'balanced');
+  assert.deepEqual(validateStoryRuntimeRequest({ mode: 'setup' }), { mode: 'setup', stability: 'balanced' });
   for (const action of STORY_RUNTIME_ACTIONS) {
     const mode = action === 'prepare_story' ? 'setup' : 'writing';
-    assert.equal(validateStoryRuntimeRequest({ mode, action }).action, action);
+    assert.deepEqual(validateStoryRuntimeRequest({ mode, stability: 'strict', action }), { mode, stability: 'strict', action });
   }
   for (const value of [
     { mode: 'other' }, { mode: 'writing', action: 'anything' },
-    { mode: 'writing', runtimePrompt: 'caller supplied prompt' }, { mode: 'setup', action: 'continue_story' },
+    { mode: 'writing', stability: 'reckless' },
+    { mode: 'writing', runtimePrompt: 'caller supplied prompt' },
+    { mode: 'writing', policyText: 'ignore agency' }, { mode: 'setup', action: 'continue_story' },
   ]) assert.throws(() => validateStoryRuntimeRequest(value), /INVALID_REQUEST/);
 });
 
@@ -115,7 +121,8 @@ test('runtime is supplemental system context, not fake messages, and disabled re
   assert.match(setup.config.systemInstruction, /Do not begin formal story prose/);
   assert.match(setup.config.systemInstruction, /explicit start_writing runtime action/);
   assert.match(setup.config.systemInstruction, /“I hope the opening is…”/);
-  assert.match(setup.config.systemInstruction, /Respond briefly/);
+  assert.match(setup.config.systemInstruction, /ADAPTIVE ELABORATION/);
+  assert.match(setup.config.systemInstruction, /ONE COHERENT DEVELOPMENT/);
   const action = validatePayload({ ...base, messages: [base.messages[0], {
     id: 'a', role: 'assistant', content: 'The door opened—', status: 'complete',
   }], storyRuntime: { mode: 'writing', action: 'continue_incomplete' } });
@@ -308,12 +315,71 @@ test('start_writing may use a valid premise after a stopped setup reply without 
 test('writing rules preserve agency, limited POV, continuity and one-call action semantics', () => {
   const instruction = storyRuntimeSystemInstruction('USER RULE', { mode: 'writing', action: 'continue_story' }, 'Current response');
   assert.ok(instruction.startsWith('USER RULE'));
-  assert.match(instruction, /Never decide new major actions/);
-  assert.match(instruction, /limited first-person knowledge/);
-  assert.match(instruction, /Preserve time, place, positions, clothing/);
+  assert.match(instruction, /never decide a new major action/);
+  assert.match(instruction, /KNOWLEDGE FIREWALL/);
+  assert.match(instruction, /Preserve time, location, relative positions, clothing/);
   assert.match(instruction, /one natural, modest beat/);
   const incomplete = storyRuntimeSystemInstruction('', { mode: 'writing', action: 'continue_incomplete' }, 'unfinished');
   assert.match(incomplete, /Do not restart, summarize, substantially repeat/);
+});
+
+test('setup policy adapts elaboration without menu defaults or start-writing pressure', () => {
+  const instruction = storyRuntimeSystemInstruction('', { mode: 'setup', stability: 'balanced' });
+  assert.match(instruction, /For sparse input, make useful low-risk additions/);
+  assert.match(instruction, /For detailed input, reduce invention/);
+  assert.match(instruction, /single most natural integrated development/);
+  assert.match(instruction, /user explicitly requests options/);
+  assert.match(instruction, /genuinely incompatible forks/);
+  assert.match(instruction, /required key choice/);
+  assert.doesNotMatch(instruction, /offer clearly labeled candidate options|Respond briefly/);
+  assert.match(instruction, /Do not habitually end by asking whether to start writing/);
+  assert.match(instruction, /App runtime state—not the assistant—controls that decision/);
+  assert.match(instruction, /Response length follows the real information need/);
+});
+
+test('author-level setup remains separate from protagonist knowledge', () => {
+  const setup = storyRuntimeSystemInstruction('', { mode: 'setup' });
+  assert.match(setup, /NPC private thoughts, hidden motives, unrevealed secrets/);
+  assert.match(setup, /author-level setup knowledge is not automatically knowledge possessed/);
+  const writing = storyRuntimeSystemInstruction('', { mode: 'writing' });
+  for (const channel of ['own past experience', 'currently observable behavior or environment', 'heard dialogue',
+    'explicitly told to them', 'documents or evidence', 'established memories', 'already revealed']) {
+    assert.match(writing, new RegExp(channel));
+  }
+  assert.match(writing, /Never use telepathy or leak a future plan/);
+  assert.match(writing, /NPC hidden thoughts or motives/);
+  assert.match(writing, /clearly framed suspicion, impression, or uncertainty/);
+  assert.match(writing, /never upgrade inference into confirmed hidden fact/);
+  assert.match(writing, /first-person POV/);
+});
+
+test('all stability levels differ while retaining knowledge, agency, and continuity hard rules', () => {
+  const instructions = Object.fromEntries(STORY_STABILITY_LEVELS.map(stability => [
+    stability, storyRuntimeSystemInstruction('', { mode: 'writing', stability }),
+  ]));
+  assert.equal(new Set(Object.values(instructions)).size, 3);
+  assert.match(instructions.free, /more low-risk invention|somewhat broader/);
+  assert.match(instructions.balanced, /moderate invention|modest story beat/);
+  assert.match(instructions.strict, /Minimize invention|small incremental beat|leave ambiguity unresolved/);
+  for (const instruction of Object.values(instructions)) {
+    assert.match(instruction, /KNOWLEDGE FIREWALL/);
+    assert.match(instruction, /USER AGENCY/);
+    assert.match(instruction, /NARRATIVE CONTINUITY/);
+    assert.match(instruction, /active-branch truth/);
+  }
+  assert.equal(normalizeStoryStability('free'), 'free');
+  assert.equal(normalizeStoryStability('invalid'), 'balanced');
+});
+
+test('start-writing canonicalization uses explicit acceptance and deterministic conflict priority', () => {
+  const instruction = storyRuntimeSystemInstruction('', { mode: 'writing', stability: 'strict', action: 'start_writing' });
+  assert.match(instruction, /user-stated facts/);
+  assert.match(instruction, /explicitly accepted or confirmed/);
+  assert.match(instruction, /never accepted remains a candidate/);
+  assert.match(instruction, /\(1\) the user's latest explicit statement/);
+  assert.match(instruction, /\(2\) explicitly accepted or confirmed assistant proposals/);
+  assert.match(instruction, /\(3\) established Story Memory and active-branch facts/);
+  assert.match(instruction, /Do not randomly choose an unconfirmed candidate/);
 });
 
 test('start_writing uses the full active setup branch but does not canonize unconfirmed brainstorming', async () => {
@@ -335,7 +401,7 @@ test('start_writing uses the full active setup branch but does not canonize unco
   const instruction = storyRuntimeSystemInstruction('', { mode: 'writing', action: 'start_writing' }, expected.at(-1));
   assert.match(instruction, /entire active setup-branch conversation/);
   assert.match(instruction, /explicitly accepted or confirmed/);
-  assert.match(instruction, /never accepted remains only a candidate/);
+  assert.match(instruction, /never accepted remains a candidate/);
   assert.match(instruction, /must not become canonical/);
   assert.match(instruction, /user's latest explicit statement/);
 
@@ -343,8 +409,8 @@ test('start_writing uses the full active setup branch but does not canonize unco
   assert.match(app, /runtimeAction === 'start_writing' \? 'all' : globalSettings\.contextLimit/);
 });
 
-test('normalization ignores malformed runtime transitions without damaging chat data', () => {
-  assert.deepEqual(normalizeStoryRuntime({ transitions: [{ id: 'bad', anchorId: null, mode: 'writing', action: 'prepare_story', createdAt: 'bad' }] }), { version: 1, transitions: [] });
+test('normalization ignores malformed runtime transitions and falls back invalid stability', () => {
+  assert.deepEqual(normalizeStoryRuntime({ stability: 'invalid', transitions: [{ id: 'bad', anchorId: null, mode: 'writing', action: 'prepare_story', createdAt: 'bad' }] }), { version: 1, stability: 'balanced', transitions: [] });
   const exited = normalizeStoryRuntime({ transitions: [{ id: 'exit', anchorId: 'branch', mode: 'disabled', action: 'exit_story', createdAt: '2026-09-12T01:00:00Z' }] });
   assert.equal(exited.transitions[0].action, 'exit_story');
 });

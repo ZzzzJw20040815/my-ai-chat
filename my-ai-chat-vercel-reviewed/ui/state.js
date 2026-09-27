@@ -185,7 +185,7 @@ export function createChat(model = DEFAULT_MODEL) {
   const createdAt = new Date().toISOString();
   return { id: uniqueId(), title: 'New conversation', model, folderId: null, createdAt, updatedAt: createdAt,
     group: 'Today', messages: [], draft: '', scrollTop: 0, demo: false, titleInitialized: false,
-    storyRuntime: { version: 1, transitions: [] } };
+    storyRuntime: { version: 1, stability: 'balanced', transitions: [] } };
 }
 // Include complete turns only. Failed/stopped partial responses never masquerade as valid context.
 export function contextFor(chat, userId, contextLimit = 'all') {

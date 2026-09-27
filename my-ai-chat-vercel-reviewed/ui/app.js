@@ -56,7 +56,8 @@ import { clearMobileSheetPosition, positionMobileSheet } from './mobile-sheet.js
 import { REGENERATION_REASON_OPTIONS, styleReferenceRequestItems } from '../shared/response-quality.js';
 import {
   continuationAvailability, createRuntimeControl, isRuntimeControlMessage, isVisibleRuntimeControlMessage,
-  regenerationRuntimeAction, runtimeControlLabel, setStoryRuntimeMode, storyRuntimeState,
+  regenerationRuntimeAction, runtimeControlLabel, setStoryRuntimeMode, setStoryRuntimeStability,
+  STORY_STABILITY_OPTIONS, storyRuntimeStability, storyRuntimeState,
 } from './story-runtime.js';
 import {
   scrollConversationToBottom, scrollToBottomVisible, shouldFollowStreaming,
@@ -533,6 +534,7 @@ async function generate(chat, user, existingTurn = null, existingVariant = null,
   }
   const job = { chatId: chat.id, messageId: assistant.id, variantId: variant.id, abort: new AbortController() };
   generation = job; syncComposer(); renderConversation(true);
+  const runtime = storyRuntimeState(chat);
   let readerResponse;
   try {
     readerResponse = await fetch('/api/chat', {
@@ -546,8 +548,8 @@ async function generate(chat, user, existingTurn = null, existingVariant = null,
         })(),
         styleReferences: styleReferenceRequestItems(styleReferences),
         ...(regenerationReason ? { regenerationReason } : {}),
-        ...(storyRuntimeState(chat).enabled ? { storyRuntime: {
-          mode: storyRuntimeState(chat).mode, ...(runtimeAction ? { action: runtimeAction } : {}),
+        ...(runtime.enabled ? { storyRuntime: {
+          mode: runtime.mode, stability: storyRuntimeStability(chat), ...(runtimeAction ? { action: runtimeAction } : {}),
         } } : {}),
         settings: requestSettings(globalSettings, modelCatalog.metadata(chat.model) || {
           source: 'discovered', capabilities: { thinkingLevels: [], samplingOverrides: false, safetySettings: false },
@@ -709,6 +711,14 @@ function storyMemoryFailureHtml(chatId) {
   return '<div class="story-memory-failure" role="status"><strong>上次更新失败：' + escapeHtml(failure.code) + '</strong>' +
     '<p>' + escapeHtml(failure.message) + '</p><small>错误代码：' + escapeHtml(failure.code) + '</small></div>';
 }
+function storyStabilityControl(chat) {
+  const selected = storyRuntimeStability(chat);
+  return '<section class="story-stability-control" aria-labelledby="storyStabilityLabel"><div><strong id="storyStabilityLabel">故事稳定度</strong>' +
+    '<small>控制补全与推进幅度，不改变已建立事实。</small></div><div class="story-stability-options" role="group" aria-label="故事稳定度">' +
+    STORY_STABILITY_OPTIONS.map(option => '<button type="button" data-story-stability="' + option.id + '" aria-pressed="' +
+      String(option.id === selected) + '"' + (option.id === selected ? ' class="active"' : '') + '>' + escapeHtml(option.label) + '</button>').join('') +
+    '</div></section>';
+}
 function storyStateContent(snapshot) {
   const view = storyPanelView(snapshot);
   if (!view) return '<div class="story-state-empty"><strong>尚未生成故事记忆</strong><p>更新记忆后，这里会显示当前分支中已经明确发生的故事状态。</p></div>';
@@ -757,13 +767,19 @@ function renderStoryMenu(viewName = 'overview') {
       storyAction('exit_story', '退出故事模式');
     menu.innerHTML = '<header class="story-menu-head"><div><strong>故事</strong><span>状态：' + status + '</span></div>' +
       '<button class="story-menu-close" type="button" data-close-story-menu aria-label="关闭">×</button></header>' +
-      storyMemoryFailureHtml(chat.id) + '<div class="story-menu-actions">' + actions + '</div>';
+      storyStabilityControl(chat) + storyMemoryFailureHtml(chat.id) + '<div class="story-menu-actions">' + actions + '</div>';
   }
   repositionActiveSurfaceMenu();
 }
 function openStoryMenu() {
   renderStoryMenu('overview'); showSurfaceMenu($('#storyMenu'));
   $('#mobileStoryButton').setAttribute('aria-expanded', 'true');
+}
+async function changeStoryStability(stability) {
+  const chat = current();
+  if (!setStoryRuntimeStability(chat, stability)) return;
+  renderStoryMenu($('#storyMenu').dataset.view || 'overview');
+  await persistChat(chat);
 }
 async function runStoryRuntimeAction(actionId) {
   if (generation) return;
@@ -1208,6 +1224,8 @@ $('#storyMenu').addEventListener('click', event => {
   if (event.target.closest('[data-story-menu-back]')) { renderStoryMenu('overview'); return; }
   if (event.target.closest('[data-open-story-state]')) { renderStoryMenu('state'); return; }
   if (event.target.closest('[data-update-story-memory]')) { void updateStoryMemory(); return; }
+  const stabilityButton = event.target.closest('[data-story-stability]');
+  if (stabilityButton) { void changeStoryStability(stabilityButton.dataset.storyStability); return; }
   const actionButton = event.target.closest('[data-story-runtime-action]');
   if (actionButton) void runStoryRuntimeAction(actionButton.dataset.storyRuntimeAction);
 });
