@@ -237,7 +237,9 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   assert.equal(payloads[0].settings.systemInstruction, '请始终简洁回答。');
   assert.equal(payloads[0].settings.maxOutputTokens, 2048);
   assert.equal(payloads[0].settings.thinkingLevel, 'high');
-  assert.equal(payloads[0].settings.samplingOverrides.enabled, true);
+  assert.equal(payloads[0].settings.samplingOverrides.enabled, false);
+  assert.equal(Object.hasOwn(payloads[0].settings.samplingOverrides, 'temperature'), false);
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).samplingOverrides.enabled, true);
   submitMessage('测试代码是什么？');
   await waitFor(async () => (await loadChats(indexedDB)).find(chat => !chat.demo)?.messages.length === 4);
   assert.ok(contexts.at(-1).includes('请记住测试代码 7263。'));
@@ -563,8 +565,12 @@ test('Mobile Display Settings apply immediately, preserve drafts, reload, and re
   dom.window.close(); await closeChatDatabase();
 });
 
-test('Sampling override toggle persists on supported models while Top K remains independently gated', async () => {
+test('deprecated sampling preference persists but curated models keep it model-managed', async () => {
   const indexedDB = new IDBFactory(); const { fetchMock } = createFetchMock(); const storage = createMemoryStorage();
+  storage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, JSON.stringify({
+    ...DEFAULT_GLOBAL_SETTINGS,
+    samplingOverrides: { enabled: true, temperature: 0.7, topP: 0.8, topK: 32 },
+  }));
   const settingsWrites = [];
   const setItem = storage.setItem.bind(storage);
   storage.setItem = (key, value) => {
@@ -579,47 +585,44 @@ test('Sampling override toggle persists on supported models while Top K remains 
   const temperature = document.querySelector('#temperatureSetting');
   const topP = document.querySelector('#topPSetting');
   const topK = document.querySelector('#topKSetting');
-  assert.equal(toggle.disabled, false);
-  assert.equal(toggle.checked, false);
+  assert.equal(toggle.disabled, true);
+  assert.equal(toggle.checked, true);
   assert.equal(fields.disabled, true);
   let changeEvents = 0;
   toggle.addEventListener('change', () => { changeEvents += 1; });
+  const writesBeforeDisabledClick = settingsWrites.length;
   toggle.click();
-  assert.equal(settingsWrites.at(-1)?.samplingOverrides.enabled, true);
-  assert.equal(changeEvents, 1);
+  assert.equal(settingsWrites.length, writesBeforeDisabledClick);
+  assert.equal(changeEvents, 0);
   assert.equal(toggle.checked, true);
-  assert.equal(fields.disabled, false);
-  assert.equal(temperature.matches(':disabled'), false);
-  assert.equal(topP.matches(':disabled'), false);
+  assert.equal(fields.disabled, true);
+  assert.equal(temperature.matches(':disabled'), true);
+  assert.equal(topP.matches(':disabled'), true);
   assert.equal(topK.disabled, true);
-  assert.match(document.querySelector('#topKSupport').textContent, /Not supported/);
+  assert.match(document.querySelector('#samplingSupport').textContent, /由当前聊天模型管理/);
   assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).samplingOverrides.enabled, true);
   document.querySelector('#generateSettingsCode').click();
   const exportedCode = document.querySelector('#settingsCodeOutput').value;
   assert.equal(JSON.parse(Buffer.from(exportedCode.split('.')[1], 'base64url').toString('utf8'))
     .globalSettings.samplingOverrides.enabled, true);
-  toggle.click();
-  assert.equal(toggle.checked, false);
-  assert.equal(fields.disabled, true);
-  toggle.click();
-
   dom.window.close(); await closeChatDatabase();
   dom = installDom(indexedDB, fetchMock, storage, true);
   await import('../ui/app.js?sampling-toggle=mobile-reload');
   document.querySelector('#settingsButton').click();
   assert.equal(document.querySelector('#samplingEnabledSetting').checked, true);
-  assert.equal(document.querySelector('#advancedFields').disabled, false);
+  assert.equal(document.querySelector('#samplingEnabledSetting').disabled, true);
+  assert.equal(document.querySelector('#advancedFields').disabled, true);
   document.querySelector('#resetGlobalSettings').click();
   assert.equal(document.querySelector('#samplingEnabledSetting').checked, false);
   assert.equal(document.querySelector('#advancedFields').disabled, true);
   dom.window.close(); await closeChatDatabase();
 });
 
-test('Sampling capability uses the displayed fallback model and unsupported discovered models explain the disabled toggle', async () => {
+test('generation capability presentation follows the current chat rather than the default model', async () => {
   const indexedDB = new IDBFactory(); const { fetchMock } = createFetchMock();
   let storage = createMemoryStorage();
   storage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, JSON.stringify({
-    ...DEFAULT_GLOBAL_SETTINGS, defaultModel: 'gemini-removed-model',
+    ...DEFAULT_GLOBAL_SETTINGS, defaultModel: 'gemini-removed-model', thinkingLevel: 'minimal',
   }));
   storage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify({ version: 1, models: [] }));
   storage.setItem(MODEL_CATALOG_SYNC_STORAGE_KEY, new Date().toISOString());
@@ -627,9 +630,13 @@ test('Sampling capability uses the displayed fallback model and unsupported disc
   await import('../ui/app.js?sampling-toggle=fallback-model');
   document.querySelector('#settingsButton').click();
   assert.equal(document.querySelector('#defaultModelSetting').value, 'gemini-3.1-pro-preview');
-  assert.equal(document.querySelector('#samplingEnabledSetting').disabled, false);
+  assert.match(document.querySelector('#currentChatModelSetting').textContent, /Gemini 3.1 Pro/);
+  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'minimal');
+  assert.equal(document.querySelector('#thinkingLevelSetting option[value="minimal"]').disabled, true);
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'minimal');
+  assert.equal(document.querySelector('#samplingEnabledSetting').disabled, true);
   document.querySelector('#samplingEnabledSetting').click();
-  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).samplingOverrides.enabled, true);
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).samplingOverrides.enabled, false);
   dom.window.close(); await closeChatDatabase();
 
   const discovered = {
@@ -648,8 +655,15 @@ test('Sampling capability uses the displayed fallback model and unsupported disc
   document.querySelector('#settingsButton').click();
   const toggle = document.querySelector('#samplingEnabledSetting');
   assert.equal(document.querySelector('#defaultModelSetting').value, discovered.id);
+  assert.match(document.querySelector('#currentChatModelSetting').textContent, /Gemini 3.1 Pro/);
   assert.equal(toggle.disabled, true);
-  assert.match(document.querySelector('#samplingSupport').textContent, /not supported by the selected default model/i);
+  assert.match(document.querySelector('#samplingSupport').textContent, /由当前聊天模型管理/);
+  document.querySelector('#settingsDialog').close();
+  document.querySelector('#newChatButton').click();
+  document.querySelector('#settingsButton').click();
+  assert.equal(document.querySelector('#currentChatModelSetting').textContent, discovered.name);
+  assert.match(document.querySelector('#maxOutputTokensSupport').textContent, /32,768/);
+  assert.equal(document.querySelector('#safetyModeSetting').disabled, true);
   toggle.click();
   assert.equal(toggle.checked, false);
   assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).samplingOverrides.enabled, false);
@@ -702,9 +716,10 @@ test('Settings Code import is validated first, applies atomically, preserves cha
   assert.equal(document.documentElement.dataset.mobileDensity, 'compact');
   assert.equal(document.documentElement.dataset.chatTextSize, 'small');
   assert.equal(document.querySelector('#samplingEnabledSetting').checked, true);
-  assert.equal(document.querySelector('#advancedFields').disabled, false);
-  assert.equal(document.querySelector('#temperatureSetting').matches(':disabled'), false);
-  assert.equal(document.querySelector('#topPSetting').matches(':disabled'), false);
+  assert.equal(document.querySelector('#samplingEnabledSetting').disabled, true);
+  assert.equal(document.querySelector('#advancedFields').disabled, true);
+  assert.equal(document.querySelector('#temperatureSetting').matches(':disabled'), true);
+  assert.equal(document.querySelector('#topPSetting').matches(':disabled'), true);
   assert.equal(document.querySelector('#topKSetting').disabled, true);
   assert.equal(document.querySelector('#systemInstructionSetting').value, imported.systemInstruction);
   assert.equal(document.querySelector('#currentModel').textContent, existingModel);

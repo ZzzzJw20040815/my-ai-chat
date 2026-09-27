@@ -395,6 +395,8 @@ html[data-theme="light"] .moon-icon { display: none; }
 .setting-field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(170px, 220px); align-items: center; gap: 20px; padding: 14px 0; border-top: 1px solid var(--border); }
 .setting-field > span:first-child { min-width: 0; }
 .setting-field strong, .toggle-row strong { display: block; font-size: 14px; }
+.current-model-context > strong:last-child { min-width: 0; color: var(--accent-strong); text-align: right; overflow-wrap: anywhere; }
+.generation-settings-note { padding: 0 0 14px; }
 .setting-field small, .toggle-row small, .compact-field small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .setting-field select, .setting-field input, .setting-field textarea, .compact-field input {
   min-width: 0; padding: 9px 10px; border: 1px solid var(--border-strong); border-radius: 8px;
@@ -661,6 +663,7 @@ html[data-theme="light"] .moon-icon { display: none; }
   .settings-section { padding-top: var(--mobile-section-spacing); }
   .settings-section + .settings-section { margin-top: var(--mobile-section-gap); }
   .setting-field { grid-template-columns: 1fr; gap: var(--mobile-setting-field-gap); padding: var(--mobile-setting-field-padding) 0; }
+  .current-model-context > strong:last-child { text-align: left; }
   .setting-field select, .setting-field input { width: 100%; }
   .setting-field select, .setting-field input, .setting-field textarea, .compact-field input { font-size: 16px; }
   .advanced-fields { grid-template-columns: 1fr 1fr; }

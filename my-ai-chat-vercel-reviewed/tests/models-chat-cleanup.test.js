@@ -14,7 +14,7 @@ const expected = [
   ['gemini-3.5-flash', 'stable', ['minimal', 'low', 'medium', 'high']],
   ['gemini-3-flash-preview', 'preview', ['minimal', 'low', 'medium', 'high']],
   ['gemini-3.5-flash-lite', 'stable', ['minimal', 'low', 'medium', 'high']],
-  ['gemini-3.1-flash-lite', 'stable', ['high']],
+  ['gemini-3.1-flash-lite', 'stable', ['minimal', 'low', 'medium', 'high']],
 ];
 const testEnv = { GEMINI_API_KEY: 'unit-test-sentinel-not-a-key' };
 
@@ -24,6 +24,8 @@ test('unified model metadata contains every approved API ID and capability', () 
     assert.equal(isAllowedModel(id), true);
     assert.equal(modelMetadata(id).capabilities.topK, false);
     assert.equal(modelMetadata(id).capabilities.safetySettings, true);
+    assert.equal(modelMetadata(id).capabilities.samplingOverrides, false);
+    assert.equal(modelMetadata(id).capabilities.outputTokenLimit, 65536);
   }
   assert.equal(DEFAULT_GLOBAL_SETTINGS.defaultModel, 'gemini-3.1-pro-preview');
 });
@@ -39,10 +41,9 @@ test('capability validation never emits unsupported thinking or Top K settings',
         assert.throws(() => validateGenerationSettings({ thinkingLevel: level }, model.id), /INVALID_REQUEST/);
       }
     }
-    const sampling = validateGenerationSettings({
+    assert.throws(() => validateGenerationSettings({
       samplingOverrides: { enabled: true, temperature: 1, topP: 0.95, topK: 40 },
-    }, model.id);
-    assert.ok(!('topK' in sampling));
+    }, model.id), /INVALID_REQUEST/);
   }
 });
 

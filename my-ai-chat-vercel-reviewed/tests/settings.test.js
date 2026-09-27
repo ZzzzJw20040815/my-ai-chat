@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { validateGenerationSettings, validatePayload } from '../server/chat.js';
-import { MODELS } from '../shared/models.js';
+import { MODELS, modelMetadata } from '../shared/models.js';
 import {
   CHAT_TEXT_SIZES, DEFAULT_GLOBAL_SETTINGS, GLOBAL_SETTINGS_STORAGE_KEY, MOBILE_DENSITIES, normalizeGlobalSettings,
 } from '../shared/settings.js';
@@ -81,24 +81,26 @@ test('server maps only validated settings into official Gemini config', () => {
     systemInstruction: 'Answer concisely.',
     maxOutputTokens: 2048,
     thinkingLevel: 'high',
-    samplingOverrides: { enabled: true, temperature: 0.7, topP: 0.8, topK: 40 },
-    endpoint: 'https://evil.example', apiKey: 'never', unknown: true,
+    samplingOverrides: { enabled: false },
   }, FLASH);
   assert.deepEqual(config, {
     systemInstruction: 'Answer concisely.', maxOutputTokens: 2048,
-    thinkingConfig: { thinkingLevel: 'HIGH' }, temperature: 0.7, topP: 0.8,
+    thinkingConfig: { thinkingLevel: 'HIGH' },
   });
-  assert.ok(!('topK' in config));
-  assert.ok(!('endpoint' in config));
-  assert.ok(!('apiKey' in config));
+  assert.throws(() => validateGenerationSettings({ endpoint: 'https://evil.example' }, FLASH), /INVALID_REQUEST/);
+  assert.throws(() => validateGenerationSettings({ apiKey: 'never' }, FLASH), /INVALID_REQUEST/);
+  assert.throws(() => validateGenerationSettings({ unknown: true }, FLASH), /INVALID_REQUEST/);
 });
 
-test('model defaults omit generation overrides and sampling OFF ignores numeric values', () => {
+test('model defaults omit generation overrides and sampling values remain strictly validated', () => {
   assert.deepEqual(validateGenerationSettings(undefined, PRO), {});
   assert.deepEqual(validateGenerationSettings({
     systemInstruction: '', maxOutputTokens: null, thinkingLevel: 'default',
-    samplingOverrides: { enabled: false, temperature: 99, topP: -1, topK: -1 },
+    samplingOverrides: { enabled: false },
   }, PRO), {});
+  assert.throws(() => validateGenerationSettings({
+    samplingOverrides: { enabled: false, temperature: 99, topP: -1, topK: -1 },
+  }, PRO), /INVALID_REQUEST/);
   const clientSettings = requestSettings(DEFAULT_GLOBAL_SETTINGS);
   assert.equal(clientSettings.maxOutputTokens, null);
   assert.equal(clientSettings.thinkingLevel, 'default');
@@ -106,11 +108,58 @@ test('model defaults omit generation overrides and sampling OFF ignores numeric 
   assert.equal(Object.hasOwn(clientSettings, 'mobileDisplay'), false);
 });
 
+test('client request settings use current model capabilities and fail closed', () => {
+  const preferences = {
+    ...DEFAULT_GLOBAL_SETTINGS,
+    defaultModel: PRO,
+    maxOutputTokens: 4096,
+    thinkingLevel: 'minimal',
+    samplingOverrides: { enabled: true, temperature: 0.7, topP: 0.8, topK: 32 },
+    safetySettings: { ...DEFAULT_GLOBAL_SETTINGS.safetySettings, mode: 'custom' },
+  };
+  const flash = requestSettings(preferences, modelMetadata(FLASH));
+  assert.equal(flash.thinkingLevel, 'default');
+  assert.equal(flash.maxOutputTokens, 4096);
+  assert.deepEqual(flash.samplingOverrides, { enabled: false });
+  assert.equal(flash.safetySettings.mode, 'custom');
+
+  const minimalModel = requestSettings(preferences, modelMetadata('gemini-3.6-flash'));
+  assert.equal(minimalModel.thinkingLevel, 'minimal');
+  const missing = requestSettings(preferences, null);
+  assert.deepEqual(missing, {
+    systemInstruction: '', maxOutputTokens: null, thinkingLevel: 'default',
+    samplingOverrides: { enabled: false }, safetySettings: { mode: 'default' },
+  });
+  const tooLarge = requestSettings({ ...preferences, maxOutputTokens: 65536 }, {
+    id: 'gemini-discovered', capabilities: {
+      thinkingLevels: [], samplingOverrides: false, safetySettings: false, outputTokenLimit: 32768,
+    },
+  });
+  assert.equal(tooLarge.maxOutputTokens, null);
+  assert.equal(tooLarge.safetySettings.mode, 'default');
+});
+
+test('server uses trusted output and safety limits for incomplete metadata', () => {
+  const conservative = {
+    id: 'gemini-discovered', capabilities: {
+      thinkingLevels: [], samplingOverrides: false, safetySettings: false, outputTokenLimit: 32768,
+    },
+  };
+  assert.deepEqual(validateGenerationSettings({ maxOutputTokens: 32768 }, conservative), { maxOutputTokens: 32768 });
+  assert.throws(() => validateGenerationSettings({ maxOutputTokens: 32769 }, conservative), /INVALID_REQUEST/);
+  assert.throws(() => validateGenerationSettings({ thinkingLevel: 'low' }, conservative), /INVALID_REQUEST/);
+  assert.throws(() => validateGenerationSettings({
+    safetySettings: { ...DEFAULT_GLOBAL_SETTINGS.safetySettings, mode: 'custom' },
+  }, conservative), /INVALID_REQUEST/);
+});
+
 test('server rejects invalid known parameters and unsupported thinking levels', () => {
   for (const settings of [
     { systemInstruction: 'x'.repeat(20001) },
     { maxOutputTokens: 0 }, { maxOutputTokens: 999999 }, { maxOutputTokens: 1.5 },
     { thinkingLevel: 'minimal' }, { thinkingLevel: 'extreme' },
+    { samplingOverrides: { enabled: true, temperature: 1, topP: 0.9 } },
+    { samplingOverrides: { enabled: false, unknown: 1 } },
     { samplingOverrides: { enabled: true, temperature: -1, topP: 0.9, topK: 40 } },
     { samplingOverrides: { enabled: true, temperature: 1, topP: 2, topK: 40 } },
   ]) assert.throws(() => validateGenerationSettings(settings, PRO), /INVALID_REQUEST/);

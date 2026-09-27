@@ -42,8 +42,9 @@ export function sanitizeListedModel(raw) {
       thinking: raw.thinking === true,
       topK: typeof raw.topK === 'number' && Number.isFinite(raw.topK),
       safetySettings: false,
-      // The current UI edits temperature and Top P together, so both must be explicit.
-      samplingOverrides: maxTemperature !== null && topP !== null,
+      // Provider sampling metadata is descriptive only. Gemini 3 sampling
+      // overrides are deprecated, so discovered models remain model-managed.
+      samplingOverrides: false,
       outputTokenLimit: Number.isInteger(raw.outputTokenLimit) && raw.outputTokenLimit > 0 ? raw.outputTokenLimit : null,
       maxTemperature,
       topP,

@@ -109,14 +109,16 @@ export function validateGenerationSettings(value, modelOrMetadata) {
   if (!metadata?.capabilities) invalidRequest();
   if (value === undefined) return {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalidRequest();
+  const allowedSettingsKeys = new Set(['systemInstruction', 'maxOutputTokens', 'thinkingLevel', 'samplingOverrides', 'safetySettings']);
+  if (Object.keys(value).some(key => !allowedSettingsKeys.has(key))) invalidRequest();
   const config = {};
   if ('systemInstruction' in value) {
     if (typeof value.systemInstruction !== 'string' || value.systemInstruction.length > MAX_SYSTEM_INSTRUCTION_LENGTH) invalidRequest();
     if (value.systemInstruction.trim()) config.systemInstruction = value.systemInstruction;
   }
   if ('maxOutputTokens' in value && value.maxOutputTokens !== null) {
-    const modelLimit = Number.isInteger(metadata.capabilities.outputTokenLimit)
-      ? Math.min(MAX_OUTPUT_TOKENS_LIMIT, metadata.capabilities.outputTokenLimit) : MAX_OUTPUT_TOKENS_LIMIT;
+    if (!Number.isInteger(metadata.capabilities.outputTokenLimit) || metadata.capabilities.outputTokenLimit < 1) invalidRequest();
+    const modelLimit = Math.min(MAX_OUTPUT_TOKENS_LIMIT, metadata.capabilities.outputTokenLimit);
     if (!Number.isInteger(value.maxOutputTokens) || value.maxOutputTokens < 1 || value.maxOutputTokens > modelLimit) invalidRequest();
     config.maxOutputTokens = value.maxOutputTokens;
   }
@@ -128,15 +130,19 @@ export function validateGenerationSettings(value, modelOrMetadata) {
   if ('samplingOverrides' in value) {
     const sampling = value.samplingOverrides;
     if (!sampling || typeof sampling !== 'object' || Array.isArray(sampling) || typeof sampling.enabled !== 'boolean') invalidRequest();
+    const allowedSamplingKeys = new Set(['enabled', 'temperature', 'topP', 'topK']);
+    if (Object.keys(sampling).some(key => !allowedSamplingKeys.has(key))) invalidRequest();
+    if ('temperature' in sampling && !validNumber(sampling.temperature, SAMPLING_LIMITS.temperature)) invalidRequest();
+    if ('topP' in sampling && !validNumber(sampling.topP, SAMPLING_LIMITS.topP)) invalidRequest();
+    if ('topK' in sampling && (!Number.isInteger(sampling.topK) || !validNumber(sampling.topK, SAMPLING_LIMITS.topK))) invalidRequest();
     if (sampling.enabled) {
       if (metadata.capabilities.samplingOverrides !== true) invalidRequest();
-      if (!validNumber(sampling.temperature, SAMPLING_LIMITS.temperature)
-        || !validNumber(sampling.topP, SAMPLING_LIMITS.topP)) invalidRequest();
+      if (!Object.hasOwn(sampling, 'temperature') || !Object.hasOwn(sampling, 'topP')) invalidRequest();
       if (typeof metadata.capabilities.maxTemperature === 'number' && sampling.temperature > metadata.capabilities.maxTemperature) invalidRequest();
       config.temperature = sampling.temperature;
       config.topP = sampling.topP;
-      if (metadata.capabilities.topK) {
-        if (!Number.isInteger(sampling.topK) || !validNumber(sampling.topK, SAMPLING_LIMITS.topK)) invalidRequest();
+      if (Object.hasOwn(sampling, 'topK')) {
+        if (!metadata.capabilities.topK) invalidRequest();
         config.topK = sampling.topK;
       }
     }

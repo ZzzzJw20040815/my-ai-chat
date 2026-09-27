@@ -7,6 +7,7 @@ import {
   normalizeGlobalSettings,
 } from '../shared/settings.js';
 import { createMessage } from '../ui/state.js';
+import { modelMetadata } from '../shared/models.js';
 import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from '../ui/settings.js';
 
 const MODEL = 'gemini-3.7-flash';
@@ -49,7 +50,7 @@ test('custom safety settings persist across reload and Reset restores defaults',
   assert.deepEqual(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).safetySettings, safetySettings);
   assert.deepEqual(resetGlobalSettings(storage).safetySettings, DEFAULT_GLOBAL_SETTINGS.safetySettings);
   assert.deepEqual(loadGlobalSettings(storage).safetySettings, DEFAULT_GLOBAL_SETTINGS.safetySettings);
-  assert.deepEqual(requestSettings(saved).safetySettings, safetySettings);
+  assert.deepEqual(requestSettings(saved, modelMetadata(MODEL)).safetySettings, safetySettings);
 });
 
 test('all five UI levels map to the official Gemini thresholds', () => {

@@ -173,6 +173,11 @@
             <span><strong>Default Model</strong><small>Used only when creating a new chat.</small></span>
             <select id="defaultModelSetting" aria-label="Default model"></select>
           </label>
+          <div class="setting-field current-model-context">
+            <span><strong>Current Chat Model</strong><small>Generation settings below are applied only when this model supports them.</small></span>
+            <strong id="currentChatModelSetting"></strong>
+          </div>
+          <p class="settings-intro generation-settings-note">不支持的生成设置会自动使用当前聊天模型的默认值；保存的全局偏好不会被删除。</p>
           <label class="setting-field setting-field-stack">
             <span><strong>System Instruction</strong><small>Sent as Gemini system instruction for future requests.</small></span>
             <textarea id="systemInstructionSetting" rows="5" maxlength="20000" placeholder="e.g. You are a senior novel editor…"></textarea>
@@ -188,11 +193,11 @@
             </select>
           </label>
           <label class="setting-field">
-            <span><strong>Max Output Tokens</strong><small>Leave blank to use the model default.</small></span>
+            <span><strong>Max Output Tokens</strong><small id="maxOutputTokensSupport">Leave blank to use the model default.</small></span>
             <input id="maxOutputTokensSetting" type="number" min="1" max="65536" step="1" inputmode="numeric" placeholder="Default" />
           </label>
           <label class="setting-field">
-            <span><strong>Thinking Level</strong><small>Default uses the model's own value.</small></span>
+            <span><strong>Thinking Level</strong><small id="thinkingSupport">Default uses the model's own value.</small></span>
             <select id="thinkingLevelSetting">
               <option value="default">Default</option>
               <option value="minimal">Minimal</option>
@@ -203,7 +208,7 @@
           </label>
           <div class="advanced-settings">
             <label class="toggle-row">
-              <span><strong>Override sampling defaults</strong><small id="samplingSupport">For Gemini 3.x, model defaults are recommended.</small></span>
+              <span><strong>Sampling</strong><small id="samplingSupport">由当前聊天模型管理。</small></span>
               <input id="samplingEnabledSetting" type="checkbox" role="switch" aria-describedby="samplingSupport" />
             </label>
             <fieldset class="advanced-fields" id="advancedFields">
