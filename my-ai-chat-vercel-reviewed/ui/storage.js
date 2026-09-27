@@ -1,5 +1,5 @@
 import { DEFAULT_MODEL, isPersistableModelId } from '../shared/models.js';
-import { ensureBranchLineage } from './state.js';
+import { ensureBranchLineage, sanitizeUserChildSelections } from './state.js';
 import { validateStoryMemory, STORY_MEMORY_SCHEMA_VERSION } from '../shared/story-memory.js';
 import { isStoryRuntimeAction, normalizeStoryRuntime } from '../shared/story-runtime.js';
 
@@ -13,6 +13,7 @@ export const WALLPAPER_ASSET_ID = 'chat-wallpaper';
 export const CANONICAL_DEMO_ID = 'demo-welcome';
 
 let sharedDatabase;
+const validSelectionId = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
 
 function requestResult(request) {
   return new Promise((resolve, reject) => {
@@ -83,6 +84,7 @@ function normalizeAssistantVariant(variant) {
     ...(typeof variant.error === 'string' ? { error: variant.error } : {}),
     ...(typeof variant.notice === 'string' ? { notice: variant.notice } : {}),
     ...(['complete', 'max_tokens'].includes(variant.completionReason) ? { completionReason: variant.completionReason } : {}),
+    ...(validSelectionId(variant.activeChildUserId) ? { activeChildUserId: variant.activeChildUserId } : {}),
   };
 }
 
@@ -105,6 +107,8 @@ function normalizeMessage(message) {
     normalized.activeVariantId = normalized.variants.some(variant => variant.id === String(message.activeVariantId))
       ? String(message.activeVariantId)
       : normalized.variants[0].id;
+  } else if (normalized.role === 'assistant' && validSelectionId(message.activeChildUserId)) {
+    normalized.activeChildUserId = message.activeChildUserId;
   }
   if (normalized.role === 'user' && Object.hasOwn(message, 'parentVariantId')) {
     normalized.parentVariantId = message.parentVariantId == null ? null : String(message.parentVariantId);
@@ -134,9 +138,10 @@ export function storedChat(chat) {
     // Records created before timestamp titles have no flag, so their existing title stays locked.
     titleInitialized: chat.titleInitialized === false ? false : true,
     storyRuntime: normalizeStoryRuntime(chat.storyRuntime),
+    ...(validSelectionId(chat.activeRootUserId) ? { activeRootUserId: chat.activeRootUserId } : {}),
   };
   ensureBranchLineage(stored);
-  return stored;
+  return sanitizeUserChildSelections(stored);
 }
 
 export async function loadChats(indexedDBApi = globalThis.indexedDB) {

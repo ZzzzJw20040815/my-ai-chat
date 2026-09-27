@@ -11,14 +11,14 @@ import {
   contextFor,
   ensureBranchLineage,
   formatLocalChatTitle,
-  removeUserDescendants,
+  selectUserChild,
   uniqueId,
+  userSiblingTurns,
   visibleAssistantTurn,
   visibleConversationPath,
 } from './state.js';
 import {
   CANONICAL_DEMO_ID,
-  deleteStoryMemoriesByAnchors,
   deleteStyleReference,
   deleteWallpaperAsset,
   loadOrSeedChats,
@@ -49,7 +49,6 @@ import {
   runStoryMemoryUpdate,
   storyMemoryErrorMessage,
   storyMemoryConversation,
-  storySubtreeAnchorIds,
 } from './story-memory.js';
 import { storyPanelView } from './story-panel.js';
 import { hasMeaningfulStoryMemory } from '../shared/story-memory.js';
@@ -57,7 +56,7 @@ import { clearMobileSheetPosition, positionMobileSheet } from './mobile-sheet.js
 import { REGENERATION_REASON_OPTIONS, styleReferenceRequestItems } from '../shared/response-quality.js';
 import {
   continuationAvailability, createRuntimeControl, isRuntimeControlMessage, isVisibleRuntimeControlMessage,
-  pruneStoryRuntimeTransitions, regenerationRuntimeAction, runtimeControlLabel, setStoryRuntimeMode, storyRuntimeState,
+  regenerationRuntimeAction, runtimeControlLabel, setStoryRuntimeMode, storyRuntimeState,
 } from './story-runtime.js';
 import {
   scrollConversationToBottom, scrollToBottomVisible, shouldFollowStreaming,
@@ -165,9 +164,15 @@ function messageHtml(message) {
     const draftContent = editDraft?.chatId === activeChat && editDraft.messageId === message.id
       ? editDraft.draftContent : message.content;
     if (editingId === message.id) return '<div class="edit-area"><textarea aria-label="Edit message" maxlength="50000">' + escapeHtml(draftContent) +
-      '</textarea><p class="edit-note">Saving starts a revised turn; later replies in this chat are removed.</p><div class="edit-controls"><button class="small-button" data-action="edit-cancel">Cancel</button><button class="small-button primary" data-action="edit-save">Save & resend</button></div></div>';
+      '</textarea><p class="edit-note">保存后会创建新的用户分支，原消息和后续回复都会保留。</p><div class="edit-controls"><button class="small-button" data-action="edit-cancel">取消</button><button class="small-button primary" data-action="edit-save">保存并重新生成</button></div></div>';
+    const siblings = userSiblingTurns(current(), message);
+    const siblingIndex = Math.max(0, siblings.findIndex(item => item.id === message.id));
+    const navigationBusy = busy || !!editingId || storyMemoryBusy;
+    const userVariantNav = siblings.length > 1 ? '<span class="variant-nav" aria-label="用户消息分支"><button data-action="user-variant-prev" aria-label="上一个用户消息分支" title="上一个用户消息分支"' +
+      (navigationBusy || siblingIndex === 0 ? ' disabled' : '') + '>‹</button><span>' + (siblingIndex + 1) + ' / ' + siblings.length + '</span><button data-action="user-variant-next" aria-label="下一个用户消息分支" title="下一个用户消息分支"' +
+      (navigationBusy || siblingIndex === siblings.length - 1 ? ' disabled' : '') + '>›</button></span>' : '';
     return '<div class="message-bubble"><p>' + escapeHtml(message.content) + '</p></div><div class="message-actions">' +
-      action('edit', 'Edit', icons.edit, false, busy) + action('copy', 'Copy', icons.copy) + '</div>';
+      action('edit', 'Edit', icons.edit, false, busy || storyMemoryBusy) + action('copy', 'Copy', icons.copy) + userVariantNav + '</div>';
   }
   const variant = activeAssistantVariant(message);
   const variants = Array.isArray(message.variants) && message.variants.length ? message.variants : [message];
@@ -314,7 +319,7 @@ function clearHistoricalEdit() {
 
 async function updateStoryMemory() {
   const chat = current();
-  if (storyMemoryBusy || generation || !chat) return;
+  if (storyMemoryBusy || generation || editingId || !chat) return;
   let stage = 'planning';
   storyMemoryBusy = true; renderConversation();
   if (!$('#storyMenu').hidden) renderStoryMenu($('#storyMenu').dataset.view || 'overview');
@@ -771,6 +776,7 @@ async function runStoryRuntimeAction(actionId) {
     || (actionId !== 'start_writing' && continuationAvailability(chat, false).action !== actionId)) return;
   const control = createRuntimeControl(actionId, variant.id);
   chat.messages.push(control);
+  selectUserChild(chat, control.id);
   if (actionId === 'start_writing') setStoryRuntimeMode(chat, 'writing', actionId, control.id);
   closeRuntimeMenu(); closeStoryMenu(); renderConversation(true); await persistChat(chat);
   void generate(chat, control, null, null, null, actionId);
@@ -801,6 +807,7 @@ $('#composerForm').addEventListener('submit', async event => {
   const leafAssistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
   user.parentVariantId = leafAssistant ? activeAssistantVariant(leafAssistant).id : null;
   chat.messages.push(user);
+  selectUserChild(chat, user.id);
   if (!chat.demo && chat.titleInitialized === false && chat.messages.length === 1) {
     chat.title = formatLocalChatTitle(user.createdAt);
     chat.titleInitialized = true;
@@ -1117,8 +1124,16 @@ conversation.addEventListener('click', async event => {
       message.activeVariantId = message.variants[next].id;
       renderConversation(); void persistChat(chat); break;
     }
+    case 'user-variant-prev': case 'user-variant-next': {
+      if (generation || editingId || storyMemoryBusy) return;
+      const siblings = userSiblingTurns(chat, message);
+      const index = siblings.findIndex(user => user.id === message.id);
+      const next = index + (button.dataset.action === 'user-variant-next' ? 1 : -1);
+      if (index < 0 || next < 0 || next >= siblings.length || !selectUserChild(chat, siblings[next].id)) return;
+      renderConversation(); void persistChat(chat); break;
+    }
     case 'edit':
-      if (generation) return;
+      if (generation || storyMemoryBusy) return;
       beginHistoricalEdit(chat, message); syncComposer(); renderConversation();
       {
         const editor = $('textarea', $('[data-message-id="' + message.id + '"]'));
@@ -1127,21 +1142,21 @@ conversation.addEventListener('click', async event => {
       break;
     case 'edit-cancel': clearHistoricalEdit(); syncComposer(); renderConversation(); break;
     case 'edit-save': {
-      if (generation) return;
+      if (generation || storyMemoryBusy) return;
       const editor = $('textarea', article);
       if (editDraft?.chatId === chat.id && editDraft.messageId === message.id) editDraft.draftContent = editor.value;
       const value = (editDraft?.draftContent ?? editor.value).trim(); if (!value) return;
-      const prunedAnchors = storySubtreeAnchorIds(chat, message.id);
-      const hasStoredMemory = storyMemorySnapshots.some(snapshot => snapshot.chatId === chat.id && prunedAnchors.has(snapshot.anchorId));
-      if (!storyMemoryLoaded || hasStoredMemory) {
-        try { await deleteStoryMemoriesByAnchors(chat.id, prunedAnchors); }
-        catch { toast('Could not revise this branch because local memory cleanup failed.'); return; }
+      if (value === message.content.trim()) {
+        clearHistoricalEdit(); syncComposer(); renderConversation(); break;
       }
-      storyMemorySnapshots = storyMemorySnapshots.filter(snapshot => snapshot.chatId !== chat.id || !prunedAnchors.has(snapshot.anchorId));
-      pruneStoryRuntimeTransitions(chat, prunedAnchors);
-      message.content = value; message.updatedAt = new Date().toISOString();
-      removeUserDescendants(chat, message.id); clearHistoricalEdit(); renderConversation(true);
-      await persistChat(chat); void generate(chat, message); break;
+      const revision = createMessage('user', value);
+      revision.parentVariantId = message.parentVariantId ?? null;
+      chat.messages.push(revision);
+      if (!selectUserChild(chat, revision.id)) {
+        chat.messages.pop(); toast('无法创建新的用户分支。'); return;
+      }
+      clearHistoricalEdit(); syncComposer(); renderConversation(true);
+      await persistChat(chat); void generate(chat, revision); break;
     }
   }
 });

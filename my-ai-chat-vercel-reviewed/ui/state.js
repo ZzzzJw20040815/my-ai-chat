@@ -25,6 +25,7 @@ function responseVariant(message) {
     ...(typeof message.error === 'string' ? { error: message.error } : {}),
     ...(typeof message.notice === 'string' ? { notice: message.notice } : {}),
     ...(['complete', 'max_tokens'].includes(message.completionReason) ? { completionReason: message.completionReason } : {}),
+    ...(typeof message.activeChildUserId === 'string' ? { activeChildUserId: message.activeChildUserId } : {}),
   };
 }
 export function activeAssistantVariant(message) {
@@ -37,9 +38,11 @@ export function ensureAssistantVariants(message) {
     const legacyVariant = responseVariant(message);
     message.variants = [legacyVariant];
     message.activeVariantId = legacyVariant.id;
+    delete message.activeChildUserId;
   } else if (!message.variants.some(variant => variant.id === message.activeVariantId)) {
     message.activeVariantId = message.variants[0].id;
   }
+  if (Array.isArray(message.variants) && message.variants.length) delete message.activeChildUserId;
   return message.variants;
 }
 export function addAssistantVariant(message, variantMessage) {
@@ -56,6 +59,64 @@ export function assistantVariantById(message, variantId) {
 export function assistantVariants(message) {
   if (message?.role !== 'assistant') return [];
   return Array.isArray(message.variants) && message.variants.length ? message.variants : [message];
+}
+export function userChildrenForParent(chat, parentVariantId) {
+  ensureBranchLineage(chat);
+  return chat.messages.filter(message => message.role === 'user'
+    && (message.parentVariantId ?? null) === (parentVariantId ?? null));
+}
+function assistantVariantOwner(chat, variantId) {
+  for (const message of chat.messages) {
+    if (message.role !== 'assistant') continue;
+    const variant = assistantVariantById(message, variantId);
+    if (variant) return variant;
+  }
+  return null;
+}
+export function activeUserChild(chat, parentVariantId) {
+  const children = userChildrenForParent(chat, parentVariantId);
+  if (!children.length) return null;
+  const selectedId = parentVariantId == null
+    ? chat.activeRootUserId
+    : assistantVariantOwner(chat, parentVariantId)?.activeChildUserId;
+  return children.find(message => message.id === selectedId) || children[0];
+}
+export function selectUserChild(chat, userId) {
+  ensureBranchLineage(chat);
+  const user = chat.messages.find(message => message.role === 'user' && message.id === userId);
+  if (!user) return false;
+  const parentVariantId = user.parentVariantId ?? null;
+  if (!userChildrenForParent(chat, parentVariantId).some(message => message.id === user.id)) return false;
+  if (parentVariantId == null) chat.activeRootUserId = user.id;
+  else {
+    const parent = assistantVariantOwner(chat, parentVariantId);
+    if (!parent) return false;
+    parent.activeChildUserId = user.id;
+  }
+  return true;
+}
+export function userSiblingTurns(chat, user) {
+  if (user?.role !== 'user' || user.kind === 'runtime-control') return [];
+  return userChildrenForParent(chat, user.parentVariantId ?? null)
+    .filter(message => message.kind !== 'runtime-control');
+}
+export function sanitizeUserChildSelections(chat) {
+  ensureBranchLineage(chat);
+  if (typeof chat.activeRootUserId !== 'string'
+    || !userChildrenForParent(chat, null).some(message => message.id === chat.activeRootUserId)) {
+    delete chat.activeRootUserId;
+  }
+  for (const message of chat.messages) {
+    if (message.role !== 'assistant') continue;
+    if (Array.isArray(message.variants) && message.variants.length) delete message.activeChildUserId;
+    for (const variant of assistantVariants(message)) {
+      if (typeof variant.activeChildUserId !== 'string'
+        || !userChildrenForParent(chat, variant.id).some(user => user.id === variant.activeChildUserId)) {
+        delete variant.activeChildUserId;
+      }
+    }
+  }
+  return chat;
 }
 // Older chats are linear. Missing lineage is inferred from the immediately preceding
 // user/assistant sequence; explicit lineage on branched chats is never overwritten.
@@ -77,7 +138,7 @@ export function ensureBranchLineage(chat) {
 export function visibleConversationPath(chat) {
   ensureBranchLineage(chat);
   const path = [];
-  let user = chat.messages.find(message => message.role === 'user' && message.parentVariantId == null);
+  let user = activeUserChild(chat, null);
   const visited = new Set();
   while (user && !visited.has(user.id)) {
     visited.add(user.id);
@@ -86,7 +147,7 @@ export function visibleConversationPath(chat) {
     if (!assistant) break;
     path.push(assistant);
     const variantId = activeAssistantVariant(assistant)?.id;
-    user = chat.messages.find(message => message.role === 'user' && message.parentVariantId === variantId);
+    user = activeUserChild(chat, variantId);
   }
   return path;
 }
