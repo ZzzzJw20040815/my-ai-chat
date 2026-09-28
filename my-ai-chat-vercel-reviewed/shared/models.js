@@ -2,9 +2,11 @@ const curatedCapabilities = (thinkingLevels, options = {}) => Object.freeze({
   thinking: thinkingLevels.length > 0,
   thinkingLevels: Object.freeze(thinkingLevels),
   topK: options.topK === true,
-  safetySettings: true,
-  samplingOverrides: true,
-  outputTokenLimit: null,
+  safetySettings: options.safetySettings !== false,
+  // Gemini 3 sampling controls are deprecated. Keep stored preferences for
+  // Settings Code compatibility, but never expose them as a runtime capability.
+  samplingOverrides: false,
+  outputTokenLimit: options.outputTokenLimit ?? 65536,
   maxTemperature: null,
   topP: null,
 });
@@ -40,7 +42,7 @@ export const CURATED_MODELS = Object.freeze([
   },
   {
     id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash-Lite', description: 'Lightweight high-volume tasks · Stable', stage: 'stable',
-    source: 'curated', capabilities: curatedCapabilities(['high']),
+    source: 'curated', capabilities: curatedCapabilities(['minimal', 'low', 'medium', 'high']),
   },
 ]);
 export const MODELS = CURATED_MODELS;
@@ -77,7 +79,9 @@ export function normalizeDiscoveredModel(value) {
       thinkingLevels: Object.freeze([]),
       topK: capabilities.topK === true,
       safetySettings: false,
-      samplingOverrides: capabilities.samplingOverrides === true,
+      // Models API sampling defaults describe the provider, not whether this
+      // product should expose deprecated overrides.
+      samplingOverrides: false,
       outputTokenLimit: Number.isInteger(capabilities.outputTokenLimit) && capabilities.outputTokenLimit > 0
         ? capabilities.outputTokenLimit : null,
       maxTemperature: finitePositive(capabilities.maxTemperature) ? capabilities.maxTemperature : null,

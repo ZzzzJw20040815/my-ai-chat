@@ -32,7 +32,7 @@ test('Vercel Function and official SDK stream SSE and forward all context', asyn
   });
   const response = await api.fetch(makeRequest({
     systemInstruction: 'Answer in Chinese.', maxOutputTokens: 2048, thinkingLevel: 'high',
-    samplingOverrides: { enabled: true, temperature: 0.7, topP: 0.8, topK: 40 },
+    samplingOverrides: { enabled: false },
     safetySettings: {
       mode: 'custom', harassment: 'OFF', hateSpeech: 'BLOCK_NONE',
       sexuallyExplicit: 'BLOCK_ONLY_HIGH', dangerousContent: 'BLOCK_LOW_AND_ABOVE',
@@ -47,8 +47,8 @@ test('Vercel Function and official SDK stream SSE and forward all context', asyn
   assert.equal(body.systemInstruction.parts[0].text, 'Answer in Chinese.');
   assert.equal(body.generationConfig.maxOutputTokens, 2048);
   assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, 'HIGH');
-  assert.equal(body.generationConfig.temperature, 0.7);
-  assert.equal(body.generationConfig.topP, 0.8);
+  assert.ok(!('temperature' in body.generationConfig));
+  assert.ok(!('topP' in body.generationConfig));
   assert.ok(!('topK' in body.generationConfig));
   assert.deepEqual(body.safetySettings, [
     { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'OFF' },
@@ -72,7 +72,7 @@ test('Vercel Function leaves Gemini generation defaults untouched when settings 
   });
   const response = await api.fetch(makeRequest({
     systemInstruction: '', maxOutputTokens: null, thinkingLevel: 'default',
-    samplingOverrides: { enabled: false, temperature: 1, topP: 0.95, topK: 40 },
+    samplingOverrides: { enabled: false },
     safetySettings: {
       mode: 'default', harassment: 'BLOCK_MEDIUM_AND_ABOVE', hateSpeech: 'BLOCK_MEDIUM_AND_ABOVE',
       sexuallyExplicit: 'BLOCK_MEDIUM_AND_ABOVE', dangerousContent: 'BLOCK_MEDIUM_AND_ABOVE',

@@ -89,6 +89,17 @@ test('Backup excludes secrets and wallpaper data, and uses a local-time filename
   assert.equal(backupFilename(new Date(2026, 8, 11, 23, 15)), 'my-ai-chat-backup-2026-09-11-2315.json');
 });
 
+test('Backup V1 preserves Story Stability and old backups default to balanced', () => {
+  const chat = branchedChat();
+  chat.storyRuntime.stability = 'strict';
+  const backup = createBackup({ chats: [chat], settings: settings() });
+  assert.equal(backup.version, 1);
+  assert.equal(validateBackup(backup).chats[0].storyRuntime.stability, 'strict');
+  const legacy = structuredClone(backup);
+  delete legacy.chats[0].storyRuntime.stability;
+  assert.equal(validateBackup(legacy).chats[0].storyRuntime.stability, 'balanced');
+});
+
 test('standard Blob and anchor download path works without File System Access API', async () => {
   let clicked = false, revoked = '';
   const anchor = { hidden: false, click() { clicked = true; }, remove() {} };

@@ -1,5 +1,5 @@
 import { DEFAULT_MODEL, modelDisplayName } from '../shared/models.js';
-import { MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_LEVELS } from '../shared/settings.js';
+import { MAX_OUTPUT_TOKENS_LIMIT, MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_LEVELS } from '../shared/settings.js';
 import { demoData } from './demo.js';
 import { icons } from './icons.js';
 import {
@@ -56,7 +56,8 @@ import { clearMobileSheetPosition, positionMobileSheet } from './mobile-sheet.js
 import { REGENERATION_REASON_OPTIONS, styleReferenceRequestItems } from '../shared/response-quality.js';
 import {
   continuationAvailability, createRuntimeControl, isRuntimeControlMessage, isVisibleRuntimeControlMessage,
-  regenerationRuntimeAction, runtimeControlLabel, setStoryRuntimeMode, storyRuntimeState,
+  regenerationRuntimeAction, runtimeControlLabel, setStoryRuntimeMode, setStoryRuntimeStability,
+  STORY_STABILITY_OPTIONS, storyRuntimeStability, storyRuntimeState,
 } from './story-runtime.js';
 import {
   scrollConversationToBottom, scrollToBottomVisible, shouldFollowStreaming,
@@ -409,9 +410,12 @@ async function newChat() {
 }
 function syncSettingsUi() {
   const settingsModelId = availableDefaultModel(globalSettings.defaultModel, modelCatalog);
+  const currentModel = modelCatalog.metadata(current()?.model) || null;
+  const capabilities = currentModel?.capabilities;
   $('#defaultModelSetting').innerHTML = modelCatalog.models.map(model => '<option value="' + model.id + '">' + escapeHtml(model.name) +
     (model.source === 'discovered' ? ' · Auto' : '') + '</option>').join('');
   $('#defaultModelSetting').value = settingsModelId;
+  $('#currentChatModelSetting').textContent = currentModel?.name || modelName(current()?.model);
   $('#refreshModels').disabled = modelCatalogBusy;
   $('#refreshModels').textContent = modelCatalogBusy ? 'Refreshing…' : 'Refresh Models';
   $('#modelCatalogSynced').textContent = modelCatalog.syncedAt
@@ -420,6 +424,14 @@ function syncSettingsUi() {
   $('#systemInstructionCount').textContent = globalSettings.systemInstruction.length + ' / ' + MAX_SYSTEM_INSTRUCTION_LENGTH;
   $('#contextLimitSetting').value = globalSettings.contextLimit;
   $('#maxOutputTokensSetting').value = globalSettings.maxOutputTokens ?? '';
+  const outputTokenLimit = Number.isInteger(capabilities?.outputTokenLimit)
+    ? Math.min(MAX_OUTPUT_TOKENS_LIMIT, capabilities.outputTokenLimit) : null;
+  $('#maxOutputTokensSetting').max = String(outputTokenLimit || MAX_OUTPUT_TOKENS_LIMIT);
+  $('#maxOutputTokensSupport').textContent = outputTokenLimit == null
+    ? '当前模型的输出上限未知；留空将使用模型默认值。'
+    : globalSettings.maxOutputTokens != null && globalSettings.maxOutputTokens > outputTokenLimit
+      ? '已保存的偏好超过当前模型上限，本聊天将使用模型默认值。'
+      : '当前模型上限：' + outputTokenLimit.toLocaleString() + '；留空将使用模型默认值。';
   $('#thinkingLevelSetting').value = globalSettings.thinkingLevel;
   $$('[data-mobile-density]').forEach(button => {
     const active = button.dataset.mobileDensity === globalSettings.mobileDisplay.density;
@@ -429,20 +441,21 @@ function syncSettingsUi() {
     const active = button.dataset.chatTextSize === globalSettings.mobileDisplay.chatTextSize;
     button.classList.toggle('active', active); button.setAttribute('aria-checked', String(active));
   });
-  const capabilities = modelCatalog.metadata(settingsModelId)?.capabilities;
+  const thinkingLevels = Array.isArray(capabilities?.thinkingLevels) ? capabilities.thinkingLevels : [];
   for (const option of $('#thinkingLevelSetting').options) {
-    option.disabled = option.value !== 'default' && !capabilities?.thinkingLevels.includes(option.value);
+    option.disabled = option.value !== 'default' && !thinkingLevels.includes(option.value);
   }
-  if ($('#thinkingLevelSetting').selectedOptions[0]?.disabled) {
-    globalSettings = saveGlobalSettings({ ...globalSettings, thinkingLevel: 'default' });
-    $('#thinkingLevelSetting').value = 'default';
-  }
+  $('#thinkingSupport').textContent = thinkingLevels.length
+    ? '当前聊天模型支持：' + thinkingLevels.map(level => level[0].toUpperCase() + level.slice(1)).join('、') + '；不支持的已保存偏好将使用模型默认值。'
+    : '当前模型未提供可调 thinking level；将使用模型默认值。';
   const samplingSupported = capabilities?.samplingOverrides === true;
-  $('#samplingEnabledSetting').checked = samplingSupported && globalSettings.samplingOverrides.enabled;
+  // Preserve the global preference as read-only state even when this model keeps
+  // sampling model-managed; requestSettings remains the capability gate.
+  $('#samplingEnabledSetting').checked = globalSettings.samplingOverrides.enabled;
   $('#samplingEnabledSetting').disabled = !samplingSupported;
   $('#samplingSupport').textContent = samplingSupported
-    ? 'For Gemini 3.x, model defaults are recommended.'
-    : 'Sampling overrides are not supported by the selected default model.';
+    ? '当前聊天模型允许自定义采样。'
+    : '由当前聊天模型管理；已保存的旧采样值不会发送。';
   $('#temperatureSetting').value = globalSettings.samplingOverrides.temperature;
   $('#topPSetting').value = globalSettings.samplingOverrides.topP;
   $('#topKSetting').value = globalSettings.samplingOverrides.topK;
@@ -521,6 +534,7 @@ async function generate(chat, user, existingTurn = null, existingVariant = null,
   }
   const job = { chatId: chat.id, messageId: assistant.id, variantId: variant.id, abort: new AbortController() };
   generation = job; syncComposer(); renderConversation(true);
+  const runtime = storyRuntimeState(chat);
   let readerResponse;
   try {
     readerResponse = await fetch('/api/chat', {
@@ -534,8 +548,8 @@ async function generate(chat, user, existingTurn = null, existingVariant = null,
         })(),
         styleReferences: styleReferenceRequestItems(styleReferences),
         ...(regenerationReason ? { regenerationReason } : {}),
-        ...(storyRuntimeState(chat).enabled ? { storyRuntime: {
-          mode: storyRuntimeState(chat).mode, ...(runtimeAction ? { action: runtimeAction } : {}),
+        ...(runtime.enabled ? { storyRuntime: {
+          mode: runtime.mode, stability: storyRuntimeStability(chat), ...(runtimeAction ? { action: runtimeAction } : {}),
         } } : {}),
         settings: requestSettings(globalSettings, modelCatalog.metadata(chat.model) || {
           source: 'discovered', capabilities: { thinkingLevels: [], samplingOverrides: false, safetySettings: false },
@@ -697,6 +711,14 @@ function storyMemoryFailureHtml(chatId) {
   return '<div class="story-memory-failure" role="status"><strong>上次更新失败：' + escapeHtml(failure.code) + '</strong>' +
     '<p>' + escapeHtml(failure.message) + '</p><small>错误代码：' + escapeHtml(failure.code) + '</small></div>';
 }
+function storyStabilityControl(chat) {
+  const selected = storyRuntimeStability(chat);
+  return '<section class="story-stability-control" aria-labelledby="storyStabilityLabel"><div><strong id="storyStabilityLabel">故事稳定度</strong>' +
+    '<small>控制补全与推进幅度，不改变已建立事实。</small></div><div class="story-stability-options" role="group" aria-label="故事稳定度">' +
+    STORY_STABILITY_OPTIONS.map(option => '<button type="button" data-story-stability="' + option.id + '" aria-pressed="' +
+      String(option.id === selected) + '"' + (option.id === selected ? ' class="active"' : '') + '>' + escapeHtml(option.label) + '</button>').join('') +
+    '</div></section>';
+}
 function storyStateContent(snapshot) {
   const view = storyPanelView(snapshot);
   if (!view) return '<div class="story-state-empty"><strong>尚未生成故事记忆</strong><p>更新记忆后，这里会显示当前分支中已经明确发生的故事状态。</p></div>';
@@ -745,13 +767,19 @@ function renderStoryMenu(viewName = 'overview') {
       storyAction('exit_story', '退出故事模式');
     menu.innerHTML = '<header class="story-menu-head"><div><strong>故事</strong><span>状态：' + status + '</span></div>' +
       '<button class="story-menu-close" type="button" data-close-story-menu aria-label="关闭">×</button></header>' +
-      storyMemoryFailureHtml(chat.id) + '<div class="story-menu-actions">' + actions + '</div>';
+      storyStabilityControl(chat) + storyMemoryFailureHtml(chat.id) + '<div class="story-menu-actions">' + actions + '</div>';
   }
   repositionActiveSurfaceMenu();
 }
 function openStoryMenu() {
   renderStoryMenu('overview'); showSurfaceMenu($('#storyMenu'));
   $('#mobileStoryButton').setAttribute('aria-expanded', 'true');
+}
+async function changeStoryStability(stability) {
+  const chat = current();
+  if (!setStoryRuntimeStability(chat, stability)) return;
+  renderStoryMenu($('#storyMenu').dataset.view || 'overview');
+  await persistChat(chat);
 }
 async function runStoryRuntimeAction(actionId) {
   if (generation) return;
@@ -834,7 +862,7 @@ $('#modelMenu').addEventListener('click', event => {
   const option = event.target.closest('[data-model]');
   if (!option || generation || !modelCatalog.has(option.dataset.model)) return;
   current().model = option.dataset.model; void persistChat(current());
-  syncModel(); setModelMenu(false); renderConversation(); $('#modelButton').focus();
+  syncModel(); syncSettingsUi(); setModelMenu(false); renderConversation(); $('#modelButton').focus();
 });
 $('#modelMenu').addEventListener('keydown', event => {
   if (!['ArrowDown','ArrowUp','Home','End'].includes(event.key)) return;
@@ -1196,6 +1224,8 @@ $('#storyMenu').addEventListener('click', event => {
   if (event.target.closest('[data-story-menu-back]')) { renderStoryMenu('overview'); return; }
   if (event.target.closest('[data-open-story-state]')) { renderStoryMenu('state'); return; }
   if (event.target.closest('[data-update-story-memory]')) { void updateStoryMemory(); return; }
+  const stabilityButton = event.target.closest('[data-story-stability]');
+  if (stabilityButton) { void changeStoryStability(stabilityButton.dataset.storyStability); return; }
   const actionButton = event.target.closest('[data-story-runtime-action]');
   if (actionButton) void runStoryRuntimeAction(actionButton.dataset.storyRuntimeAction);
 });

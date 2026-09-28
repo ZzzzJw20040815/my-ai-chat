@@ -395,6 +395,8 @@ html[data-theme="light"] .moon-icon { display: none; }
 .setting-field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(170px, 220px); align-items: center; gap: 20px; padding: 14px 0; border-top: 1px solid var(--border); }
 .setting-field > span:first-child { min-width: 0; }
 .setting-field strong, .toggle-row strong { display: block; font-size: 14px; }
+.current-model-context > strong:last-child { min-width: 0; color: var(--accent-strong); text-align: right; overflow-wrap: anywhere; }
+.generation-settings-note { padding: 0 0 14px; }
 .setting-field small, .toggle-row small, .compact-field small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .setting-field select, .setting-field input, .setting-field textarea, .compact-field input {
   min-width: 0; padding: 9px 10px; border: 1px solid var(--border-strong); border-radius: 8px;
@@ -491,6 +493,13 @@ html[data-theme="light"] .moon-icon { display: none; }
 .story-menu-head strong { display: block; font-size: 16px; }
 .story-menu-head span { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
 .story-menu-close, .story-menu-back { width: 44px; height: 44px; flex: 0 0 44px; display: grid; place-items: center; border: 0; border-radius: 10px; background: var(--control-glass-bg); color: var(--text); cursor: pointer; }
+.story-stability-control { padding: 11px 0 3px; border-bottom: 1px solid var(--glass-border); }
+.story-stability-control > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 0 3px 8px; }
+.story-stability-control strong { font-size: 13px; }
+.story-stability-control small { color: var(--muted); font-size: 11px; text-align: right; }
+.story-stability-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding-bottom: 9px; }
+.story-stability-options button { min-width: 0; min-height: 44px; padding: 7px 5px; border: 1px solid var(--glass-border); border-radius: 9px; background: var(--control-glass-bg); color: var(--muted); cursor: pointer; font-size: 12px; }
+.story-stability-options button.active, .story-stability-options button[aria-pressed="true"] { border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-border)); background: var(--accent-soft); color: var(--accent-strong); }
 .story-menu-actions { display: grid; gap: 7px; padding: 10px 0 0; }
 .story-menu-action { width: 100%; min-height: 48px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--glass-border); border-radius: 11px; background: var(--glass-bg-soft); color: var(--text); cursor: pointer; text-align: left; }
 .story-menu-action.primary { border-color: color-mix(in srgb, var(--accent) 52%, var(--glass-border)); background: var(--accent-soft); color: var(--accent-strong); }
@@ -661,6 +670,7 @@ html[data-theme="light"] .moon-icon { display: none; }
   .settings-section { padding-top: var(--mobile-section-spacing); }
   .settings-section + .settings-section { margin-top: var(--mobile-section-gap); }
   .setting-field { grid-template-columns: 1fr; gap: var(--mobile-setting-field-gap); padding: var(--mobile-setting-field-padding) 0; }
+  .current-model-context > strong:last-child { text-align: left; }
   .setting-field select, .setting-field input { width: 100%; }
   .setting-field select, .setting-field input, .setting-field textarea, .compact-field input { font-size: 16px; }
   .advanced-fields { grid-template-columns: 1fr 1fr; }
@@ -674,6 +684,8 @@ html[data-theme="light"] .moon-icon { display: none; }
   .regenerate-menu button { min-height: 44px; }
   .runtime-menu, .story-menu { right: 10px; left: 10px; width: auto; }
   .story-menu { padding: var(--mobile-sheet-padding); }
+  .story-stability-control > div:first-child { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .story-stability-control small { text-align: left; }
   .story-menu-actions { gap: var(--mobile-sheet-gap); }
   .story-menu-action { min-height: 48px; padding: var(--mobile-sheet-action-padding); }
 }

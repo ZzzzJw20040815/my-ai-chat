@@ -38,6 +38,7 @@ test('catalog keeps curated models, accepts generateContent Gemini chat, and app
   assert.equal(discovered.source, 'discovered');
   assert.deepEqual(discovered.capabilities.thinkingLevels, []);
   assert.equal(discovered.capabilities.safetySettings, false);
+  assert.equal(discovered.capabilities.samplingOverrides, false);
   assert.equal(discovered.capabilities.topK, true);
   assert.equal(discovered.capabilities.outputTokenLimit, 32768);
   const merged = mergeModelCatalog([discovered]);

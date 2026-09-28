@@ -23,21 +23,27 @@ export function resetGlobalSettings(storage = localStorage) {
 
 export function requestSettings(settings, model = null) {
   const normalized = normalizeGlobalSettings(settings);
-  const capabilities = model?.capabilities;
-  const conservative = model?.source === 'discovered';
-  const thinkingLevel = capabilities && !capabilities.thinkingLevels.includes(normalized.thinkingLevel)
-    ? 'default' : normalized.thinkingLevel;
-  const samplingEnabled = capabilities
-    ? normalized.samplingOverrides.enabled && capabilities.samplingOverrides === true
-    : normalized.samplingOverrides.enabled;
-  const safetyMode = capabilities && capabilities.safetySettings !== true ? 'default' : normalized.safetySettings.mode;
-  const maxOutputTokens = capabilities?.outputTokenLimit && normalized.maxOutputTokens > capabilities.outputTokenLimit
-    ? null : normalized.maxOutputTokens;
+  const capabilities = model?.capabilities && typeof model.capabilities === 'object' ? model.capabilities : null;
+  const supportedThinkingLevels = Array.isArray(capabilities?.thinkingLevels) ? capabilities.thinkingLevels : [];
+  const thinkingLevel = normalized.thinkingLevel !== 'default' && supportedThinkingLevels.includes(normalized.thinkingLevel)
+    ? normalized.thinkingLevel : 'default';
+  const samplingEnabled = capabilities?.samplingOverrides === true && normalized.samplingOverrides.enabled;
+  const outputTokenLimit = Number.isInteger(capabilities?.outputTokenLimit) && capabilities.outputTokenLimit > 0
+    ? capabilities.outputTokenLimit : null;
+  const maxOutputTokens = normalized.maxOutputTokens != null && outputTokenLimit != null
+    && normalized.maxOutputTokens <= outputTokenLimit ? normalized.maxOutputTokens : null;
+  const customSafety = capabilities?.safetySettings === true && normalized.safetySettings.mode === 'custom';
+  const samplingOverrides = samplingEnabled ? {
+    enabled: true,
+    temperature: normalized.samplingOverrides.temperature,
+    topP: normalized.samplingOverrides.topP,
+    ...(capabilities?.topK === true ? { topK: normalized.samplingOverrides.topK } : {}),
+  } : { enabled: false };
   return {
     systemInstruction: normalized.systemInstruction,
     maxOutputTokens,
-    thinkingLevel: conservative && !capabilities ? 'default' : thinkingLevel,
-    samplingOverrides: { ...normalized.samplingOverrides, enabled: samplingEnabled },
-    safetySettings: { ...normalized.safetySettings, mode: safetyMode },
+    thinkingLevel,
+    samplingOverrides,
+    safetySettings: customSafety ? { ...normalized.safetySettings, mode: 'custom' } : { mode: 'default' },
   };
 }

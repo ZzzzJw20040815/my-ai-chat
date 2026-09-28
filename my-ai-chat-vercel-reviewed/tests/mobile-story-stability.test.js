@@ -8,7 +8,7 @@ import { activeAssistantVariant } from '../ui/state.js';
 import { closeChatDatabase, loadChats, loadStoryMemories } from '../ui/storage.js';
 import { classifyStoryMemoryUpdateError, storyMemoryErrorMessage, StoryMemoryUpdateError } from '../ui/story-memory.js';
 import { positionMobileSheet, visualViewportBounds } from '../ui/mobile-sheet.js';
-import { storyRuntimeState } from '../ui/story-runtime.js';
+import { storyRuntimeStability, storyRuntimeState } from '../ui/story-runtime.js';
 
 const html = await readFile(new URL('../ui/index.html', import.meta.url), 'utf8');
 const waitFor = async (check, timeout = 4000) => {
@@ -130,6 +130,21 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
   document.querySelector('#mobileStoryButton').click();
   let menu = document.querySelector('#storyMenu');
   assert.match(menu.textContent, /状态：未启用/);
+  assert.match(menu.textContent, /故事稳定度/);
+  assert.deepEqual([...menu.querySelectorAll('[data-story-stability]')].map(button => button.textContent), ['自由发挥', '平衡', '严格连续']);
+  assert.equal(menu.querySelector('[data-story-stability="balanced"]').getAttribute('aria-pressed'), 'true');
+  const beforeStability = (await loadChats(indexedDB)).find(item => item.demo);
+  const payloadCount = transport.payloads.length;
+  menu.querySelector('[data-story-stability="strict"]').click();
+  const strictChat = await waitFor(async () => {
+    const chat = (await loadChats(indexedDB)).find(item => item.demo);
+    return storyRuntimeStability(chat) === 'strict' ? chat : null;
+  });
+  assert.equal(menu.querySelector('[data-story-stability="strict"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(strictChat.messages.length, beforeStability.messages.length);
+  assert.equal(strictChat.storyRuntime.transitions.length, beforeStability.storyRuntime.transitions.length);
+  assert.equal(transport.payloads.length, payloadCount);
+  assert.equal((await loadStoryMemories(strictChat.id, indexedDB)).length, 0);
   assert.deepEqual([...menu.querySelectorAll('[data-story-runtime-action]')].map(button => button.dataset.storyRuntimeAction), ['prepare_story']);
   assert.match(menu.textContent, /开始构思/);
   menu.querySelector('[data-story-runtime-action="prepare_story"]').click();
@@ -151,7 +166,8 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
     .every(button => button.disabled));
   transport.releaseChat();
   await waitFor(() => menu.querySelector('[data-story-runtime-action="start_writing"]')?.disabled === false);
-  assert.ok(transport.payloads.some(payload => payload.storyRuntime?.mode === 'setup' && !payload.storyRuntime.action));
+  assert.ok(transport.payloads.some(payload => payload.storyRuntime?.mode === 'setup'
+    && payload.storyRuntime.stability === 'strict' && !payload.storyRuntime.action));
 
   menu.querySelector('[data-open-story-state]').click();
   assert.match(menu.textContent, /尚未生成故事记忆/);
@@ -191,6 +207,7 @@ test('mobile Story entry is contextual, shows explicit empty state, refreshes me
   document.querySelector('#mobileStoryButton').click();
   menu = document.querySelector('#storyMenu');
   assert.match(menu.textContent, /状态：未启用/);
+  assert.equal(menu.querySelector('[data-story-stability="strict"]').getAttribute('aria-pressed'), 'true');
   assert.deepEqual([...menu.querySelectorAll('[data-story-runtime-action]')].map(button => button.dataset.storyRuntimeAction), ['prepare_story']);
 
   document.querySelector('#newChatButton').click();
@@ -294,6 +311,8 @@ test('shared mobile sheet CSS stays above composer, uses safe area, and avoids h
   assert.match(css, /\.sheet-scrim\s*\{[^}]*z-index:\s*85/s);
   assert.match(css, /\.surface-menu\s*\{[^}]*overflow-x:\s*hidden/s);
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.surface-menu\s*\{[^}]*env\(safe-area-inset-bottom\)/);
+  assert.match(css, /\.story-stability-options\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(css, /\.story-stability-options button\s*\{[^}]*min-height:\s*44px/);
   assert.match(css, /\.mobile-story-button\s*\{[^}]*min-height:\s*44px/s);
   assert.match(css, /@media \(max-width: 520px\)[\s\S]*\.mobile-story-button\s*\{[^}]*display:\s*inline-flex/);
   assert.match(css, /\.chat-heading > \.story-runtime-control, \.chat-heading > \.story-panel\s*\{\s*display:\s*none/);

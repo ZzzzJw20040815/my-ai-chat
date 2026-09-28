@@ -1,4 +1,4 @@
-import { normalizeStoryRuntime } from '../shared/story-runtime.js';
+import { isStoryStability, normalizeStoryRuntime } from '../shared/story-runtime.js';
 import { activeAssistantVariant, createMessage, uniqueId, visibleConversationPath } from './state.js';
 
 export const isRuntimeControlMessage = message => message?.role === 'user' && message.kind === 'runtime-control';
@@ -8,6 +8,12 @@ export const RUNTIME_CONTROL_LABELS = Object.freeze({
   continue_story: '继续故事',
   continue_incomplete: '继续未完成',
 });
+
+export const STORY_STABILITY_OPTIONS = Object.freeze([
+  { id: 'free', label: '自由发挥' },
+  { id: 'balanced', label: '平衡' },
+  { id: 'strict', label: '严格连续' },
+]);
 
 export const runtimeControlLabel = message => isRuntimeControlMessage(message)
   ? RUNTIME_CONTROL_LABELS[message.runtimeAction] || null
@@ -55,6 +61,19 @@ export function storyRuntimeState(chat) {
   return transition.mode === 'disabled'
     ? { enabled: false, mode: null, transition }
     : { enabled: true, mode: transition.mode, transition };
+}
+
+export function storyRuntimeStability(chat) {
+  return normalizeStoryRuntime(chat?.storyRuntime).stability;
+}
+
+export function setStoryRuntimeStability(chat, stability) {
+  if (!chat || !isStoryStability(stability)) return false;
+  const runtime = normalizeStoryRuntime(chat.storyRuntime);
+  if (runtime.stability === stability) return false;
+  runtime.stability = stability;
+  chat.storyRuntime = runtime;
+  return true;
 }
 
 export function currentRuntimeAnchor(chat) {
