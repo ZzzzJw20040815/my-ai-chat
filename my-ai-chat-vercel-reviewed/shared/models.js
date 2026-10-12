@@ -21,15 +21,7 @@ export const CURATED_MODELS = Object.freeze([
     source: 'curated', capabilities: curatedCapabilities(['low', 'medium', 'high']),
   },
   {
-    id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', description: 'Complex everyday work · Stable', stage: 'stable',
-    source: 'curated', capabilities: curatedCapabilities(['low', 'medium', 'high']),
-  },
-  {
     id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', description: 'Balanced speed and quality · Stable', stage: 'stable',
-    source: 'curated', capabilities: curatedCapabilities(['minimal', 'low', 'medium', 'high']),
-  },
-  {
-    id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash', description: 'High-throughput workflows · Stable', stage: 'stable',
     source: 'curated', capabilities: curatedCapabilities(['minimal', 'low', 'medium', 'high']),
   },
   {
@@ -47,9 +39,26 @@ export const CURATED_MODELS = Object.freeze([
 ]);
 export const MODELS = CURATED_MODELS;
 export const DEFAULT_MODEL = CURATED_MODELS[0].id;
-export const modelName = id => CURATED_MODELS.find(model => model.id === id)?.name || modelDisplayName(id);
-export const isAllowedModel = id => CURATED_MODELS.some(model => model.id === id);
-export const modelMetadata = id => CURATED_MODELS.find(model => model.id === id) || null;
+// Official redirects announced 2026-10-08. Preserve stored IDs; route requests
+// using one trusted mapping shared by the catalog, client and server.
+export const DEPRECATED_MODEL_REDIRECTS = Object.freeze({
+  'gemini-3.7-flash': 'gemini-3.8-flash',
+  'gemini-3.5-flash': 'gemini-3.6-flash',
+});
+export const canonicalModelId = id => Object.hasOwn(DEPRECATED_MODEL_REDIRECTS, id)
+  ? DEPRECATED_MODEL_REDIRECTS[id] : id;
+const legacyModels = Object.freeze(Object.fromEntries(Object.entries(DEPRECATED_MODEL_REDIRECTS).map(([id, targetId]) => {
+  const target = CURATED_MODELS.find(model => model.id === targetId);
+  return [id, Object.freeze({
+    ...target, id, canonicalModelId: targetId, stage: 'deprecated',
+    name: modelDisplayName(id) + ' → ' + target.name + '（已弃用）',
+    description: '历史模型选择；实际请求使用 ' + targetId,
+  })];
+})));
+export const modelMetadata = id => CURATED_MODELS.find(model => model.id === id)
+  || (Object.hasOwn(legacyModels, id) ? legacyModels[id] : null);
+export const modelName = id => modelMetadata(id)?.name || modelDisplayName(id);
+export const isAllowedModel = id => modelMetadata(id) !== null;
 
 export function isPersistableModelId(id) {
   return typeof id === 'string' && /^gemini-[a-z0-9][a-z0-9.-]{0,99}$/.test(id);
@@ -63,7 +72,7 @@ export function modelDisplayName(id) {
 
 export function normalizeDiscoveredModel(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || value.source !== 'discovered'
-    || !isPersistableModelId(value.id)) return null;
+    || !isPersistableModelId(value.id) || canonicalModelId(value.id) !== value.id) return null;
   const capabilities = value.capabilities && typeof value.capabilities === 'object' && !Array.isArray(value.capabilities)
     ? value.capabilities : {};
   const finitePositive = number => typeof number === 'number' && Number.isFinite(number) && number > 0;

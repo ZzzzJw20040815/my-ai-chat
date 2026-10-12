@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL, mergeModelCatalog, normalizeDiscoveredModel } from '../shared/models.js';
+import { DEFAULT_MODEL, mergeModelCatalog, modelMetadata, normalizeDiscoveredModel } from '../shared/models.js';
 
 export const MODEL_CATALOG_STORAGE_KEY = 'my-ai-chat-model-catalog';
 export const MODEL_CATALOG_SYNC_STORAGE_KEY = 'my-ai-chat-last-model-catalog-sync';
@@ -31,8 +31,8 @@ export function createModelCatalog({ storage = localStorage, fetcher = fetch, no
   const catalog = {
     get models() { return mergeModelCatalog(discovered); },
     get syncedAt() { return syncedAt; },
-    has(id) { return catalog.models.some(model => model.id === id); },
-    metadata(id) { return catalog.models.find(model => model.id === id) || null; },
+    has(id) { return catalog.metadata(id) !== null; },
+    metadata(id) { return modelMetadata(id) || catalog.models.find(model => model.id === id) || null; },
     name(id) { return catalog.metadata(id)?.name || id; },
     async refresh({ force = false } = {}) {
       const response = await fetcher(force ? '/api/models?refresh=1' : '/api/models', {

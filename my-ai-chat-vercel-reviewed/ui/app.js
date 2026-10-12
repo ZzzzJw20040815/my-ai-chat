@@ -377,6 +377,7 @@ function syncComposer() {
 function syncModel() {
   const id = current().model;
   $('#currentModel').textContent = modelName(id); input.placeholder = 'Message ' + modelName(id) + '…';
+  $('#modelButton').title = modelName(id);
   $('#modelMenu').innerHTML = modelCatalog.models.map(model => '<button class="model-option' + (id === model.id ? ' selected' : '') +
     '" role="option" aria-selected="' + (id === model.id) + '" data-model="' + model.id + '"><span><strong>' +
     escapeHtml(model.name) + (model.source === 'discovered' ? ' <span class="model-source-badge">Auto</span>' : '') +
@@ -414,6 +415,10 @@ function syncSettingsUi() {
   const capabilities = currentModel?.capabilities;
   $('#defaultModelSetting').innerHTML = modelCatalog.models.map(model => '<option value="' + model.id + '">' + escapeHtml(model.name) +
     (model.source === 'discovered' ? ' · Auto' : '') + '</option>').join('');
+  const legacyDefault = modelCatalog.metadata(settingsModelId);
+  if (legacyDefault?.stage === 'deprecated') {
+    $('#defaultModelSetting').insertAdjacentHTML('beforeend', '<option value="' + legacyDefault.id + '">' + escapeHtml(legacyDefault.name) + '</option>');
+  }
   $('#defaultModelSetting').value = settingsModelId;
   $('#currentChatModelSetting').textContent = currentModel?.name || modelName(current()?.model);
   $('#refreshModels').disabled = modelCatalogBusy;

@@ -205,13 +205,15 @@ svg {
   backdrop-filter: blur(var(--glass-blur-light)) saturate(115%);
 }
 .menu-button { display: none; margin-right: 7px; }
-.model-wrap { position: relative; }
+.model-wrap { position: relative; min-width: 0; }
 .model-button {
-  min-height: 40px; padding: 0 10px; display: flex; align-items: center; gap: 9px; border: 0;
+  min-height: 40px; max-width: 100%; padding: 0 10px; display: flex; align-items: center; gap: 9px; border: 0;
   border-radius: 10px; background: transparent; cursor: pointer; font-weight: 650; letter-spacing: -.012em;
 }
 .model-button:hover, .model-button[aria-expanded="true"] { background: var(--control-glass-bg); }
 .model-button svg { width: 16px; color: var(--muted); }
+#currentModel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-button svg, .model-dot { flex-shrink: 0; }
 .model-dot { width: 8px; height: 8px; border-radius: 50%; background: #83d6bc; box-shadow: 0 0 0 4px rgba(131,214,188,.10); }
 .model-menu {
   position: absolute; top: calc(100% + 6px); left: 0; width: 268px; max-height: min(70dvh, 520px); padding: 7px; display: none; overflow-y: auto;

@@ -1,5 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
-import { isPersistableModelId, modelMetadata } from '../shared/models.js';
+import { canonicalModelId, isPersistableModelId, modelMetadata } from '../shared/models.js';
 import { trustedModelMetadata } from './model-catalog.js';
 import {
   MAX_OUTPUT_TOKENS_LIMIT, MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_MODES,
@@ -82,7 +82,7 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
   if (storyRuntime) {
     config.systemInstruction = storyRuntimeSystemInstruction(config.systemInstruction || '', storyRuntime);
   }
-  return { model: payload.model, contents, config };
+  return { model: canonicalModelId(payload.model), contents, config };
 }
 function invalidRequest() { throw new Error('INVALID_REQUEST'); }
 function validateStyleReferences(value) {

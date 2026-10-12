@@ -207,7 +207,7 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
 
   document.querySelector('#settingsButton').click();
   const defaultModel = document.querySelector('#defaultModelSetting');
-  defaultModel.value = 'gemini-3.7-flash';
+  defaultModel.value = 'gemini-3.8-flash';
   defaultModel.dispatchEvent(new window.Event('change', { bubbles: true }));
   assert.equal(document.querySelector('#currentModel').textContent, 'Gemini 3.1 Pro');
   const systemInstruction = document.querySelector('#systemInstructionSetting');
@@ -224,7 +224,7 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   document.querySelector('#settingsDialog').close();
 
   document.querySelector('#newChatButton').click();
-  assert.equal(document.querySelector('#currentModel').textContent, 'Gemini 3.7 Flash');
+  assert.equal(document.querySelector('#currentModel').textContent, 'Gemini 3.8 Flash');
   document.querySelector('#modelButton').click();
   document.querySelector('[data-model="gemini-3.1-pro-preview"]').click();
   await waitFor(async () => (await loadChats(indexedDB)).find(chat => !chat.demo)?.model === 'gemini-3.1-pro-preview');
@@ -329,7 +329,7 @@ test('new chat lifecycle persists across refresh/reopen without duplicating demo
   assert.equal(document.querySelector('.chat-heading h1').textContent, chatB.title);
   assert.equal(document.querySelector('[aria-current="true"]').dataset.chatId, chatB.id);
   document.querySelector('#settingsButton').click();
-  assert.equal(document.querySelector('#defaultModelSetting').value, 'gemini-3.7-flash');
+  assert.equal(document.querySelector('#defaultModelSetting').value, 'gemini-3.8-flash');
   assert.equal(document.querySelector('#systemInstructionSetting').value, '请始终简洁回答。');
   assert.equal(document.querySelector('#contextLimitSetting').value, '10');
   assert.equal(document.querySelector('#maxOutputTokensSetting').value, '2048');
@@ -725,7 +725,7 @@ test('Settings Code import is validated first, applies atomically, preserves cha
   assert.equal(document.querySelector('#currentModel').textContent, existingModel);
   assert.deepEqual((await loadChats(indexedDB)).map(chat => chat.id).sort(), chatsBefore);
   document.querySelector('#newChatButton').click();
-  assert.equal(document.querySelector('#currentModel').textContent, 'Gemini 3.7 Flash');
+  assert.equal(document.querySelector('#currentModel').textContent, 'Gemini 3.7 Flash → Gemini 3.8 Flash（已弃用）');
   document.querySelector('#resetGlobalSettings').click();
   assert.equal(document.documentElement.dataset.mobileDensity, 'standard');
   assert.equal(document.documentElement.dataset.chatTextSize, 'standard');

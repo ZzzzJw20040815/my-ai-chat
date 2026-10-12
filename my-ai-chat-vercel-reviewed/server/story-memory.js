@@ -1,5 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
-import { isPersistableModelId, modelMetadata } from '../shared/models.js';
+import { canonicalModelId, isPersistableModelId, modelMetadata } from '../shared/models.js';
 import {
   canonicalizeStoryMemoryCandidateWithDiagnostics, STORY_MEMORY_CANONICALIZATION_REASONS,
   hasMeaningfulStoryMemory, meaningfulStoryMemoryFieldCount,
@@ -64,7 +64,7 @@ export function validateStoryMemoryRequest(payload, authorizedModel) {
     ? validateGenerationSettings({ safetySettings: payload.safetySettings }, authorizedModel)
     : {};
   return {
-    model: payload.model, chatId: payload.chatId, anchorId: payload.anchorId, conversation,
+    model: canonicalModelId(payload.model), chatId: payload.chatId, anchorId: payload.anchorId, conversation,
     existingMemory: existingMemory && hasMeaningfulStoryMemory(existingMemory) ? existingMemory : null,
     safetySettings: safetyConfig.safetySettings,
   };
