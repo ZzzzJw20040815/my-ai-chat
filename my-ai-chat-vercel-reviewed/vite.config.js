@@ -24,7 +24,7 @@ export default defineConfig({
         const abort = new AbortController();
         res.on('close', () => { if (!res.writableEnded) abort.abort(); });
         try {
-          const request = new Request('http://terminal.local:4173/api/chat', {
+          const request = new Request(new URL('/api/chat', `http://${req.headers.host || 'localhost'}`), {
             method: req.method, headers: req.headers, signal: abort.signal,
             ...(!['GET', 'HEAD'].includes(req.method) ? { body: Readable.toWeb(req), duplex: 'half' } : {}),
           });

@@ -1,4 +1,5 @@
 import { DEFAULT_MODEL } from '../shared/models.js';
+import { storedWebSearchFields } from '../shared/web-search.js';
 export function uniqueId(source = crypto) {
   if (typeof source.randomUUID === 'function') return source.randomUUID();
   // getRandomValues also works in the HTTP development preview.
@@ -26,6 +27,7 @@ function responseVariant(message) {
     ...(typeof message.notice === 'string' ? { notice: message.notice } : {}),
     ...(['complete', 'max_tokens'].includes(message.completionReason) ? { completionReason: message.completionReason } : {}),
     ...(typeof message.activeChildUserId === 'string' ? { activeChildUserId: message.activeChildUserId } : {}),
+    ...storedWebSearchFields(message),
   };
 }
 export function activeAssistantVariant(message) {

@@ -56,6 +56,7 @@ test('Vercel Function and official SDK stream SSE and forward all context', asyn
     { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
     { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_LOW_AND_ABOVE' },
   ]);
+  assert.deepEqual(body.tools, [{ googleSearch: {} }]);
   upstream.enqueue(sse('明',true)); upstream.close();
   let output=''; while(true){const {done,value}=await reader.read();if(done)break;output+=new TextDecoder().decode(value);}
   assert.match(output,/明/); assert.match(output,/done/); assert.ok(!output.includes('unit-test-sentinel'));
@@ -87,6 +88,7 @@ test('Vercel Function leaves Gemini generation defaults untouched when settings 
   assert.ok(!body.generationConfig?.topP);
   assert.ok(!body.generationConfig?.topK);
   assert.ok(!body.safetySettings);
+  assert.deepEqual(body.tools, [{ googleSearch: {} }]);
 });
 
 test('Vercel Function Stop propagates to Gemini upstream fetch AbortSignal', async t => {

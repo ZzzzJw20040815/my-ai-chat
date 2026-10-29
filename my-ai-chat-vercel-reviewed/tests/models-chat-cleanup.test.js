@@ -56,6 +56,7 @@ test('each approved model ID reaches the Gemini transport unchanged', async () =
     });
     const response = await handleChat(request, testEnv, async function* (_, params) {
       received = params.model;
+      assert.deepEqual(params.config.tools, [{ googleSearch: {} }]);
       yield { text: 'ok', candidates: [{ finishReason: 'STOP' }] };
     });
     await response.text();
