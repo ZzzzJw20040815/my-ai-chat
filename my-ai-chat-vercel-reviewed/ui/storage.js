@@ -2,6 +2,7 @@ import { DEFAULT_MODEL, isPersistableModelId } from '../shared/models.js';
 import { ensureBranchLineage, sanitizeUserChildSelections } from './state.js';
 import { validateStoryMemory, STORY_MEMORY_SCHEMA_VERSION } from '../shared/story-memory.js';
 import { isStoryRuntimeAction, normalizeStoryRuntime } from '../shared/story-runtime.js';
+import { storedWebSearchFields } from '../shared/web-search.js';
 
 export const CHAT_DB_NAME = 'my-ai-chat';
 export const CHAT_DB_VERSION = 4;
@@ -85,6 +86,7 @@ function normalizeAssistantVariant(variant) {
     ...(typeof variant.notice === 'string' ? { notice: variant.notice } : {}),
     ...(['complete', 'max_tokens'].includes(variant.completionReason) ? { completionReason: variant.completionReason } : {}),
     ...(validSelectionId(variant.activeChildUserId) ? { activeChildUserId: variant.activeChildUserId } : {}),
+    ...storedWebSearchFields(variant),
   };
 }
 
@@ -101,6 +103,7 @@ function normalizeMessage(message) {
     ...(typeof message.error === 'string' ? { error: message.error } : {}),
     ...(typeof message.notice === 'string' ? { notice: message.notice } : {}),
     ...(['complete', 'max_tokens'].includes(message.completionReason) ? { completionReason: message.completionReason } : {}),
+    ...(message.role === 'assistant' ? storedWebSearchFields(message) : {}),
   };
   if (normalized.role === 'assistant' && Array.isArray(message.variants) && message.variants.length) {
     normalized.variants = message.variants.map(normalizeAssistantVariant);

@@ -11,6 +11,9 @@ import {
   STYLE_REFERENCE_TOTAL_CHARACTERS,
 } from '../shared/response-quality.js';
 import { storyRuntimeActionTurn, storyRuntimeSystemInstruction, validateStoryRuntimeRequest } from '../shared/story-runtime.js';
+import {
+  GOOGLE_SEARCH_TOOLS, groundingMetadataFromChunk, preferGroundingMetadata, publicGrounding,
+} from '../shared/web-search.js';
 
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_MESSAGES = 100;
@@ -82,6 +85,7 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
   if (storyRuntime) {
     config.systemInstruction = storyRuntimeSystemInstruction(config.systemInstruction || '', storyRuntime);
   }
+  config.tools = GOOGLE_SEARCH_TOOLS.map(tool => ({ googleSearch: { ...tool.googleSearch } }));
   return { model: payload.model, contents, config };
 }
 function invalidRequest() { throw new Error('INVALID_REQUEST'); }
@@ -244,7 +248,7 @@ export async function handleChat(request, env, transport = googleStream, timeout
     start(controller) {
       const emit = event => { if (!cancelled) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)); };
       void (async () => {
-        let textLength = 0, finishReason;
+        let textLength = 0, finishReason, grounding = null;
         try {
           abort.signal.throwIfAborted();
           emit({ type: 'start' });
@@ -253,6 +257,7 @@ export async function handleChat(request, env, transport = googleStream, timeout
             if (abort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
             const safetyMessage = safetyBlockedFeedback(chunk);
             if (safetyMessage) throw { code: 'SAFETY_BLOCKED', message: safetyMessage };
+            grounding = preferGroundingMetadata(grounding, groundingMetadataFromChunk(chunk));
             finishReason = chunk.candidates?.[0]?.finishReason || finishReason;
             const delta = chunk.text;
             if (typeof delta === 'string' && delta) {
@@ -268,6 +273,7 @@ export async function handleChat(request, env, transport = googleStream, timeout
             type: 'done',
             notice: finishReason === 'MAX_TOKENS' ? ERROR_TEXT.TRUNCATED : null,
             completionReason: finishReason === 'MAX_TOKENS' ? 'max_tokens' : 'complete',
+            ...(publicGrounding(grounding) || {}),
           });
         } catch (error) {
           const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'SAFETY_BLOCKED', 'CONTEXT_LIMIT'].includes(error?.code) ? error.code : classifyError(error)[0];

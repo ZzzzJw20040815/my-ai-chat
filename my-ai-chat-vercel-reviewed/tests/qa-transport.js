@@ -19,6 +19,19 @@ export function qaTransport(scenario) {
         '长文本：' + 'longtext'.repeat(50) + '\n\n',
         '<script>alert("must remain text")</script>\n\n'];
       for (const text of chunks) { yield { text }; await wait(scenario === 'slow' ? 2000 : 400, signal); }
-      yield { text: '测试完成。这不是 Gemini 实际回复。', candidates: [{ finishReason: 'STOP' }] };
+      yield {
+        text: '测试完成。这不是 Gemini 实际回复。',
+        candidates: [{
+          finishReason: 'STOP',
+          groundingMetadata: {
+            webSearchQueries: ['local qa'],
+            searchEntryPoint: { renderedContent: '<div class="container"><a href="https://www.google.com/search?q=local+qa">local qa</a></div>' },
+            groundingChunks: [
+              { web: { uri: 'https://example.com/source', title: 'Example Source' } },
+              { web: { uri: 'javascript:alert(1)', title: 'Blocked source' } },
+            ],
+          },
+        }],
+      };
   };
 }

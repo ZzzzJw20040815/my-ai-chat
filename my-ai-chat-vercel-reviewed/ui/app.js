@@ -31,6 +31,7 @@ import {
   replaceStoryMemorySnapshot,
 } from './storage.js';
 import { renderMarkdown } from './markdown.js';
+import { storedWebSearchFields, webSearchMarkup } from '../shared/web-search.js';
 import { consumeStream } from './stream.js';
 import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from './settings.js';
 import { applyMobileDisplayPreferences } from './mobile-display.js';
@@ -188,7 +189,7 @@ function messageHtml(message) {
     (busy || variantIndex === variants.length - 1 ? ' disabled' : '') + '>›</button></span>' : '';
   return '<div class="assistant-mark" aria-hidden="true">AI</div><div class="assistant-body"><div class="message-content">' +
     (variant.content ? renderMarkdown(variant.content) : generating ? '<div class="typing" aria-label="Generating"><i></i><i></i><i></i></div>' : '') +
-    '</div>' + status + error + (variant.notice ? '<p class="generation-status">' + escapeHtml(variant.notice) + '</p>' : '') +
+    '</div>' + webSearchMarkup(variant, escapeHtml) + status + error + (variant.notice ? '<p class="generation-status">' + escapeHtml(variant.notice) + '</p>' : '') +
     '<div class="message-actions">' + action('copy', 'Copy', icons.copy, false, !variant.content) +
     action('regenerate', variant.status === 'error' || variant.status === 'stopped' ? 'Retry' : '重新生成', icons.redo, false, busy) +
     action('save-style', styleSaved ? '已保存' : '保存风格', icons.bookmark, styleSaved, generating || !variant.content) +
@@ -570,6 +571,9 @@ async function generate(chat, user, existingTurn = null, existingVariant = null,
         variant.status = 'complete';
         variant.notice = event.notice;
         variant.completionReason = event.completionReason === 'max_tokens' ? 'max_tokens' : 'complete';
+        const grounding = storedWebSearchFields(event);
+        if (grounding.webSources) variant.webSources = grounding.webSources;
+        if (grounding.searchSuggestionHtml) variant.searchSuggestionHtml = grounding.searchSuggestionHtml;
       }
       updateMessage(chat.id, assistant);
     }, job.abort.signal);
