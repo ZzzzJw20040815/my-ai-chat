@@ -79,9 +79,19 @@
 
 Gemini 3 及更新模型按实际发出的搜索查询计费：每月 5000 次免费搜索由这些模型共享，之后大约每 1000 次 14 美元。付费层还有每天大约 1500 次的默认上限。模型可以在一次回答里发多次查询，每次都计入额度。
 
+## 发布结果
+
+- 功能提交：`f9e8f5d`，分支 `feat/gemini-web-search`
+- Pull request：https://github.com/ZzzzJw20040815/my-ai-chat/pull/19
+- 已合并到 `main`，合并提交 `23cfe23`
+- 这次代码的 Vercel 生产部署：https://my-ai-chat-wkq90nzki-indercrichton-5491.vercel.app
+- 同一提交的预览部署：https://my-ai-chat-48fpcbf97-indercrichton-5491.vercel.app
+
+GitHub 上的 Vercel 状态为 success。从外网直接打开这些地址时返回 403，和 Vercel 的部署访问保护一致；用已登录该 Vercel 团队的浏览器可以打开。
+
 ## 如何回到改动前
 
-这些改动会单独成为一个提交。要撤回时，用一个新的还原提交，而不是改写已经推送的历史：
+这些改动是独立提交，并且已经合并进 `main`。要撤回时，用一个新的还原提交，而不是改写已经推送的历史：
 
 ```sh
 git revert <这次提交的哈希>
