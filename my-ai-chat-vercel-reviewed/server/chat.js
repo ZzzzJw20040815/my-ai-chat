@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { JSDOM } from 'jsdom';
 import { isPersistableModelId, modelMetadata } from '../shared/models.js';
 import { trustedModelMetadata } from './model-catalog.js';
 import {
@@ -15,6 +16,7 @@ import {
   GOOGLE_SEARCH_TOOLS, groundingMetadataFromChunk, preferGroundingMetadata, publicGrounding,
 } from '../shared/web-search.js';
 
+const searchSuggestionWindow = new JSDOM('<!doctype html><html><body></body></html>').window;
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_MESSAGES = 100;
 export const ERROR_TEXT = Object.freeze({
@@ -276,7 +278,7 @@ export async function handleChat(request, env, transport = googleStream, timeout
             type: 'done',
             notice: finishReason === 'MAX_TOKENS' ? ERROR_TEXT.TRUNCATED : null,
             completionReason: finishReason === 'MAX_TOKENS' ? 'max_tokens' : 'complete',
-            ...(publicGrounding(grounding) || {}),
+            ...(publicGrounding(grounding, searchSuggestionWindow) || {}),
           });
         } catch (error) {
           const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'SAFETY_BLOCKED', 'CONTEXT_LIMIT'].includes(error?.code) ? error.code : classifyError(error)[0];

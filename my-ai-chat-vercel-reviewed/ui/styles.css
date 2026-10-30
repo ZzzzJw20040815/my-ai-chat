@@ -300,7 +300,7 @@ html[data-theme="light"] .moon-icon { display: none; }
   border-radius: 7px 18px 18px 18px; background: var(--message-assistant-bg); box-shadow: var(--glass-shadow-soft);
 }
 .message-content { min-width: 0; color: color-mix(in srgb, var(--text) 96%, transparent); line-height: 1.72; overflow-wrap: anywhere; }
-.assistant-body:has(.web-sources, .search-suggestion) { width: 100%; }
+.assistant-body:has(.web-sources, .search-suggestion-host) { width: 100%; }
 .web-sources { width: 100%; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .web-sources a {
   max-width: 100%; padding: 4px 8px; border: 1px solid var(--glass-border); border-radius: 999px;
@@ -308,7 +308,7 @@ html[data-theme="light"] .moon-icon { display: none; }
   text-decoration: none; overflow-wrap: anywhere;
 }
 .web-sources a:hover { color: var(--text); }
-.search-suggestion { width: 100%; margin-top: 12px; overflow: auto; }
+.search-suggestion-host { display: block; width: 100%; margin-top: 12px; }
 .message-content p { margin: 0 0 13px; }
 .message-content p:last-child { margin-bottom: 0; }
 .message-content h3 { margin: 20px 0 8px; font-size: 17px; letter-spacing: -.015em; }

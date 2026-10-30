@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { IDBFactory } from 'fake-indexeddb';
+import { JSDOM } from 'jsdom';
 import { handleChat, validatePayload } from '../server/chat.js';
 import { addAssistantVariant, contextFor, createChat, createMessage } from '../ui/state.js';
 import { loadChats, saveChat } from '../ui/storage.js';
@@ -130,7 +131,9 @@ test('grounded chunks become source links and a search suggestion, without unsaf
     };
   }));
   assert.deepEqual(output.at(-1).webSources, [{ title: 'UEFA', url: 'https://www.uefa.com/euro2024/' }]);
-  assert.equal(output.at(-1).searchSuggestionHtml, suggestion);
+  assert.match(output.at(-1).searchSuggestionHtml, /euro 2024/);
+  assert.match(output.at(-1).searchSuggestionHtml, /https:\/\/www\.google\.com\/search\?q=euro\+2024/);
+  assert.match(output.at(-1).searchSuggestionHtml, /noopener noreferrer/);
   assert.equal(JSON.stringify(output).includes('secret'), false);
   assert.equal(JSON.stringify(output).includes('javascript:'), false);
 
@@ -146,6 +149,10 @@ test('grounded chunks become source links and a search suggestion, without unsaf
 
 test('search metadata stays in chat history and out of the next Gemini prompt', async () => {
   const indexedDB = new IDBFactory();
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const previousWindow = globalThis.window;
+  globalThis.window = dom.window;
+  try {
   const chat = createChat(MODEL);
   const user = createMessage('user', 'Who won?');
   const assistant = createMessage('assistant', 'Spain won.', MODEL);
@@ -161,7 +168,8 @@ test('search metadata stays in chat history and out of the next Gemini prompt', 
   const restored = (await loadChats(indexedDB))[0];
   const turn = restored.messages.find(message => message.role === 'assistant');
   assert.deepEqual(turn.variants[0].webSources, [{ title: 'UEFA', url: 'https://www.uefa.com/euro2024/' }]);
-  assert.equal(turn.variants[0].searchSuggestionHtml, suggestion);
+  assert.match(turn.variants[0].searchSuggestionHtml, /euro 2024/);
+  assert.match(turn.variants[0].searchSuggestionHtml, /noopener noreferrer/);
   assert.equal(turn.variants[1].webSources, undefined);
   turn.activeVariantId = turn.variants[0].id;
   const followUp = createMessage('user', 'Where was the final?');
@@ -171,4 +179,8 @@ test('search metadata stays in chat history and out of the next Gemini prompt', 
   assert.equal(JSON.stringify(context).includes('uefa.com'), false);
   assert.equal(JSON.stringify(context).includes('google.com'), false);
   assert.deepEqual(context.map(message => message.content), ['Who won?', 'Spain won.', 'Where was the final?']);
+  } finally {
+    if (previousWindow) globalThis.window = previousWindow;
+    else delete globalThis.window;
+  }
 });

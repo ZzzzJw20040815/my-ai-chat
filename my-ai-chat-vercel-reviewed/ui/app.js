@@ -31,7 +31,7 @@ import {
   replaceStoryMemorySnapshot,
 } from './storage.js';
 import { renderMarkdown } from './markdown.js';
-import { storedWebSearchFields, webSearchMarkup } from '../shared/web-search.js';
+import { mountSearchSuggestion, storedWebSearchFields, webSearchMarkup } from '../shared/web-search.js';
 import { consumeStream } from './stream.js';
 import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from './settings.js';
 import { applyMobileDisplayPreferences } from './mobile-display.js';
@@ -263,6 +263,7 @@ function renderConversation(bottom = false) {
   for (const message of visibleConversationPath(chat).filter(message => !isRuntimeControlMessage(message) || isVisibleRuntimeControlMessage(message))) {
     const article = document.createElement('article'); article.className = 'message ' + message.role;
     article.dataset.messageId = message.id; article.innerHTML = messageHtml(message);
+    mountSearchSuggestions(article);
     $('.messages').append(article);
   }
   syncMobileStoryButton(chat);
@@ -357,11 +358,17 @@ async function updateStoryMemory() {
     if (!$('#storyMenu').hidden) renderStoryMenu($('#storyMenu').dataset.view || 'overview');
   }
 }
-function updateMessage(chatId, message) {
+function mountSearchSuggestions(root) {
+  if (!root?.querySelectorAll) return;
+  for (const host of root.querySelectorAll('.search-suggestion-host')) mountSearchSuggestion(host, window);
+}
   if (activeChat !== chatId) return;
   const nearBottom = shouldFollowStreaming(conversation);
   const element = $('[data-message-id="' + message.id + '"]');
-  if (element) element.innerHTML = messageHtml(message);
+  if (element) {
+    element.innerHTML = messageHtml(message);
+    mountSearchSuggestions(element);
+  }
   if (nearBottom) conversation.scrollTop = conversation.scrollHeight;
   syncScrollToBottomButton();
 }
