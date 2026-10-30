@@ -10,7 +10,7 @@ export default defineConfig({
     name: 'no-key-server-preview',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
-        // Exact-size QA frames exist only in Vite development, never in the deployed Worker.
+        // Exact-size QA frames exist only in Vite development, never in the deployed Vercel Node Function.
         if (req.url?.startsWith('/__qa')) {
           const mobile = req.url.includes('mobile');
           const scenario = new URL(req.url, 'http://terminal.local:4173').searchParams.get('scenario');
