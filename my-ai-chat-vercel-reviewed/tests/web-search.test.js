@@ -6,6 +6,9 @@ import { handleChat, validatePayload } from '../server/chat.js';
 import { addAssistantVariant, contextFor, createChat, createMessage } from '../ui/state.js';
 import { loadChats, saveChat } from '../ui/storage.js';
 import { publicGrounding, webSearchMarkup } from '../shared/web-search.js';
+import { normalizeGlobalSettings } from '../shared/settings.js';
+import { parseBackupText } from '../ui/backup.js';
+import { createSettingsCode, parseSettingsCode } from '../ui/settings-code.js';
 
 const MODEL = 'gemini-3.1-pro-preview';
 const env = { GEMINI_API_KEY: 'unit-test-sentinel-not-a-key' };
@@ -46,6 +49,56 @@ test('chat requests enable Google Search and ignore caller-supplied tools', () =
   assert.throws(() => validatePayload({
     model: MODEL, messages: [createMessage('user', 'hello')], tools: [{ googleSearch: {} }],
   }), /INVALID_REQUEST/);
+});
+
+test('web search stays on for normal chat and setup, and stays off when disabled or writing', () => {
+  const user = createMessage('user', 'hello');
+  const assistant = createMessage('assistant', 'Once upon a time.', MODEL);
+  const off = validatePayload({ model: MODEL, messages: [user], settings: { webSearch: 'off' } });
+  assert.equal(off.config.tools, undefined);
+  const writing = validatePayload({
+    model: MODEL, messages: [user, assistant],
+    settings: { webSearch: 'on' },
+    storyRuntime: { mode: 'writing', action: 'continue_story' },
+  });
+  assert.equal(writing.config.tools, undefined);
+  const startWriting = validatePayload({
+    model: MODEL, messages: [createMessage('user', 'premise')],
+    storyRuntime: { mode: 'writing', action: 'start_writing' },
+  });
+  assert.equal(startWriting.config.tools, undefined);
+  const incomplete = validatePayload({
+    model: MODEL, messages: [createMessage('user', 'premise'), createMessage('assistant', 'partial', MODEL)],
+    storyRuntime: { mode: 'writing', action: 'continue_incomplete' },
+  });
+  assert.equal(incomplete.config.tools, undefined);
+  const setup = validatePayload({
+    model: MODEL, messages: [createMessage('user', 'idea')],
+    settings: { webSearch: 'on' },
+    storyRuntime: { mode: 'setup', action: 'prepare_story' },
+  });
+  assert.deepEqual(setup.config.tools, [{ googleSearch: {} }]);
+  assert.throws(() => validatePayload({
+    model: MODEL, messages: [createMessage('user', 'hello')], settings: { webSearch: 'sometimes' },
+  }), /INVALID_REQUEST/);
+});
+
+test('old settings, settings codes, and backups default web search to on', () => {
+  assert.equal(normalizeGlobalSettings({}).webSearch, 'on');
+  assert.equal(normalizeGlobalSettings({ webSearch: 'maybe' }).webSearch, 'on');
+  const legacyCode = createSettingsCode({ settings: { systemInstruction: '保留我' }, theme: 'dark' });
+  const envelope = JSON.parse(Buffer.from(legacyCode.slice('MAICFG1.'.length), 'base64url').toString('utf8'));
+  delete envelope.globalSettings.webSearch;
+  const restoredCode = 'MAICFG1.' + Buffer.from(JSON.stringify(envelope), 'utf8').toString('base64url');
+  assert.equal(parseSettingsCode(restoredCode).settings.webSearch, 'on');
+  assert.equal(parseSettingsCode(restoredCode).settings.systemInstruction, '保留我');
+  const backup = parseBackupText(JSON.stringify({
+    format: 'my-ai-chat-backup', version: 1, exportedAt: '2026-10-01T00:00:00.000Z',
+    app: { name: 'My AI Chat', theme: 'dark' }, chats: [],
+    settings: { systemInstruction: '旧备份' }, activeChatId: null,
+  }));
+  assert.equal(backup.settings.webSearch, 'on');
+  assert.equal(backup.settings.systemInstruction, '旧备份');
 });
 
 test('story memory extraction does not enable Google Search', async () => {

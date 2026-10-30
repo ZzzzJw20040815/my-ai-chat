@@ -420,6 +420,8 @@ html[data-theme="light"] .moon-icon { display: none; }
 .advanced-settings { padding: 15px 0 4px; border-top: 1px solid var(--border); }
 .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .toggle-row input { width: 38px; height: 21px; flex: none; accent-color: var(--accent); }
+.web-search-toggle { min-height: 44px; padding: 8px 0 12px; }
+.web-search-toggle input { width: 44px; height: 44px; }
 .advanced-fields { margin: 14px 0 0; padding: 14px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; border: 1px solid var(--border); border-radius: 10px; }
 .advanced-fields:disabled { opacity: .55; }
 .compact-field { min-width: 0; color: var(--muted); font-size: 12px; }

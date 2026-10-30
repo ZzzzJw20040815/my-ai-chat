@@ -424,6 +424,7 @@ function syncSettingsUi() {
   $('#systemInstructionSetting').value = globalSettings.systemInstruction;
   $('#systemInstructionCount').textContent = globalSettings.systemInstruction.length + ' / ' + MAX_SYSTEM_INSTRUCTION_LENGTH;
   $('#contextLimitSetting').value = globalSettings.contextLimit;
+  $('#webSearchSetting').checked = globalSettings.webSearch !== 'off';
   $('#maxOutputTokensSetting').value = globalSettings.maxOutputTokens ?? '';
   const outputTokenLimit = Number.isInteger(capabilities?.outputTokenLimit)
     ? Math.min(MAX_OUTPUT_TOKENS_LIMIT, capabilities.outputTokenLimit) : null;
@@ -1073,6 +1074,7 @@ $('#systemInstructionSetting').addEventListener('input', event => {
 });
 $('#clearSystemInstruction').addEventListener('click', () => updateGlobalSettings({ systemInstruction: '' }));
 $('#contextLimitSetting').addEventListener('change', event => updateGlobalSettings({ contextLimit: event.target.value }));
+$('#webSearchSetting').addEventListener('change', event => updateGlobalSettings({ webSearch: event.target.checked ? 'on' : 'off' }));
 $('#maxOutputTokensSetting').addEventListener('change', event => {
   const value = event.target.value.trim();
   updateGlobalSettings({ maxOutputTokens: value ? Number(value) : null });
