@@ -125,6 +125,7 @@ test('Vite output is static, keyless and separate from the server function', asy
   assert.ok(!js.includes('GEMINI_API_KEY'));
   assert.ok(!js.includes('generateContentStream'));
   assert.ok(!js.includes('这不是 Gemini 实际回复'));
+  assert.ok(!js.includes('jsdom'));
   const response=await api.fetch(makeRequest()); assert.equal(response.status,503);
   assert.equal((await response.json()).error.code,'KEY_MISSING');
 });

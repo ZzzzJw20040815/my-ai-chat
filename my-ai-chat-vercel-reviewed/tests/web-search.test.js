@@ -131,9 +131,7 @@ test('grounded chunks become source links and a search suggestion, without unsaf
     };
   }));
   assert.deepEqual(output.at(-1).webSources, [{ title: 'UEFA', url: 'https://www.uefa.com/euro2024/' }]);
-  assert.match(output.at(-1).searchSuggestionHtml, /euro 2024/);
-  assert.match(output.at(-1).searchSuggestionHtml, /https:\/\/www\.google\.com\/search\?q=euro\+2024/);
-  assert.match(output.at(-1).searchSuggestionHtml, /noopener noreferrer/);
+  assert.equal(output.at(-1).searchSuggestionHtml, suggestion);
   assert.equal(JSON.stringify(output).includes('secret'), false);
   assert.equal(JSON.stringify(output).includes('javascript:'), false);
 
@@ -145,6 +143,62 @@ test('grounded chunks become source links and a search suggestion, without unsaf
   assert.equal(markup.includes('<script'), false);
   assert.match(markup, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.match(markup, /href="https:\/\/example.com\/a"/);
+});
+
+test('the server passes search suggestion HTML through and drops non-strings and overlong HTML', async () => {
+  const raw = '<div><script>alert(1)</script><a href="http://insecure.example/">raw</a></div>';
+  const kept = await events(await handleChat(request({
+    model: MODEL, messages: [createMessage('user', 'Who won Euro 2024?')],
+  }), env, async function* () {
+    yield {
+      text: 'Spain won.',
+      candidates: [{ finishReason: 'STOP', groundingMetadata: {
+        searchEntryPoint: { renderedContent: raw },
+        groundingChunks: [{ web: { uri: 'https://www.uefa.com/euro2024/', title: 'UEFA' } }],
+      } }],
+    };
+  }));
+  assert.equal(kept.at(-1).searchSuggestionHtml, raw);
+  assert.deepEqual(kept.at(-1).webSources, [{ title: 'UEFA', url: 'https://www.uefa.com/euro2024/' }]);
+
+  const exactLimit = await events(await handleChat(request({
+    model: MODEL, messages: [createMessage('user', 'Who won Euro 2024?')],
+  }), env, async function* () {
+    yield {
+      text: 'Spain won.',
+      candidates: [{ finishReason: 'STOP', groundingMetadata: {
+        searchEntryPoint: { renderedContent: 'a'.repeat(20000) },
+      } }],
+    };
+  }));
+  assert.equal(exactLimit.at(-1).searchSuggestionHtml, 'a'.repeat(20000));
+
+  for (const renderedContent of ['a'.repeat(20001), 12, { html: '<div>nope</div>' }]) {
+    const dropped = await events(await handleChat(request({
+      model: MODEL, messages: [createMessage('user', 'Who won Euro 2024?')],
+    }), env, async function* () {
+      yield {
+        text: 'Spain won.',
+        candidates: [{ finishReason: 'STOP', groundingMetadata: {
+          searchEntryPoint: { renderedContent },
+          groundingChunks: [{ web: { uri: 'https://www.uefa.com/euro2024/', title: 'UEFA' } }],
+        } }],
+      };
+    }));
+    assert.equal(dropped.at(-1).searchSuggestionHtml, undefined);
+    assert.deepEqual(dropped.at(-1).webSources, [{ title: 'UEFA', url: 'https://www.uefa.com/euro2024/' }]);
+  }
+});
+
+test('server and api runtime code do not import jsdom', async () => {
+  const files = [
+    '../server/chat.js', '../server/model-catalog.js', '../server/story-memory.js',
+    '../api/chat.js', '../api/models.js', '../api/story-memory.js',
+  ];
+  for (const file of files) {
+    const source = await readFile(new URL(file, import.meta.url), 'utf8');
+    assert.equal(source.includes('jsdom'), false, file);
+  }
 });
 
 test('search metadata stays in chat history and out of the next Gemini prompt', async () => {

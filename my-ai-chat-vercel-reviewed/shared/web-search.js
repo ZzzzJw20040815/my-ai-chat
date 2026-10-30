@@ -78,13 +78,19 @@ export function preferGroundingMetadata(current, next) {
   return groundingScore(next) >= groundingScore(current) ? next : current;
 }
 
-export function publicGrounding(metadata, win = globalThis.window) {
+// The server forwards this string unchanged. The browser sanitizes it on save and again before display.
+function passThroughSearchSuggestionHtml(value) {
+  if (typeof value !== 'string' || value.length > MAX_SUGGESTION_HTML) return null;
+  return value;
+}
+
+export function publicGrounding(metadata) {
   if (!metadata || typeof metadata !== 'object') return null;
   const webSources = normalizeWebSources((Array.isArray(metadata.groundingChunks) ? metadata.groundingChunks : []).map(chunk => ({
     title: chunk?.web?.title,
     url: chunk?.web?.uri,
   })));
-  const searchSuggestionHtml = sanitizeSearchSuggestionHtml(metadata.searchEntryPoint?.renderedContent, win);
+  const searchSuggestionHtml = passThroughSearchSuggestionHtml(metadata.searchEntryPoint?.renderedContent);
   if (!webSources.length && !searchSuggestionHtml) return null;
   return {
     ...(webSources.length ? { webSources } : {}),
