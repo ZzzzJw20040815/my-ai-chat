@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { JSDOM } from 'jsdom';
 import { isPersistableModelId, modelMetadata } from '../shared/models.js';
 import { trustedModelMetadata } from './model-catalog.js';
 import {
@@ -15,6 +16,7 @@ import {
   GOOGLE_SEARCH_TOOLS, groundingMetadataFromChunk, preferGroundingMetadata, publicGrounding,
 } from '../shared/web-search.js';
 
+const searchSuggestionWindow = new JSDOM('<!doctype html><html><body></body></html>').window;
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_MESSAGES = 100;
 export const ERROR_TEXT = Object.freeze({
@@ -85,7 +87,9 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
   if (storyRuntime) {
     config.systemInstruction = storyRuntimeSystemInstruction(config.systemInstruction || '', storyRuntime);
   }
-  config.tools = GOOGLE_SEARCH_TOOLS.map(tool => ({ googleSearch: { ...tool.googleSearch } }));
+  if (payload.settings?.webSearch !== 'off' && storyRuntime?.mode !== 'writing') {
+    config.tools = GOOGLE_SEARCH_TOOLS.map(tool => ({ googleSearch: { ...tool.googleSearch } }));
+  }
   return { model: payload.model, contents, config };
 }
 function invalidRequest() { throw new Error('INVALID_REQUEST'); }
@@ -113,8 +117,9 @@ export function validateGenerationSettings(value, modelOrMetadata) {
   if (!metadata?.capabilities) invalidRequest();
   if (value === undefined) return {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalidRequest();
-  const allowedSettingsKeys = new Set(['systemInstruction', 'maxOutputTokens', 'thinkingLevel', 'samplingOverrides', 'safetySettings']);
+  const allowedSettingsKeys = new Set(['systemInstruction', 'maxOutputTokens', 'thinkingLevel', 'samplingOverrides', 'safetySettings', 'webSearch']);
   if (Object.keys(value).some(key => !allowedSettingsKeys.has(key))) invalidRequest();
+  if ('webSearch' in value && value.webSearch !== 'on' && value.webSearch !== 'off') invalidRequest();
   const config = {};
   if ('systemInstruction' in value) {
     if (typeof value.systemInstruction !== 'string' || value.systemInstruction.length > MAX_SYSTEM_INSTRUCTION_LENGTH) invalidRequest();
@@ -273,7 +278,7 @@ export async function handleChat(request, env, transport = googleStream, timeout
             type: 'done',
             notice: finishReason === 'MAX_TOKENS' ? ERROR_TEXT.TRUNCATED : null,
             completionReason: finishReason === 'MAX_TOKENS' ? 'max_tokens' : 'complete',
-            ...(publicGrounding(grounding) || {}),
+            ...(publicGrounding(grounding, searchSuggestionWindow) || {}),
           });
         } catch (error) {
           const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'SAFETY_BLOCKED', 'CONTEXT_LIMIT'].includes(error?.code) ? error.code : classifyError(error)[0];

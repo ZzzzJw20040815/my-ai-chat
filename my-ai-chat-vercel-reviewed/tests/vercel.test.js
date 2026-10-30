@@ -110,14 +110,21 @@ test('Vite output is static, keyless and separate from the server function', asy
   const previous = process.env.GEMINI_API_KEY;
   delete process.env.GEMINI_API_KEY;
   t.after(() => previous === undefined ? delete process.env.GEMINI_API_KEY : process.env.GEMINI_API_KEY = previous);
-  const html=await readFile('dist/client/index.html','utf8');
-  const assets=await readdir('dist/client/assets');
+  let html, assets;
+  try {
+    html = await readFile('dist/client/index.html', 'utf8');
+    assets = await readdir('dist/client/assets');
+  } catch (error) {
+    if (error?.code === 'ENOENT') assert.fail('请先运行 npm run build 或 npm run verify');
+    throw error;
+  }
   const scripts=assets.filter(name=>name.endsWith('.js'));
   assert.ok(scripts.length);
   const js=(await Promise.all(scripts.map(name=>readFile('dist/client/assets/'+name,'utf8')))).join('\n');
   assert.ok(!html.includes('GEMINI_API_KEY'));
   assert.ok(!js.includes('GEMINI_API_KEY'));
   assert.ok(!js.includes('generateContentStream'));
+  assert.ok(!js.includes('这不是 Gemini 实际回复'));
   const response=await api.fetch(makeRequest()); assert.equal(response.status,503);
   assert.equal((await response.json()).error.code,'KEY_MISSING');
 });

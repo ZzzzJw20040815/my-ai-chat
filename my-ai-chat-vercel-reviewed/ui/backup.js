@@ -77,6 +77,7 @@ function validateChat(chat, chatIds) {
 }
 
 function interruptedCopy(chat) {
+  // storedChat applies shared/web-search.js cleaning to webSources and searchSuggestionHtml.
   const copy = storedChat(chat);
   for (const message of copy.messages) {
     const replies = message.role === 'assistant' && Array.isArray(message.variants) ? message.variants : [message];

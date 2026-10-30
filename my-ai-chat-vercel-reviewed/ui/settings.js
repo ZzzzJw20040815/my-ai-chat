@@ -45,5 +45,6 @@ export function requestSettings(settings, model = null) {
     thinkingLevel,
     samplingOverrides,
     safetySettings: customSafety ? { ...normalized.safetySettings, mode: 'custom' } : { mode: 'default' },
+    webSearch: normalized.webSearch,
   };
 }

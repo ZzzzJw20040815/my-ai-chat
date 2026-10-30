@@ -177,7 +177,11 @@
             <span><strong>Current Chat Model</strong><small>Generation settings below are applied only when this model supports them.</small></span>
             <strong id="currentChatModelSetting"></strong>
           </div>
-          <p class="settings-intro generation-settings-note">不支持的生成设置会自动使用当前聊天模型的默认值；保存的全局偏好不会被删除。聊天会启用 Google 搜索，模型自行决定是否查询；查到网页时，回复下方会显示来源和 Google 搜索建议。</p>
+          <p class="settings-intro generation-settings-note">不支持的生成设置会自动使用当前聊天模型的默认值；保存的全局偏好不会被删除。开启后，模型自行决定是否查询；查到网页时，回复下方会显示来源和 Google 搜索建议。写正文时会自动关闭搜索。</p>
+          <label class="toggle-row web-search-toggle">
+            <span><strong>联网搜索（可能产生 Google 搜索费用）</strong><small id="webSearchSupport">关闭后，普通聊天和构思都不会查询网页。</small></span>
+            <input id="webSearchSetting" type="checkbox" role="switch" aria-describedby="webSearchSupport" aria-label="联网搜索（可能产生 Google 搜索费用）" />
+          </label>
           <label class="setting-field setting-field-stack">
             <span><strong>System Instruction</strong><small>Sent as Gemini system instruction for future requests.</small></span>
             <textarea id="systemInstructionSetting" rows="5" maxlength="20000" placeholder="e.g. You are a senior novel editor…"></textarea>

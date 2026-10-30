@@ -300,7 +300,7 @@ html[data-theme="light"] .moon-icon { display: none; }
   border-radius: 7px 18px 18px 18px; background: var(--message-assistant-bg); box-shadow: var(--glass-shadow-soft);
 }
 .message-content { min-width: 0; color: color-mix(in srgb, var(--text) 96%, transparent); line-height: 1.72; overflow-wrap: anywhere; }
-.assistant-body:has(.web-sources, .search-suggestion) { width: 100%; }
+.assistant-body:has(.web-sources, .search-suggestion-host) { width: 100%; }
 .web-sources { width: 100%; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .web-sources a {
   max-width: 100%; padding: 4px 8px; border: 1px solid var(--glass-border); border-radius: 999px;
@@ -308,7 +308,7 @@ html[data-theme="light"] .moon-icon { display: none; }
   text-decoration: none; overflow-wrap: anywhere;
 }
 .web-sources a:hover { color: var(--text); }
-.search-suggestion { width: 100%; margin-top: 12px; overflow: auto; }
+.search-suggestion-host { display: block; width: 100%; margin-top: 12px; }
 .message-content p { margin: 0 0 13px; }
 .message-content p:last-child { margin-bottom: 0; }
 .message-content h3 { margin: 20px 0 8px; font-size: 17px; letter-spacing: -.015em; }
@@ -420,6 +420,8 @@ html[data-theme="light"] .moon-icon { display: none; }
 .advanced-settings { padding: 15px 0 4px; border-top: 1px solid var(--border); }
 .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .toggle-row input { width: 38px; height: 21px; flex: none; accent-color: var(--accent); }
+.web-search-toggle { min-height: 44px; padding: 8px 0 12px; }
+.web-search-toggle input { width: 44px; height: 44px; }
 .advanced-fields { margin: 14px 0 0; padding: 14px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; border: 1px solid var(--border); border-radius: 10px; }
 .advanced-fields:disabled { opacity: .55; }
 .compact-field { min-width: 0; color: var(--muted); font-size: 12px; }

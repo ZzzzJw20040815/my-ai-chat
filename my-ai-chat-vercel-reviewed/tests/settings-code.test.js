@@ -61,7 +61,7 @@ test('export is an explicit settings whitelist and excludes secrets, chats, Stor
   const envelope = envelopeFrom(createSettingsCode({ settings, theme: 'dark' }));
   assert.deepEqual(Object.keys(envelope.globalSettings).sort(), [
     'contextLimit', 'defaultModel', 'maxOutputTokens', 'mobileDisplay', 'safetySettings',
-    'samplingOverrides', 'systemInstruction', 'thinkingLevel',
+    'samplingOverrides', 'systemInstruction', 'thinkingLevel', 'webSearch',
   ]);
   const serialized = JSON.stringify(envelope);
   for (const excluded of ['server-secret', 'client-secret', 'chats', 'storyMemory', 'styleReferences', 'wallpaper', 'activeChatId']) {
@@ -79,6 +79,7 @@ test('missing V1 setting fields use current normalization defaults and unknown f
   const result = parseSettingsCode(code);
   assert.equal(result.settings.systemInstruction, '保留我');
   assert.equal(result.settings.defaultModel, DEFAULT_GLOBAL_SETTINGS.defaultModel);
+  assert.equal(result.settings.webSearch, 'on');
   assert.deepEqual(result.settings.mobileDisplay, DEFAULT_GLOBAL_SETTINGS.mobileDisplay);
   assert.equal(Object.hasOwn(result.settings, 'futureSetting'), false);
   assert.equal({}.polluted, undefined);
@@ -100,6 +101,7 @@ test('malformed codes and invalid known fields are rejected before any caller ca
     utf8Code({ ...base, globalSettings: { samplingOverrides: { temperature: 99 } } }),
     utf8Code({ ...base, globalSettings: { safetySettings: { mode: 'unsafe' } } }),
     utf8Code({ ...base, globalSettings: { mobileDisplay: { density: 'tiny' } } }),
+    utf8Code({ ...base, globalSettings: { webSearch: 'sometimes' } }),
     utf8Code({ ...base, appearance: { theme: 'neon' } }),
   ];
   for (const code of rejected) assert.throws(() => parseSettingsCode(code), SettingsCodeError);
