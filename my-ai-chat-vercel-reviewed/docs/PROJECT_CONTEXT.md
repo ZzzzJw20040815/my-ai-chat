@@ -101,7 +101,7 @@ scripts：
 `vite.config.js`：`root` 是 `ui`，`build.outDir` 是 `../dist/client`，`emptyOutDir: true`。开发服务器 `host: '0.0.0.0'`，`allowedHosts: ['terminal.local']`。插件 `no-key-server-preview` 只在 `vite dev` 里挂上：
 
 - `GET /__qa?scenario=` 设置 cookie `phase2_qa`，合法值是 `stream`、`slow`、`429`、`network`、`model`、`server`。
-- `POST /api/chat` 被改写成 `Request('http://terminal.local:4173/api/chat')`。有合法 cookie 时用 `qaTransport` 和假密钥；否则 `handleChat(request, {})`，不读本机环境变量。
+- `POST /api/chat` 用传入的 `Host` 构造请求：`new Request(new URL('/api/chat', `http://${req.headers.host || 'localhost'}`), …)`，见 `vite.config.js` 第 27–30 行。有合法 cookie 时用 `qaTransport` 和假密钥；否则 `handleChat(request, {})`，不读本机环境变量。从 `http://localhost:5173` 打开时，`Origin` 与这个 URL 的 origin 相同，同源检查不会因此返回 403。`terminal.local` 只用于第 16 行 `/__qa` 的查询解析基准，以及第 8 行的 `allowedHosts`。
 
 `vercel.json`：
 
@@ -881,7 +881,6 @@ user 的 `user-variant-prev` / `user-variant-next` 调用 `selectUserChild`。�
 3. 聊天 API 的消息 `id` 上限是 100，故事记忆和备份的 ID 上限是 256。`uniqueId` 生成的 UUID 两边都放得下。
 4. `contextFor` 要求 assistant `status === 'complete'`。`continue_incomplete` 在 `ui/state.js` 里有单独分支，可以把紧邻的未完成文本放进这一次请求；普通下一问不会带上它。
 5. `ui/app.js` 仍把渲染、生成、设置、备份、壁纸和故事放在一个文件里。拆分计划见 `docs/app-split-plan.md`。
-6. 开发服务器把 `/api/chat` 固定写成 `http://terminal.local:4173`。浏览器从 `localhost` 打开时，`Origin` 和这个 URL 不一致，`handleChat` 返回 403。
 
 ## 11. ui/index.html 的 id
 
