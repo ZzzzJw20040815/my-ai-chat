@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import { Readable } from 'node:stream';
 import { handleChat } from './server/chat.js';
-import { qaTransport } from './tests/qa-transport.js';
+import { qaTransport } from './dev/qa-transport.js';
 export default defineConfig({
   root: 'ui',
   build: { outDir: '../dist/client', emptyOutDir: true },

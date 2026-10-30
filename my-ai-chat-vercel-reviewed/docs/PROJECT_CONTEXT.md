@@ -52,7 +52,7 @@
 | `tests/web-search-backup.test.js` | 备份往返保留来源；恶意 HTML 和 http 链接被丢掉；旧备份仍可导入 |
 | `tests/search-suggestion-sample.js` | 接近 Gemini `renderedContent` 的搜索建议样例，不是测试入口 |
 | `tests/search-suggestion.test.js` | DOMPurify 白名单和 Shadow DOM 样式隔离 |
-| `tests/qa-transport.js` | 开发服务器专用的假 Gemini 流，不是 `*.test.js` |
+| `dev/qa-transport.js` | 只给 Vite 开发服务器用的假 Gemini 流。生产构建不打包它 |
 | `tests/phase2.test.js` | 聊天传输、错误消毒、Markdown |
 | `tests/persistence.test.js` | IndexedDB 建库、演示数据迁移、部分回复不进上下文 |
 | `tests/vercel.test.js` | Vercel Function 与 SDK 请求体、Stop 信号、构建产物不含密钥 |
@@ -846,7 +846,7 @@ user 的 `user-variant-prev` / `user-variant-next` 调用 `selectUserChild`。�
 
 ## 9. 测试清单
 
-`npm test` 只运行 `tests/*.test.js`。`qa-transport.js` 被 `vite.config.js` 使用，不单独作为测试入口。
+`npm test` 只运行 `tests/*.test.js`。`dev/qa-transport.js` 只被 `vite.config.js` 的开发中间件 import，不进入 `vite build` 的客户端产物。
 
 | 文件 | 覆盖 |
 | --- | --- |
