@@ -721,7 +721,7 @@ variant 与单条 assistant 使用同一套内容字段。`ensureAssistantVarian
 
 ## 6. 持久化
 
-数据库 `my-ai-chat`，版本 4。`openChatDatabase` 不按旧版本号分支，只在 store 不存在时创建：
+数据库 `my-ai-chat`，版本 4。`openChatDatabase` 在一次 `upgradeneeded` 里按 `event.oldVersion` 逐级补齐：v0→v1 创建 `chats`，v1→v2 创建 `assets`，v2→v3 创建 `storyMemories`，v3→v4 创建 `styleReferences`。最终存储区和索引与下表一致，已有记录不重建。
 
 | store | keyPath | 索引 |
 | --- | --- | --- |

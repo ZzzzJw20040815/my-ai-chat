@@ -36,23 +36,28 @@ export function openChatDatabase(indexedDBApi = globalThis.indexedDB) {
   if (indexedDBApi === globalThis.indexedDB && sharedDatabase) return sharedDatabase;
   const opening = new Promise((resolve, reject) => {
     const request = indexedDBApi.open(CHAT_DB_NAME, CHAT_DB_VERSION);
-    request.addEventListener('upgradeneeded', () => {
+    request.addEventListener('upgradeneeded', event => {
       const database = request.result;
-      if (!database.objectStoreNames.contains(CHAT_STORE_NAME)) {
+      const oldVersion = event.oldVersion;
+      // v0 → v1: conversation records. Existing v1 databases already have this store.
+      if (oldVersion < 1) {
         const store = database.createObjectStore(CHAT_STORE_NAME, { keyPath: 'id' });
         store.createIndex('updatedAt', 'updatedAt');
         store.createIndex('demo', 'demo');
       }
-      if (!database.objectStoreNames.contains(ASSET_STORE_NAME)) {
+      // v1 → v2: wallpaper and other blobs.
+      if (oldVersion < 2) {
         database.createObjectStore(ASSET_STORE_NAME, { keyPath: 'id' });
       }
-      if (!database.objectStoreNames.contains(STORY_MEMORY_STORE_NAME)) {
+      // v2 → v3: branch-anchored story memory.
+      if (oldVersion < 3) {
         const store = database.createObjectStore(STORY_MEMORY_STORE_NAME, { keyPath: 'id' });
         store.createIndex('chatId', 'chatId');
         store.createIndex('anchorId', 'anchorId');
         store.createIndex('updatedAt', 'updatedAt');
       }
-      if (!database.objectStoreNames.contains(STYLE_REFERENCE_STORE_NAME)) {
+      // v3 → v4: saved style references. Version stays at 4.
+      if (oldVersion < 4) {
         const store = database.createObjectStore(STYLE_REFERENCE_STORE_NAME, { keyPath: 'id' });
         store.createIndex('createdAt', 'createdAt');
         store.createIndex('sourceVariantId', 'sourceVariantId', { unique: true });
