@@ -362,6 +362,7 @@ function mountSearchSuggestions(root) {
   if (!root?.querySelectorAll) return;
   for (const host of root.querySelectorAll('.search-suggestion-host')) mountSearchSuggestion(host, window);
 }
+function updateMessage(chatId, message) {
   if (activeChat !== chatId) return;
   const nearBottom = shouldFollowStreaming(conversation);
   const element = $('[data-message-id="' + message.id + '"]');
