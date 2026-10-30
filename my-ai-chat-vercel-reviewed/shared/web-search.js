@@ -11,6 +11,23 @@ const SUGGESTION_ATTRS = Object.freeze([
   'href', 'class', 'style', 'target', 'rel', 'xmlns', 'viewBox', 'd', 'fill', 'width', 'height', 'aria-hidden', 'role',
 ]);
 
+function httpsStyleUrl(value) {
+  try {
+    const url = new URL(String(value).trim());
+    return url.protocol === 'https:' && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+function stripUnsafeStyleText(css) {
+  if (typeof css !== 'string' || !css) return '';
+  const withoutImport = css.replace(/@import\b[^;]*;?/gi, '');
+  return withoutImport.replace(/url\(\s*(['"]?)([\s\S]*?)\1\s*\)/gi, (full, _quote, raw) => (
+    httpsStyleUrl(raw) ? full : ''
+  ));
+}
+
 export function sanitizeSearchSuggestionHtml(value, win = globalThis.window) {
   if (typeof value !== 'string') return null;
   const html = value.trim();
@@ -33,6 +50,12 @@ export function sanitizeSearchSuggestionHtml(value, win = globalThis.window) {
     else link.setAttribute('href', parsed.href);
     link.setAttribute('target', '_blank');
     link.setAttribute('rel', 'noopener noreferrer');
+  }
+  for (const style of template.content.querySelectorAll('style')) style.textContent = stripUnsafeStyleText(style.textContent);
+  for (const element of template.content.querySelectorAll('[style]')) {
+    const cleaned = stripUnsafeStyleText(element.getAttribute('style'));
+    if (cleaned.trim()) element.setAttribute('style', cleaned);
+    else element.removeAttribute('style');
   }
   const result = template.innerHTML.trim();
   return result || null;
@@ -126,6 +149,8 @@ export function mountSearchSuggestion(host, win = globalThis.window) {
   const clean = sanitizeSearchSuggestionHtml(source?.innerHTML || '', win);
   source?.remove();
   if (!clean || !host.attachShadow) return null;
+  host.style.setProperty('contain', 'paint');
+  host.style.setProperty('overflow', 'hidden');
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = clean;
   return root;

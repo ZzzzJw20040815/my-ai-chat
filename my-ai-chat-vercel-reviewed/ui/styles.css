@@ -308,7 +308,7 @@ html[data-theme="light"] .moon-icon { display: none; }
   text-decoration: none; overflow-wrap: anywhere;
 }
 .web-sources a:hover { color: var(--text); }
-.search-suggestion-host { display: block; width: 100%; margin-top: 12px; }
+.search-suggestion-host { display: block; width: 100%; margin-top: 12px; contain: paint; overflow: hidden; }
 .message-content p { margin: 0 0 13px; }
 .message-content p:last-child { margin-bottom: 0; }
 .message-content h3 { margin: 20px 0 8px; font-size: 17px; letter-spacing: -.015em; }
