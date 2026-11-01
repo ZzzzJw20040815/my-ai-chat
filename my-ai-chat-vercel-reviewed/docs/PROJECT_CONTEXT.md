@@ -1,6 +1,6 @@
 # My AI Chat 项目地图
 
-本文描述 `fix/web-search-hardening` 上的当前代码。起点是 `main` 的 `23cfe23`（PR #19，Gemini 联网搜索），并包含本分支已提交的加固。路径相对 `my-ai-chat-vercel-reviewed/`。
+本文描述 `fix/web-search-hardening` 上的运行代码，对应提交 `a6c2c8f`（task D）。起点是 `main` 的 `23cfe23`（PR #19，Gemini 联网搜索）。路径相对 `my-ai-chat-vercel-reviewed/`。此后只改说明或测试的提交不改变这里描述的行为。
 
 这是浏览器端聊天应用：Vite 打包静态页，Vercel Node Function 持有 `GEMINI_API_KEY` 并调用 `@google/genai`。聊天、故事记忆、风格参考和壁纸存在本机 IndexedDB；全局设置存在 `localStorage`。没有登录、服务端数据库或云同步。
 
@@ -26,7 +26,7 @@
 | `shared/story-memory.js` | 故事记忆 JSON schema、校验、规范化、注入 system instruction |
 | `shared/story-memory-transport.js` | 故事记忆请求的消息数、字符数和分块预算 |
 | `shared/story-runtime.js` | 故事模式、稳定度、动作，以及附加到 system instruction 的策略文本 |
-| `shared/web-search.js` | Google 搜索工具、来源清洗、搜索建议的 DOMPurify 白名单，以及 Shadow DOM 挂载 |
+| `shared/web-search.js` | Google 搜索工具、来源清洗、搜索建议的长度检查与浏览器端 DOMPurify，以及 Shadow DOM 挂载 |
 | `ui/index.html` | 页面骨架：侧栏、对话、输入框、设置对话框 |
 | `ui/app.js` | 前端主程序。无 export，由 `index.html` 以 module 加载 |
 | `ui/styles.css` | 全部界面样式，含玻璃拟态、移动端密度和字号 |
@@ -51,7 +51,7 @@
 | `tests/web-search.test.js` | 搜索开关、正文模式不搜索、来源清洗、上下文不带回网页 |
 | `tests/web-search-backup.test.js` | 备份往返保留来源；恶意 HTML 和 http 链接被丢掉；旧备份仍可导入 |
 | `tests/search-suggestion-sample.js` | 接近 Gemini `renderedContent` 的搜索建议样例，不是测试入口 |
-| `tests/search-suggestion.test.js` | DOMPurify 白名单和 Shadow DOM 样式隔离 |
+| `tests/search-suggestion.test.js` | DOMPurify 白名单、`@import` 与非 https `url()`、Shadow DOM，以及宿主的 `contain: paint` |
 | `dev/qa-transport.js` | 只给 Vite 开发服务器用的假 Gemini 流。生产构建不打包它 |
 | `tests/phase2.test.js` | 聊天传输、错误消毒、Markdown |
 | `tests/persistence.test.js` | IndexedDB 建库、演示数据迁移、部分回复不进上下文 |
@@ -86,6 +86,7 @@ scripts：
 | `dev` | `vite` |
 | `build` | `vite build` |
 | `test` | `node --test tests/*.test.js` |
+| `verify` | `npm run build && npm test` |
 
 依赖：
 
@@ -676,7 +677,9 @@ variant 与单条 assistant 使用同一套内容字段。`ensureAssistantVarian
 { "type": "error", "code": "RATE_LIMIT", "message": "中文说明" }
 ```
 
-`webSources` 和 `searchSuggestionHtml` 只在清理后仍有内容时出现。来源最多 8 条，只要 `https`，标题最长 180 字符。搜索建议先按 DOMPurify 白名单清理（`style`、`div`、`span`、`a`、`svg` 及相关子元素和 `class`），链接只留 `https`，并写成 `target="_blank"` 与 `rel="noopener noreferrer"`。浏览器保存时清一次，挂到 Shadow DOM 显示前再清一次。
+`webSources` 只在清理后仍有内容时出现。来源最多 8 条，只要 `https`，标题最长 180 字符。`searchSuggestionHtml` 由服务端放进 `done`：值必须是字符串，长度不超过 20000，通过后原样转发；不是字符串、空字符串或超过 20000 字符则丢掉。服务端不做 DOMPurify。
+
+浏览器清理发生两次，都在 `sanitizeSearchSuggestionHtml`。`storedWebSearchFields` 在写入 IndexedDB 或做备份规范化时清一次。`mountSearchSuggestion` 在挂上 Shadow DOM 显示前再清一次。清理使用 DOMPurify 白名单（`style`、`div`、`span`、`a`、`svg`、`path`、`g`、`title`、`circle`、`rect`，以及 `class`、`style`、`href` 等属性）。链接只留不带账号密码的 `https`，并写成 `target="_blank"` 与 `rel="noopener noreferrer"`。白名单之后，再去掉 `<style>` 内容和 `style` 属性里的 `@import`，以及非 https 的 `url(...)`（带用户名或密码的 https 同样去掉）。宿主元素 `.search-suggestion-host` 在挂载时设置 `contain: paint` 和 `overflow: hidden`，`ui/styles.css` 里同一条规则也写了这两项。
 
 `config.tools` 为 `[{ googleSearch: {} }]` 的条件是：`settings.webSearch !== 'off'`（缺省视为开启），并且没有 `storyRuntime` 或 `storyRuntime.mode !== 'writing'`。构思 `setup` 可以搜索。`start_writing`、`continue_story`、`continue_incomplete` 都不附工具。请求体里的 `tools` 仍然非法。
 
