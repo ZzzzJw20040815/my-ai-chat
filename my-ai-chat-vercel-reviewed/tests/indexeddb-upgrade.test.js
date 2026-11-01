@@ -52,13 +52,16 @@ test('IndexedDB upgrades from empty, v1, v2, and v3 keep data and finish at v4',
   version1.close();
   const upgradedV1 = await openChatDatabase(fromV1);
   assert.equal(upgradedV1.version, 4);
+  assert.deepEqual(indexNames(upgradedV1, CHAT_STORE_NAME), ['demo', 'updatedAt']);
   assert.deepEqual(indexNames(upgradedV1, STORY_MEMORY_STORE_NAME), ['anchorId', 'chatId', 'updatedAt']);
   assert.deepEqual(indexNames(upgradedV1, STYLE_REFERENCE_STORE_NAME), ['createdAt', 'sourceVariantId']);
   assert.equal((await loadChats(fromV1))[0].title, 'From v1');
 
   const fromV2 = new IDBFactory();
   const version2 = await openAt(fromV2, 2, database => {
-    database.createObjectStore(CHAT_STORE_NAME, { keyPath: 'id' });
+    const store = database.createObjectStore(CHAT_STORE_NAME, { keyPath: 'id' });
+    store.createIndex('updatedAt', 'updatedAt');
+    store.createIndex('demo', 'demo');
     database.createObjectStore(ASSET_STORE_NAME, { keyPath: 'id' });
   });
   await put(version2, CHAT_STORE_NAME, {
@@ -69,12 +72,16 @@ test('IndexedDB upgrades from empty, v1, v2, and v3 keep data and finish at v4',
   version2.close();
   const upgradedV2 = await openChatDatabase(fromV2);
   assert.equal(upgradedV2.objectStoreNames.contains(STORY_MEMORY_STORE_NAME), true);
+  assert.deepEqual(indexNames(upgradedV2, CHAT_STORE_NAME), ['demo', 'updatedAt']);
   assert.equal((await loadChats(fromV2))[0].id, 'v2-chat');
+  assert.equal((await loadChats(fromV2))[0].title, 'From v2');
   assert.equal((await loadWallpaperAsset(fromV2)).name, 'v2.png');
 
   const fromV3 = new IDBFactory();
   const version3 = await openAt(fromV3, 3, database => {
-    database.createObjectStore(CHAT_STORE_NAME, { keyPath: 'id' });
+    const chats = database.createObjectStore(CHAT_STORE_NAME, { keyPath: 'id' });
+    chats.createIndex('updatedAt', 'updatedAt');
+    chats.createIndex('demo', 'demo');
     database.createObjectStore(ASSET_STORE_NAME, { keyPath: 'id' });
     const memories = database.createObjectStore(STORY_MEMORY_STORE_NAME, { keyPath: 'id' });
     memories.createIndex('chatId', 'chatId');
@@ -98,7 +105,9 @@ test('IndexedDB upgrades from empty, v1, v2, and v3 keep data and finish at v4',
   });
   version3.close();
   const upgradedV3 = await openChatDatabase(fromV3);
+  assert.deepEqual(indexNames(upgradedV3, CHAT_STORE_NAME), ['demo', 'updatedAt']);
   assert.deepEqual(indexNames(upgradedV3, STYLE_REFERENCE_STORE_NAME), ['createdAt', 'sourceVariantId']);
   assert.equal((await loadChats(fromV3))[0].id, 'v3-chat');
+  assert.equal((await loadChats(fromV3))[0].title, 'From v3');
   assert.equal((await loadStoryMemories('v3-chat', fromV3))[0].id, 'memory-v3');
 });
