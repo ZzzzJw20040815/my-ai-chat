@@ -1,6 +1,6 @@
 # 2026-10-30 联网搜索加固总结
 
-这份文档给不能直接翻完仓库的审查者使用。它描述分支 `fix/web-search-hardening` 相对 `main` 提交 `23cfe23`（PR #19，第一次加入 Gemini 联网搜索）的改动。运行代码停在 `a6c2c8f`（task D）。本文随随后的文档提交进入仓库，不改变运行行为。
+这份文档给不能直接翻完仓库的审查者使用。它描述分支 `fix/web-search-hardening` 相对 `main` 提交 `23cfe23`（PR #19，第一次加入 Gemini 联网搜索）的改动。运行代码停在 `39fcefc`。
 
 工作目录是 `my-ai-chat-vercel-reviewed/`。下面的路径都相对这个目录。
 
@@ -56,6 +56,9 @@
 | `95e2abe` | 任务 A：服务端原样转发搜索建议，`jsdom` 回到 devDependencies |
 | `c94f86a` | 任务 B：宿主 `contain: paint`，并去掉 `@import` 与非 https 的 `url()` |
 | `a6c2c8f` | 任务 D：改正项目地图里关于本地 `/api/chat` 返回 403 的说法 |
+| `4cb9df9` | 任务 E：按 `a6c2c8f` 改正项目地图，并提交本审查总结 |
+| `b608f82` | 任务 F：v2、v3 升级测试按历史带上 `chats` 的 `updatedAt` 和 `demo` |
+| `39fcefc` | 修复联网搜索开关：iPhone 一次点击里的第二次 click 被丢掉，开关有分开的开/关外观 |
 
 任务 C 没有提交。`git log -p -- ui/storage.js` 显示 v1 到 v3 的存储区与当前逐级升级一致，不需要给已有存储区补索引。
 
@@ -101,9 +104,13 @@ const request = new Request(new URL('/api/chat', `http://${req.headers.host || '
 
 已有的 `npm run dev` 在 `http://localhost:5173` 上验证：打开页面返回 200。带 `Origin: http://localhost:5173` 和 `Sec-Fetch-Site: same-origin` 的合法 `POST /api/chat` 返回 503 `KEY_MISSING`。改成跨源 `Origin` 且 `Sec-Fetch-Site: cross-site` 仍返回 403。这次没有改运行代码，只改正了 `docs/PROJECT_CONTEXT.md`。`README.md` 里没有那条过时说法。
 
+## 联网搜索开关
+
+`39fcefc`：开关包在 `<label>` 里。iPhone Safari 对这种复选框一次点击会送出两次 `click`，第二次把刚关掉的状态又打开，所以界面看起来没变，`localStorage` 里的 `webSearch` 也会留在 `'on'`。第二次 `click` 现在会被取消，并把勾选状态拨回已保存的值。开关改成 `appearance: none`，未选中时圆点在左、选中时圆点在右且边框用强调色，点击区域是 44×44。采样开关是同一结构，内置模型上它是禁用的；启用时也丢掉同一次点击里的第二次 `click`。
+
 ## 测试
 
-在 `a6c2c8f` 上执行 `npm run verify`：构建成功，随后 `npm test` 为 228 项通过、0 项失败。产物文件名会随前端源码变化；当时是 `dist/client/assets/index-DV54MzS9.css` 和 `dist/client/assets/index-0_s60pwn.js`。这些文件被 gitignore。
+在 `b608f82` 上执行 `npm run verify`：构建成功，随后 `npm test` 为 228 项通过、0 项失败。`39fcefc` 新增 `tests/web-search-toggle.test.js` 一项，完整验证应为 229 项通过、0 项失败。产物文件名会随前端源码变化。这些文件被 gitignore。
 
 任务 A 起新增或扩充的断言在：
 

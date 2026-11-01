@@ -33,6 +33,8 @@ test('IndexedDB v4 preserves chats, assets, and story memories while adding styl
   await new Promise((resolve, reject) => {
     const request = indexedDB.open(CHAT_DB_NAME, 3);
     request.onupgradeneeded = () => {
+      // Not a historical v3 database. Real v3 chats also had updatedAt and demo indexes.
+      // This fixture only needs the stores this test reads back after upgrading to v4.
       request.result.createObjectStore('chats', { keyPath: 'id' });
       request.result.createObjectStore('assets', { keyPath: 'id' });
       const memories = request.result.createObjectStore('storyMemories', { keyPath: 'id' });

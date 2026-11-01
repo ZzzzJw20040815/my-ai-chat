@@ -1,6 +1,6 @@
 # My AI Chat 项目地图
 
-本文描述 `fix/web-search-hardening` 上的运行代码，对应提交 `a6c2c8f`（task D）。起点是 `main` 的 `23cfe23`（PR #19，Gemini 联网搜索）。路径相对 `my-ai-chat-vercel-reviewed/`。此后只改说明或测试的提交不改变这里描述的行为。
+本文描述 `fix/web-search-hardening` 上的运行代码，对应提交 `39fcefc`（联网搜索开关在一次点击里只切换一次）。起点是 `main` 的 `23cfe23`（PR #19，Gemini 联网搜索）。路径相对 `my-ai-chat-vercel-reviewed/`。
 
 这是浏览器端聊天应用：Vite 打包静态页，Vercel Node Function 持有 `GEMINI_API_KEY` 并调用 `@google/genai`。聊天、故事记忆、风格参考和壁纸存在本机 IndexedDB；全局设置存在 `localStorage`。没有登录、服务端数据库或云同步。
 
@@ -9,7 +9,7 @@
 | 路径 | 职责 |
 | --- | --- |
 | `.gitignore` | 忽略 `dist/`、`node_modules/`、`.env`、`.env.*`，保留 `!.env.example`。仓库里没有 `.env.example` |
-| `README.md` | 部署与架构说明。多处与代码不一致，见第 10 节 |
+| `README.md` | 部署与架构说明：模型、三个 API、本地存储、故事功能，以及 dev / build / test / verify |
 | `package.json` | 包名、scripts、Node 引擎、依赖版本 |
 | `package-lock.json` | npm 锁文件 |
 | `vercel.json` | 构建命令、静态目录、三个 Function 的时长与取消开关 |
@@ -664,7 +664,7 @@ variant 与单条 assistant 使用同一套内容字段。`ensureAssistantVarian
 
 `messages` 必须 user/assistant 交替，最后一条的角色在映射前是 user。每条只认可 `id`、`role`、`content`、`status`。`status` 必须是 `complete`。`id` 最长 100。单条内容最长 50000，合计最长 150000，条数最多 100。请求体超过 `MAX_BODY_BYTES`（256 KiB）为 `CONTEXT_LIMIT`。
 
-`settings` 白名单：`systemInstruction`、`maxOutputTokens`、`thinkingLevel`、`samplingOverrides`、`safetySettings`。`samplingOverrides` 只在模型 `samplingOverrides === true` 时可以 `enabled: true`；当前 8 个内置模型都不是。`safetySettings.mode === 'custom'` 时四个类别都必须是合法阈值。
+`settings` 白名单：`systemInstruction`、`maxOutputTokens`、`thinkingLevel`、`samplingOverrides`、`safetySettings`、`webSearch`。`webSearch` 只能是 `'on'` 或 `'off'`，缺省按 `'on'`。`samplingOverrides` 只在模型 `samplingOverrides === true` 时可以 `enabled: true`；当前 8 个内置模型都不是。`safetySettings.mode === 'custom'` 时四个类别都必须是合法阈值。
 
 `styleReferences` 最多 5 条，每条只能有 `id` 和 `content`，合计最长 10000。`regenerationReason` 只能是第 3 节的六个 ID。`storyRuntime` 只能有 `mode`、`stability`、`action`。
 
