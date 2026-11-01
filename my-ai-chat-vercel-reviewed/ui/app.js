@@ -1082,7 +1082,20 @@ $('#systemInstructionSetting').addEventListener('input', event => {
 });
 $('#clearSystemInstruction').addEventListener('click', () => updateGlobalSettings({ systemInstruction: '' }));
 $('#contextLimitSetting').addEventListener('change', event => updateGlobalSettings({ contextLimit: event.target.value }));
-$('#webSearchSetting').addEventListener('change', event => updateGlobalSettings({ webSearch: event.target.checked ? 'on' : 'off' }));
+// iPhone Safari delivers two clicks for one tap on a checkbox inside its label.
+// The extra click is cancelled so it does not toggle the control back.
+let webSearchToggleLocked = false;
+$('#webSearchSetting').addEventListener('click', event => {
+  if (webSearchToggleLocked) {
+    event.preventDefault();
+    const input = event.target;
+    queueMicrotask(() => { input.checked = globalSettings.webSearch !== 'off'; });
+    return;
+  }
+  webSearchToggleLocked = true;
+  queueMicrotask(() => { webSearchToggleLocked = false; });
+  updateGlobalSettings({ webSearch: event.target.checked ? 'on' : 'off' });
+});
 $('#maxOutputTokensSetting').addEventListener('change', event => {
   const value = event.target.value.trim();
   updateGlobalSettings({ maxOutputTokens: value ? Number(value) : null });
@@ -1093,9 +1106,23 @@ const updateSamplingEnabled = event => {
   if (globalSettings.samplingOverrides.enabled === enabled) return;
   updateGlobalSettings({ samplingOverrides: { ...globalSettings.samplingOverrides, enabled } });
 };
-// Capture real activation before an asynchronous Settings repaint, while retaining change-event compatibility.
-$('#samplingEnabledSetting').addEventListener('click', updateSamplingEnabled);
-$('#samplingEnabledSetting').addEventListener('change', updateSamplingEnabled);
+// Same iPhone double-click as the web search switch. Change events stay for tests and keyboards.
+let samplingToggleLocked = false;
+$('#samplingEnabledSetting').addEventListener('click', event => {
+  if (samplingToggleLocked) {
+    event.preventDefault();
+    const input = event.target;
+    queueMicrotask(() => { input.checked = globalSettings.samplingOverrides.enabled === true; });
+    return;
+  }
+  samplingToggleLocked = true;
+  queueMicrotask(() => { samplingToggleLocked = false; });
+  updateSamplingEnabled(event);
+});
+$('#samplingEnabledSetting').addEventListener('change', event => {
+  if (samplingToggleLocked) return;
+  updateSamplingEnabled(event);
+});
 $('#safetyModeSetting').addEventListener('change', event => updateGlobalSettings({
   safetySettings: { ...globalSettings.safetySettings, mode: event.target.value },
 }));
