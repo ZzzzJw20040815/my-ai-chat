@@ -34,7 +34,7 @@ test('legacy Phase 3B-1 settings upgrade without changing existing values', () =
   };
   const upgraded = normalizeGlobalSettings(legacy);
   assert.deepEqual({ ...upgraded, safetySettings: undefined, mobileDisplay: undefined },
-    { ...legacy, safetySettings: undefined, mobileDisplay: undefined });
+    { ...legacy, safetySettings: undefined, mobileDisplay: undefined, webSearch: 'on' });
   assert.deepEqual(upgraded.safetySettings, DEFAULT_GLOBAL_SETTINGS.safetySettings);
   assert.deepEqual(upgraded.mobileDisplay, DEFAULT_GLOBAL_SETTINGS.mobileDisplay);
 });

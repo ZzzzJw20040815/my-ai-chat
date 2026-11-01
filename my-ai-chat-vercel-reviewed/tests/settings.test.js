@@ -128,7 +128,7 @@ test('client request settings use current model capabilities and fail closed', (
   const missing = requestSettings(preferences, null);
   assert.deepEqual(missing, {
     systemInstruction: '', maxOutputTokens: null, thinkingLevel: 'default',
-    samplingOverrides: { enabled: false }, safetySettings: { mode: 'default' },
+    samplingOverrides: { enabled: false }, safetySettings: { mode: 'default' }, webSearch: 'on',
   });
   const tooLarge = requestSettings({ ...preferences, maxOutputTokens: 65536 }, {
     id: 'gemini-discovered', capabilities: {

@@ -85,7 +85,9 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
   if (storyRuntime) {
     config.systemInstruction = storyRuntimeSystemInstruction(config.systemInstruction || '', storyRuntime);
   }
-  config.tools = GOOGLE_SEARCH_TOOLS.map(tool => ({ googleSearch: { ...tool.googleSearch } }));
+  if (payload.settings?.webSearch !== 'off' && storyRuntime?.mode !== 'writing') {
+    config.tools = GOOGLE_SEARCH_TOOLS.map(tool => ({ googleSearch: { ...tool.googleSearch } }));
+  }
   return { model: payload.model, contents, config };
 }
 function invalidRequest() { throw new Error('INVALID_REQUEST'); }
@@ -113,8 +115,9 @@ export function validateGenerationSettings(value, modelOrMetadata) {
   if (!metadata?.capabilities) invalidRequest();
   if (value === undefined) return {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalidRequest();
-  const allowedSettingsKeys = new Set(['systemInstruction', 'maxOutputTokens', 'thinkingLevel', 'samplingOverrides', 'safetySettings']);
+  const allowedSettingsKeys = new Set(['systemInstruction', 'maxOutputTokens', 'thinkingLevel', 'samplingOverrides', 'safetySettings', 'webSearch']);
   if (Object.keys(value).some(key => !allowedSettingsKeys.has(key))) invalidRequest();
+  if ('webSearch' in value && value.webSearch !== 'on' && value.webSearch !== 'off') invalidRequest();
   const config = {};
   if ('systemInstruction' in value) {
     if (typeof value.systemInstruction !== 'string' || value.systemInstruction.length > MAX_SYSTEM_INSTRUCTION_LENGTH) invalidRequest();

@@ -2,6 +2,7 @@ import { DEFAULT_MODEL, isPersistableModelId } from './models.js';
 
 export const GLOBAL_SETTINGS_STORAGE_KEY = 'my-ai-chat-global-settings';
 export const CONTEXT_LIMITS = Object.freeze(['all', '50', '20', '10']);
+export const WEB_SEARCH_MODES = Object.freeze(['on', 'off']);
 export const THINKING_LEVELS = Object.freeze(['default', 'minimal', 'low', 'medium', 'high']);
 export const MAX_SYSTEM_INSTRUCTION_LENGTH = 20000;
 export const MAX_OUTPUT_TOKENS_LIMIT = 65536;
@@ -44,6 +45,7 @@ export const DEFAULT_GLOBAL_SETTINGS = Object.freeze({
     dangerousContent: DEFAULT_SAFETY_THRESHOLD,
   }),
   mobileDisplay: Object.freeze({ density: 'standard', chatTextSize: 'standard' }),
+  webSearch: 'on',
 });
 
 const inRange = (value, limits) => typeof value === 'number' && Number.isFinite(value)
@@ -87,5 +89,6 @@ export function normalizeGlobalSettings(value) {
       density: MOBILE_DENSITIES.includes(mobileDisplay.density) ? mobileDisplay.density : 'standard',
       chatTextSize: CHAT_TEXT_SIZES.includes(mobileDisplay.chatTextSize) ? mobileDisplay.chatTextSize : 'standard',
     },
+    webSearch: source.webSearch === 'off' ? 'off' : 'on',
   };
 }

@@ -2,10 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { IDBFactory } from 'fake-indexeddb';
+import { JSDOM } from 'jsdom';
 import { handleChat, validatePayload } from '../server/chat.js';
 import { addAssistantVariant, contextFor, createChat, createMessage } from '../ui/state.js';
 import { loadChats, saveChat } from '../ui/storage.js';
 import { publicGrounding, webSearchMarkup } from '../shared/web-search.js';
+import { normalizeGlobalSettings } from '../shared/settings.js';
+import { parseBackupText } from '../ui/backup.js';
+import { createSettingsCode, parseSettingsCode } from '../ui/settings-code.js';
 
 const MODEL = 'gemini-3.1-pro-preview';
 const env = { GEMINI_API_KEY: 'unit-test-sentinel-not-a-key' };
@@ -46,6 +50,56 @@ test('chat requests enable Google Search and ignore caller-supplied tools', () =
   assert.throws(() => validatePayload({
     model: MODEL, messages: [createMessage('user', 'hello')], tools: [{ googleSearch: {} }],
   }), /INVALID_REQUEST/);
+});
+
+test('web search stays on for normal chat and setup, and stays off when disabled or writing', () => {
+  const user = createMessage('user', 'hello');
+  const assistant = createMessage('assistant', 'Once upon a time.', MODEL);
+  const off = validatePayload({ model: MODEL, messages: [user], settings: { webSearch: 'off' } });
+  assert.equal(off.config.tools, undefined);
+  const writing = validatePayload({
+    model: MODEL, messages: [user, assistant],
+    settings: { webSearch: 'on' },
+    storyRuntime: { mode: 'writing', action: 'continue_story' },
+  });
+  assert.equal(writing.config.tools, undefined);
+  const startWriting = validatePayload({
+    model: MODEL, messages: [createMessage('user', 'premise')],
+    storyRuntime: { mode: 'writing', action: 'start_writing' },
+  });
+  assert.equal(startWriting.config.tools, undefined);
+  const incomplete = validatePayload({
+    model: MODEL, messages: [createMessage('user', 'premise'), createMessage('assistant', 'partial', MODEL)],
+    storyRuntime: { mode: 'writing', action: 'continue_incomplete' },
+  });
+  assert.equal(incomplete.config.tools, undefined);
+  const setup = validatePayload({
+    model: MODEL, messages: [createMessage('user', 'idea')],
+    settings: { webSearch: 'on' },
+    storyRuntime: { mode: 'setup', action: 'prepare_story' },
+  });
+  assert.deepEqual(setup.config.tools, [{ googleSearch: {} }]);
+  assert.throws(() => validatePayload({
+    model: MODEL, messages: [createMessage('user', 'hello')], settings: { webSearch: 'sometimes' },
+  }), /INVALID_REQUEST/);
+});
+
+test('old settings, settings codes, and backups default web search to on', () => {
+  assert.equal(normalizeGlobalSettings({}).webSearch, 'on');
+  assert.equal(normalizeGlobalSettings({ webSearch: 'maybe' }).webSearch, 'on');
+  const legacyCode = createSettingsCode({ settings: { systemInstruction: '保留我' }, theme: 'dark' });
+  const envelope = JSON.parse(Buffer.from(legacyCode.slice('MAICFG1.'.length), 'base64url').toString('utf8'));
+  delete envelope.globalSettings.webSearch;
+  const restoredCode = 'MAICFG1.' + Buffer.from(JSON.stringify(envelope), 'utf8').toString('base64url');
+  assert.equal(parseSettingsCode(restoredCode).settings.webSearch, 'on');
+  assert.equal(parseSettingsCode(restoredCode).settings.systemInstruction, '保留我');
+  const backup = parseBackupText(JSON.stringify({
+    format: 'my-ai-chat-backup', version: 1, exportedAt: '2026-10-01T00:00:00.000Z',
+    app: { name: 'My AI Chat', theme: 'dark' }, chats: [],
+    settings: { systemInstruction: '旧备份' }, activeChatId: null,
+  }));
+  assert.equal(backup.settings.webSearch, 'on');
+  assert.equal(backup.settings.systemInstruction, '旧备份');
 });
 
 test('story memory extraction does not enable Google Search', async () => {
@@ -91,8 +145,68 @@ test('grounded chunks become source links and a search suggestion, without unsaf
   assert.match(markup, /href="https:\/\/example.com\/a"/);
 });
 
+test('the server passes search suggestion HTML through and drops non-strings and overlong HTML', async () => {
+  const raw = '<div><script>alert(1)</script><a href="http://insecure.example/">raw</a></div>';
+  const kept = await events(await handleChat(request({
+    model: MODEL, messages: [createMessage('user', 'Who won Euro 2024?')],
+  }), env, async function* () {
+    yield {
+      text: 'Spain won.',
+      candidates: [{ finishReason: 'STOP', groundingMetadata: {
+        searchEntryPoint: { renderedContent: raw },
+        groundingChunks: [{ web: { uri: 'https://www.uefa.com/euro2024/', title: 'UEFA' } }],
+      } }],
+    };
+  }));
+  assert.equal(kept.at(-1).searchSuggestionHtml, raw);
+  assert.deepEqual(kept.at(-1).webSources, [{ title: 'UEFA', url: 'https://www.uefa.com/euro2024/' }]);
+
+  const exactLimit = await events(await handleChat(request({
+    model: MODEL, messages: [createMessage('user', 'Who won Euro 2024?')],
+  }), env, async function* () {
+    yield {
+      text: 'Spain won.',
+      candidates: [{ finishReason: 'STOP', groundingMetadata: {
+        searchEntryPoint: { renderedContent: 'a'.repeat(20000) },
+      } }],
+    };
+  }));
+  assert.equal(exactLimit.at(-1).searchSuggestionHtml, 'a'.repeat(20000));
+
+  for (const renderedContent of ['a'.repeat(20001), 12, { html: '<div>nope</div>' }]) {
+    const dropped = await events(await handleChat(request({
+      model: MODEL, messages: [createMessage('user', 'Who won Euro 2024?')],
+    }), env, async function* () {
+      yield {
+        text: 'Spain won.',
+        candidates: [{ finishReason: 'STOP', groundingMetadata: {
+          searchEntryPoint: { renderedContent },
+          groundingChunks: [{ web: { uri: 'https://www.uefa.com/euro2024/', title: 'UEFA' } }],
+        } }],
+      };
+    }));
+    assert.equal(dropped.at(-1).searchSuggestionHtml, undefined);
+    assert.deepEqual(dropped.at(-1).webSources, [{ title: 'UEFA', url: 'https://www.uefa.com/euro2024/' }]);
+  }
+});
+
+test('server and api runtime code do not import jsdom', async () => {
+  const files = [
+    '../server/chat.js', '../server/model-catalog.js', '../server/story-memory.js',
+    '../api/chat.js', '../api/models.js', '../api/story-memory.js',
+  ];
+  for (const file of files) {
+    const source = await readFile(new URL(file, import.meta.url), 'utf8');
+    assert.equal(source.includes('jsdom'), false, file);
+  }
+});
+
 test('search metadata stays in chat history and out of the next Gemini prompt', async () => {
   const indexedDB = new IDBFactory();
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const previousWindow = globalThis.window;
+  globalThis.window = dom.window;
+  try {
   const chat = createChat(MODEL);
   const user = createMessage('user', 'Who won?');
   const assistant = createMessage('assistant', 'Spain won.', MODEL);
@@ -108,7 +222,8 @@ test('search metadata stays in chat history and out of the next Gemini prompt', 
   const restored = (await loadChats(indexedDB))[0];
   const turn = restored.messages.find(message => message.role === 'assistant');
   assert.deepEqual(turn.variants[0].webSources, [{ title: 'UEFA', url: 'https://www.uefa.com/euro2024/' }]);
-  assert.equal(turn.variants[0].searchSuggestionHtml, suggestion);
+  assert.match(turn.variants[0].searchSuggestionHtml, /euro 2024/);
+  assert.match(turn.variants[0].searchSuggestionHtml, /noopener noreferrer/);
   assert.equal(turn.variants[1].webSources, undefined);
   turn.activeVariantId = turn.variants[0].id;
   const followUp = createMessage('user', 'Where was the final?');
@@ -118,4 +233,8 @@ test('search metadata stays in chat history and out of the next Gemini prompt', 
   assert.equal(JSON.stringify(context).includes('uefa.com'), false);
   assert.equal(JSON.stringify(context).includes('google.com'), false);
   assert.deepEqual(context.map(message => message.content), ['Who won?', 'Spain won.', 'Where was the final?']);
+  } finally {
+    if (previousWindow) globalThis.window = previousWindow;
+    else delete globalThis.window;
+  }
 });

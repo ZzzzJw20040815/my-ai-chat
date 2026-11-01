@@ -31,7 +31,7 @@ import {
   replaceStoryMemorySnapshot,
 } from './storage.js';
 import { renderMarkdown } from './markdown.js';
-import { storedWebSearchFields, webSearchMarkup } from '../shared/web-search.js';
+import { mountSearchSuggestion, storedWebSearchFields, webSearchMarkup } from '../shared/web-search.js';
 import { consumeStream } from './stream.js';
 import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from './settings.js';
 import { applyMobileDisplayPreferences } from './mobile-display.js';
@@ -263,6 +263,7 @@ function renderConversation(bottom = false) {
   for (const message of visibleConversationPath(chat).filter(message => !isRuntimeControlMessage(message) || isVisibleRuntimeControlMessage(message))) {
     const article = document.createElement('article'); article.className = 'message ' + message.role;
     article.dataset.messageId = message.id; article.innerHTML = messageHtml(message);
+    mountSearchSuggestions(article);
     $('.messages').append(article);
   }
   syncMobileStoryButton(chat);
@@ -357,11 +358,18 @@ async function updateStoryMemory() {
     if (!$('#storyMenu').hidden) renderStoryMenu($('#storyMenu').dataset.view || 'overview');
   }
 }
+function mountSearchSuggestions(root) {
+  if (!root?.querySelectorAll) return;
+  for (const host of root.querySelectorAll('.search-suggestion-host')) mountSearchSuggestion(host, window);
+}
 function updateMessage(chatId, message) {
   if (activeChat !== chatId) return;
   const nearBottom = shouldFollowStreaming(conversation);
   const element = $('[data-message-id="' + message.id + '"]');
-  if (element) element.innerHTML = messageHtml(message);
+  if (element) {
+    element.innerHTML = messageHtml(message);
+    mountSearchSuggestions(element);
+  }
   if (nearBottom) conversation.scrollTop = conversation.scrollHeight;
   syncScrollToBottomButton();
 }
@@ -424,6 +432,7 @@ function syncSettingsUi() {
   $('#systemInstructionSetting').value = globalSettings.systemInstruction;
   $('#systemInstructionCount').textContent = globalSettings.systemInstruction.length + ' / ' + MAX_SYSTEM_INSTRUCTION_LENGTH;
   $('#contextLimitSetting').value = globalSettings.contextLimit;
+  $('#webSearchSetting').checked = globalSettings.webSearch !== 'off';
   $('#maxOutputTokensSetting').value = globalSettings.maxOutputTokens ?? '';
   const outputTokenLimit = Number.isInteger(capabilities?.outputTokenLimit)
     ? Math.min(MAX_OUTPUT_TOKENS_LIMIT, capabilities.outputTokenLimit) : null;
@@ -1073,6 +1082,20 @@ $('#systemInstructionSetting').addEventListener('input', event => {
 });
 $('#clearSystemInstruction').addEventListener('click', () => updateGlobalSettings({ systemInstruction: '' }));
 $('#contextLimitSetting').addEventListener('change', event => updateGlobalSettings({ contextLimit: event.target.value }));
+// iPhone Safari delivers two clicks for one tap on a checkbox inside its label.
+// The extra click is cancelled so it does not toggle the control back.
+let webSearchToggleLocked = false;
+$('#webSearchSetting').addEventListener('click', event => {
+  if (webSearchToggleLocked) {
+    event.preventDefault();
+    const input = event.target;
+    queueMicrotask(() => { input.checked = globalSettings.webSearch !== 'off'; });
+    return;
+  }
+  webSearchToggleLocked = true;
+  queueMicrotask(() => { webSearchToggleLocked = false; });
+  updateGlobalSettings({ webSearch: event.target.checked ? 'on' : 'off' });
+});
 $('#maxOutputTokensSetting').addEventListener('change', event => {
   const value = event.target.value.trim();
   updateGlobalSettings({ maxOutputTokens: value ? Number(value) : null });
@@ -1083,9 +1106,23 @@ const updateSamplingEnabled = event => {
   if (globalSettings.samplingOverrides.enabled === enabled) return;
   updateGlobalSettings({ samplingOverrides: { ...globalSettings.samplingOverrides, enabled } });
 };
-// Capture real activation before an asynchronous Settings repaint, while retaining change-event compatibility.
-$('#samplingEnabledSetting').addEventListener('click', updateSamplingEnabled);
-$('#samplingEnabledSetting').addEventListener('change', updateSamplingEnabled);
+// Same iPhone double-click as the web search switch. Change events stay for tests and keyboards.
+let samplingToggleLocked = false;
+$('#samplingEnabledSetting').addEventListener('click', event => {
+  if (samplingToggleLocked) {
+    event.preventDefault();
+    const input = event.target;
+    queueMicrotask(() => { input.checked = globalSettings.samplingOverrides.enabled === true; });
+    return;
+  }
+  samplingToggleLocked = true;
+  queueMicrotask(() => { samplingToggleLocked = false; });
+  updateSamplingEnabled(event);
+});
+$('#samplingEnabledSetting').addEventListener('change', event => {
+  if (samplingToggleLocked) return;
+  updateSamplingEnabled(event);
+});
 $('#safetyModeSetting').addEventListener('change', event => updateGlobalSettings({
   safetySettings: { ...globalSettings.safetySettings, mode: event.target.value },
 }));
