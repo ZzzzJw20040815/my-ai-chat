@@ -33,7 +33,7 @@ import {
 import { renderMarkdown } from './markdown.js';
 import { storedWebSearchFields, webSearchMarkup } from '../shared/web-search.js';
 import { consumeStream } from './stream.js';
-import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from './settings.js';
+import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings, thinkingLevelForModel } from './settings.js';
 import { applyMobileDisplayPreferences } from './mobile-display.js';
 import { SettingsCodeError, createSettingsCode, parseSettingsCode } from './settings-code.js';
 import { createWallpaperPresenter, decodeWallpaperImage, validateWallpaperFile } from './wallpaper.js';
@@ -67,6 +67,9 @@ import {
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const escapeHtml = value => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+const THINKING_LEVEL_LABELS = {
+  minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High',
+};
 const ACTIVE_CHAT_STORAGE_KEY = 'my-ai-chat-active-chat-id';
 const chats = new Map();
 function createDemoChats() {
@@ -397,11 +400,19 @@ function openSidebar() {
   $('#sidebar').inert = false; $('#sidebar').classList.add('open'); $('#mobileScrim').classList.add('show');
   $('#openSidebar').setAttribute('aria-expanded', 'true'); $('.main-panel').inert = true; $('#closeSidebar').focus();
 }
+function reconcileThinkingLevel() {
+  const chat = current();
+  if (!chat) return;
+  const thinkingLevel = thinkingLevelForModel(globalSettings.thinkingLevel, modelCatalog.metadata(chat.model));
+  if (thinkingLevel === globalSettings.thinkingLevel) return;
+  globalSettings = saveGlobalSettings({ ...globalSettings, thinkingLevel });
+}
 function selectChat(id) {
   current().draft = input.value; current().scrollTop = conversation.scrollTop;
   activeChat = id; clearHistoricalEdit(); input.value = current().draft;
   closeRegenerateMenu(); closeRuntimeMenu(); closeStoryMenu();
   rememberActiveChat(activeChat);
+  reconcileThinkingLevel();
   closeSidebar(); syncModel(); syncComposer(); renderHistory(); renderConversation();
   conversation.scrollTop = current().scrollTop;
 }
@@ -410,6 +421,7 @@ async function newChat() {
   selectChat(chat.id); input.focus(); await persistChat(chat);
 }
 function syncSettingsUi() {
+  reconcileThinkingLevel();
   const settingsModelId = availableDefaultModel(globalSettings.defaultModel, modelCatalog);
   const currentModel = modelCatalog.metadata(current()?.model) || null;
   const capabilities = currentModel?.capabilities;
@@ -447,7 +459,7 @@ function syncSettingsUi() {
     option.disabled = option.value !== 'default' && !thinkingLevels.includes(option.value);
   }
   $('#thinkingSupport').textContent = thinkingLevels.length
-    ? '当前聊天模型支持：' + thinkingLevels.map(level => level[0].toUpperCase() + level.slice(1)).join('、') + '；不支持的已保存偏好将使用模型默认值。'
+    ? '当前聊天模型支持：' + thinkingLevels.map(level => THINKING_LEVEL_LABELS[level] || level).join('、') + '。与当前模型不兼容的已保存档位会回到不指定，不会替换成其他具体档位。'
     : '当前模型未提供可调 thinking level；将使用模型默认值。';
   const samplingSupported = capabilities?.samplingOverrides === true;
   // Preserve the global preference as read-only state even when this model keeps

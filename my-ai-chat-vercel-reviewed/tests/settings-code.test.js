@@ -47,6 +47,17 @@ test('the full supported Chinese System Instruction length fits the 128 KiB tran
   assert.equal(parseSettingsCode(code).settings.systemInstruction, systemInstruction);
 });
 
+test('xhigh is a portable thinking level and unknown levels are still rejected', () => {
+  const imported = parseSettingsCode(createSettingsCode({ settings: { thinkingLevel: 'xhigh' }, theme: 'dark' }));
+  assert.equal(imported.settings.thinkingLevel, 'xhigh');
+  assert.equal(imported.settings.defaultModel, DEFAULT_GLOBAL_SETTINGS.defaultModel);
+  const base = {
+    format: SETTINGS_CODE_FORMAT, version: 1, exportedAt: new Date().toISOString(),
+    globalSettings: { thinkingLevel: 'unlimited' }, appearance: { theme: 'dark' },
+  };
+  assert.throws(() => parseSettingsCode(utf8Code(base)), SettingsCodeError);
+});
+
 test('default safety mode round-trips without adding custom behavior', () => {
   const imported = parseSettingsCode(createSettingsCode({ settings: DEFAULT_GLOBAL_SETTINGS, theme: 'dark' }));
   assert.deepEqual(imported.settings.safetySettings, DEFAULT_GLOBAL_SETTINGS.safetySettings);

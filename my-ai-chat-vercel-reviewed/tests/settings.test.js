@@ -7,7 +7,7 @@ import {
   CHAT_TEXT_SIZES, DEFAULT_GLOBAL_SETTINGS, GLOBAL_SETTINGS_STORAGE_KEY, MOBILE_DENSITIES, normalizeGlobalSettings,
 } from '../shared/settings.js';
 import { createChat, createMessage, contextFor } from '../ui/state.js';
-import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from '../ui/settings.js';
+import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings, thinkingLevelForModel } from '../ui/settings.js';
 
 const PRO = 'gemini-3.1-pro-preview';
 const FLASH = 'gemini-3.7-flash';
@@ -125,6 +125,16 @@ test('client request settings use current model capabilities and fail closed', (
 
   const minimalModel = requestSettings(preferences, modelMetadata('gemini-3.6-flash'));
   assert.equal(minimalModel.thinkingLevel, 'minimal');
+  const hydrogen = modelMetadata('gemini-4-hydrogen');
+  const carbon = modelMetadata('gemini-4-carbon');
+  assert.equal(thinkingLevelForModel('xhigh', hydrogen), 'xhigh');
+  assert.equal(requestSettings({ ...preferences, thinkingLevel: 'xhigh' }, hydrogen).thinkingLevel, 'xhigh');
+  assert.equal(thinkingLevelForModel('xhigh', carbon), 'default');
+  assert.equal(requestSettings({ ...preferences, thinkingLevel: 'xhigh' }, carbon).thinkingLevel, 'default');
+  assert.equal(thinkingLevelForModel('minimal', hydrogen), 'default');
+  assert.equal(requestSettings({ ...preferences, thinkingLevel: 'minimal' }, modelMetadata('gemini-4-argon')).thinkingLevel, 'default');
+  assert.equal(normalizeGlobalSettings({ thinkingLevel: 'xhigh' }).thinkingLevel, 'xhigh');
+  assert.equal(normalizeGlobalSettings({ thinkingLevel: 'extreme' }).thinkingLevel, 'default');
   const missing = requestSettings(preferences, null);
   assert.deepEqual(missing, {
     systemInstruction: '', maxOutputTokens: null, thinkingLevel: 'default',

@@ -631,9 +631,9 @@ test('generation capability presentation follows the current chat rather than th
   document.querySelector('#settingsButton').click();
   assert.equal(document.querySelector('#defaultModelSetting').value, 'gemini-3.1-pro-preview');
   assert.match(document.querySelector('#currentChatModelSetting').textContent, /Gemini 3.1 Pro/);
-  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'minimal');
+  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'default');
   assert.equal(document.querySelector('#thinkingLevelSetting option[value="minimal"]').disabled, true);
-  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'minimal');
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'default');
   assert.equal(document.querySelector('#samplingEnabledSetting').disabled, true);
   document.querySelector('#samplingEnabledSetting').click();
   assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).samplingOverrides.enabled, false);
@@ -667,6 +667,51 @@ test('generation capability presentation follows the current chat rather than th
   toggle.click();
   assert.equal(toggle.checked, false);
   assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).samplingOverrides.enabled, false);
+  dom.window.close(); await closeChatDatabase();
+});
+
+test('model switches and restored settings clear incompatible thinking levels without substituting one', async () => {
+  const indexedDB = new IDBFactory(); const { fetchMock } = createFetchMock(); const storage = createMemoryStorage();
+  const dom = installDom(indexedDB, fetchMock, storage);
+  dom.window.confirm = () => true;
+  await import('../ui/app.js?gemini4-thinking=switch');
+  document.querySelector('#modelButton').click();
+  document.querySelector('[data-model="gemini-4-hydrogen"]').click();
+  document.querySelector('#settingsButton').click();
+  const thinking = document.querySelector('#thinkingLevelSetting');
+  assert.equal(thinking.querySelector('[value="xhigh"]').disabled, false);
+  assert.equal(thinking.querySelector('[value="minimal"]').disabled, true);
+  assert.match(document.querySelector('#thinkingSupport').textContent, /Extra High/);
+  thinking.value = 'xhigh';
+  thinking.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'xhigh');
+
+  document.querySelector('#settingsDialog').close();
+  document.querySelector('#modelButton').click();
+  document.querySelector('[data-model="gemini-4-carbon"]').click();
+  document.querySelector('#settingsButton').click();
+  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'default');
+  assert.equal(document.querySelector('#thinkingLevelSetting option[value="xhigh"]').disabled, true);
+  assert.equal(document.querySelector('#thinkingLevelSetting option[value="high"]').disabled, false);
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'default');
+
+  const input = document.querySelector('#settingsCodeInput');
+  input.value = createSettingsCode({
+    settings: { thinkingLevel: 'xhigh', defaultModel: 'gemini-4-hydrogen' }, theme: 'dark',
+  });
+  document.querySelector('#importSettingsCode').click();
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).defaultModel, 'gemini-4-hydrogen');
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'default');
+  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'default');
+
+  document.querySelector('#settingsDialog').close();
+  document.querySelector('#modelButton').click();
+  document.querySelector('[data-model="gemini-4-hydrogen"]').click();
+  document.querySelector('#settingsButton').click();
+  input.value = createSettingsCode({ settings: { thinkingLevel: 'xhigh' }, theme: 'dark' });
+  document.querySelector('#importSettingsCode').click();
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'xhigh');
+  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'xhigh');
   dom.window.close(); await closeChatDatabase();
 });
 
