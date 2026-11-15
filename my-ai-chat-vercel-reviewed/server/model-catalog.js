@@ -3,6 +3,7 @@ import { GoogleGenAI } from '@google/genai';
 import {
   CURATED_MODELS, isAllowedModel, isPersistableModelId, modelDisplayName, modelMetadata, normalizeDiscoveredModel,
 } from '../shared/models.js';
+import { API_CHANNELS, requestApiChannel } from '../shared/settings.js';
 
 export const SERVER_CATALOG_TTL_MS = 15 * 60 * 1000;
 const SPECIALIZED_MODEL = /(?:^|-)(?:image|imagen|tts|audio|live|embedding|embed|robotics?|computer-use|deep-research|research|transcription|speech|native-audio|customtools)(?:-|$)/i;
@@ -102,8 +103,22 @@ export async function handleModels(request, env, options = {}) {
   const url = new URL(request.url), origin = request.headers.get('origin');
   if ((origin && origin !== url.origin) || request.headers.get('sec-fetch-site') === 'cross-site')
     return jsonError('INVALID_REQUEST', 'Model catalog request is not valid.', 403);
-  if ([...url.searchParams].some(([key, value]) => key !== 'refresh' || value !== '1'))
-    return jsonError('INVALID_REQUEST', 'Model catalog request is not valid.', 400);
+  if ([...url.searchParams].some(([key, value]) => {
+    if (key === 'refresh') return value !== '1';
+    if (key === 'channel') return !API_CHANNELS.includes(value);
+    return true;
+  })) return jsonError('INVALID_REQUEST', 'Model catalog request is not valid.', 400);
+  let channel;
+  try { channel = requestApiChannel(url.searchParams.get('channel')); }
+  catch { return jsonError('INVALID_REQUEST', 'Model catalog request is not valid.', 400); }
+  if (channel === 'vertex') {
+    return Response.json({
+      models: [],
+      syncedAt: new Date(options.now ?? Date.now()).toISOString(),
+      catalog: 'curated',
+      notice: 'Vertex 目录使用内置精选模型。模型出现在列表中，并不表示当前 Google Cloud 项目或区域已经开通或实际支持它。',
+    }, { headers: { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' } });
+  }
   if (!env.GEMINI_API_KEY?.trim())
     return jsonError('KEY_MISSING', 'Gemini is not configured for this site.', 503);
   try {

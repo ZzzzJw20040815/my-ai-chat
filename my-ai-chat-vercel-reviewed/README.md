@@ -41,6 +41,27 @@ npm test
 The test suite intercepts SDK network requests and uses noncredential sentinels.
 It does not call Google.
 
+## API channels and secrets
+
+AI Studio requests keep using the server-only `GEMINI_API_KEY`. Vertex requests use
+`VERTEX_PROJECT_ID`, optional `VERTEX_LOCATION` (default `global`), and
+`GOOGLE_CREDENTIALS_JSON` (an `authorized_user` JSON document with `client_id`,
+`client_secret`, and `refresh_token`). Set all of these as server Secrets.
+Do not add a `VITE_` prefix, do not commit them, and do not put them in a file
+uploaded with the project. The browser never receives an access token, refresh
+token, client secret, or credential JSON.
+
+This app has no user login. Same-origin visitors can call the chat, story-memory,
+and model routes. Turning on Vertex therefore lets those visitors spend the
+Google Cloud project's quota. Do not enable Vertex on a public deployment until
+you add an access control that you control. The curated Vertex catalog is not
+proof that the project or region can actually serve a model. Tests mock OAuth
+and the Vertex HTTP API; they do not verify live model access or billing.
+
+Switching channels does not delete a Gemini API key saved in browser storage
+under `my-ai-chat-gemini-api-key`, and Vertex requests do not send that key.
+AI Studio continues to read only the server `GEMINI_API_KEY`.
+
 ## Vercel setup
 
 Deploy the project root. Vercel uses `vercel.json`, runs `npm run build`, serves
