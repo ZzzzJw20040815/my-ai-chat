@@ -1,5 +1,5 @@
 import { DEFAULT_MODEL, modelDisplayName } from '../shared/models.js';
-import { MAX_OUTPUT_TOKENS_LIMIT, MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_LEVELS } from '../shared/settings.js';
+import { API_CHANNELS, MAX_OUTPUT_TOKENS_LIMIT, MAX_SYSTEM_INSTRUCTION_LENGTH, SAFETY_CATEGORIES, SAFETY_LEVELS, THINKING_LEVEL_LABELS } from '../shared/settings.js';
 import { demoData } from './demo.js';
 import { icons } from './icons.js';
 import {
@@ -33,7 +33,7 @@ import {
 import { renderMarkdown } from './markdown.js';
 import { storedWebSearchFields, webSearchMarkup } from '../shared/web-search.js';
 import { consumeStream } from './stream.js';
-import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from './settings.js';
+import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings, thinkingLevelForModel } from './settings.js';
 import { applyMobileDisplayPreferences } from './mobile-display.js';
 import { SettingsCodeError, createSettingsCode, parseSettingsCode } from './settings-code.js';
 import { createWallpaperPresenter, decodeWallpaperImage, validateWallpaperFile } from './wallpaper.js';
@@ -67,9 +67,6 @@ import {
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const escapeHtml = value => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
-const THINKING_LEVEL_LABELS = {
-  minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High',
-};
 const ACTIVE_CHAT_STORAGE_KEY = 'my-ai-chat-active-chat-id';
 const chats = new Map();
 function createDemoChats() {
@@ -97,6 +94,7 @@ let activeSurfaceMenu = null;
 let scrollBottomVisible = false;
 const modelCatalog = createModelCatalog();
 let globalSettings = loadGlobalSettings();
+if (globalSettings.apiChannel === 'vertex') modelCatalog.setChannel('vertex');
 applyMobileDisplayPreferences(globalSettings);
 function ensureAvailableDefaultModel(confirmed = !!modelCatalog.syncedAt) {
   const available = availableDefaultModel(globalSettings.defaultModel, modelCatalog);
@@ -325,6 +323,7 @@ function clearHistoricalEdit() {
 async function updateStoryMemory() {
   const chat = current();
   if (storyMemoryBusy || generation || editingId || !chat) return;
+  if (!channelReady()) return;
   let stage = 'planning';
   storyMemoryBusy = true; renderConversation();
   if (!$('#storyMenu').hidden) renderStoryMenu($('#storyMenu').dataset.view || 'overview');
@@ -335,6 +334,7 @@ async function updateStoryMemory() {
       safetySettings: requestSettings(globalSettings, modelCatalog.metadata(chat.model) || {
         source: 'discovered', capabilities: { thinkingLevels: [], samplingOverrides: false, safetySettings: false },
       }).safetySettings,
+      apiChannel: globalSettings.apiChannel,
       save: snapshot => replaceStoryMemorySnapshot(snapshot),
       onProgress: progress => {
         storyMemoryProgress = progress;
@@ -452,6 +452,19 @@ function syncSettingsUi() {
   $('#thinkingSupport').textContent = thinkingLevels.length
     ? '当前聊天模型支持：' + thinkingLevels.map(level => THINKING_LEVEL_LABELS[level] || level).join('、') + '；不支持的已保存偏好将使用模型默认值。'
     : '当前模型未提供可调 thinking level；将使用模型默认值。';
+  const invalidChannel = globalSettings.apiChannelInvalid === true;
+  for (const input of document.querySelectorAll('[name="apiChannelSetting"]')) {
+    input.checked = !invalidChannel && input.value === globalSettings.apiChannel;
+  }
+  const channelToolbar = $('#apiChannelToolbar');
+  if (channelToolbar) channelToolbar.value = invalidChannel ? '' : (globalSettings.apiChannel || 'ai-studio');
+  const channelNote = $('#apiChannelNote');
+  if (channelNote) channelNote.textContent = invalidChannel
+    ? '已保存的通道值无效。请重新选择 Gemini API Key 或 Vertex AI。系统没有自动改成另一条通道。'
+    : globalSettings.apiChannel === 'vertex'
+      ? 'Vertex 请求使用服务器凭据，不会携带 Gemini API key。目录中的内置模型不代表当前 Google Cloud 项目或区域已经开通该模型。'
+      : 'Gemini API Key 通道沿用现有的 Developer API。切换通道不会清除本地保存的 Gemini API key。';
+  syncThinkingControl();
   const samplingSupported = capabilities?.samplingOverrides === true;
   // Preserve the global preference as read-only state even when this model keeps
   // sampling model-managed; requestSettings remains the capability gate.
@@ -527,8 +540,56 @@ async function refreshStoragePersistence() {
   persistenceStatus = await storagePersistenceStatus();
   syncSettingsUi();
 }
+function channelReady() {
+  if (globalSettings.apiChannelInvalid || !API_CHANNELS.includes(globalSettings.apiChannel)) {
+    toast('API 通道设置无效，请重新选择。未自动切换通道。');
+    return false;
+  }
+  return true;
+}
+function closeThinkingMenu() {
+  const menu = $('#thinkingMenu');
+  if (!menu) return;
+  menu.hidden = true;
+  $('#thinkingMode')?.setAttribute('aria-expanded', 'false');
+}
+function syncThinkingControl() {
+  const button = $('#thinkingMode');
+  const menu = $('#thinkingMenu');
+  if (!button || !menu) return;
+  const model = modelCatalog.metadata(current()?.model);
+  const levels = Array.isArray(model?.capabilities?.thinkingLevels) ? model.capabilities.thinkingLevels : [];
+  const saved = globalSettings.thinkingLevel;
+  const effective = thinkingLevelForModel(saved, model);
+  const label = effective === 'default' ? '默认' : (THINKING_LEVEL_LABELS[effective] || effective);
+  $('#thinkingModeLabel').textContent = levels.length ? label : '默认';
+  button.disabled = levels.length === 0;
+  let note = levels.length ? `思考深度：${label}` : '当前模型不能调节思考档位，将使用模型默认值。';
+  if (levels.length && saved !== 'default' && effective === 'default') {
+    note = `已保存偏好 ${THINKING_LEVEL_LABELS[saved] || saved} 不适用于当前模型，本次请求使用模型默认档位。`;
+  }
+  button.title = note;
+  button.setAttribute('aria-label', note);
+  menu.innerHTML = levels.map(level => level).concat(levels.length ? ['default'] : []).filter((level, index, all) => all.indexOf(level) === index)
+    .sort((left, right) => (left === 'default' ? -1 : 1) - (right === 'default' ? -1 : 1))
+    .map(level => {
+      const text = level === 'default' ? '默认' : (THINKING_LEVEL_LABELS[level] || level);
+      return '<button type="button" role="option" data-thinking-level="' + level + '" aria-selected="' + (saved === level) + '">' + escapeHtml(text) + '</button>';
+    }).join('');
+  if (!levels.length) closeThinkingMenu();
+}
+function applyApiChannel(channel) {
+  if (!API_CHANNELS.includes(channel)) return;
+  globalSettings = saveGlobalSettings({ ...globalSettings, apiChannel: channel, apiChannelInvalid: false });
+  modelCatalog.setChannel(channel);
+  syncSettingsUi();
+  void modelCatalog.refresh({ force: true }).then(() => { syncModel(); syncSettingsUi(); }).catch(() => {
+    toast('Could not refresh models. Existing models are still available.');
+  });
+}
 async function generate(chat, user, existingTurn = null, existingVariant = null, regenerationReason = null, runtimeAction = null) {
   if (generation) return;
+  if (!channelReady()) return;
   const assistant = existingTurn || createMessage('assistant', '', chat.model);
   const variant = existingVariant || assistant;
   variant.status = 'sending';
@@ -558,6 +619,7 @@ async function generate(chat, user, existingTurn = null, existingVariant = null,
         settings: requestSettings(globalSettings, modelCatalog.metadata(chat.model) || {
           source: 'discovered', capabilities: { thinkingLevels: [], samplingOverrides: false, safetySettings: false },
         }),
+        apiChannel: globalSettings.apiChannel,
       }),
       signal: job.abort.signal,
     });
@@ -878,6 +940,7 @@ $('#modelMenu').addEventListener('keydown', event => {
 });
 document.addEventListener('click', event => {
   if (!event.target.closest('.model-wrap')) setModelMenu(false);
+  if (!event.target.closest('.thinking-control')) closeThinkingMenu();
   if (!mobile.matches && !event.target.closest('#regenerateMenu') && !event.target.closest('[data-action="regenerate"]')) closeRegenerateMenu();
   if (!mobile.matches && !event.target.closest('#runtimeMenu') && !event.target.closest('[data-open-runtime-menu]')) closeRuntimeMenu();
 });
@@ -940,6 +1003,7 @@ $('#importSettingsCode').addEventListener('click', () => {
   const defaultModel = availableDefaultModel(imported.settings.defaultModel, modelCatalog);
   globalSettings = saveGlobalSettings({ ...imported.settings, defaultModel });
   applyMobileDisplayPreferences(globalSettings);
+  if (API_CHANNELS.includes(globalSettings.apiChannel)) modelCatalog.setChannel(globalSettings.apiChannel);
   setTheme(imported.theme);
   syncSettingsUi();
   $('#settingsCodeInput').value = '';
@@ -1081,6 +1145,23 @@ $('#maxOutputTokensSetting').addEventListener('change', event => {
   updateGlobalSettings({ maxOutputTokens: value ? Number(value) : null });
 });
 $('#thinkingLevelSetting').addEventListener('change', event => updateGlobalSettings({ thinkingLevel: event.target.value }));
+$('#thinkingMode').addEventListener('click', () => {
+  if ($('#thinkingMode').disabled) return;
+  const menu = $('#thinkingMenu');
+  menu.hidden = !menu.hidden;
+  $('#thinkingMode').setAttribute('aria-expanded', String(!menu.hidden));
+  if (!menu.hidden) menu.querySelector('[aria-selected="true"]')?.focus();
+});
+$('#thinkingMenu').addEventListener('click', event => {
+  const option = event.target.closest('[data-thinking-level]');
+  if (!option) return;
+  updateGlobalSettings({ thinkingLevel: option.dataset.thinkingLevel });
+  closeThinkingMenu();
+});
+$('#apiChannelToolbar').addEventListener('change', event => applyApiChannel(event.target.value));
+for (const input of document.querySelectorAll('[name="apiChannelSetting"]')) {
+  input.addEventListener('change', () => { if (input.checked) applyApiChannel(input.value); });
+}
 const updateSamplingEnabled = event => {
   const enabled = event.target.checked;
   if (globalSettings.samplingOverrides.enabled === enabled) return;

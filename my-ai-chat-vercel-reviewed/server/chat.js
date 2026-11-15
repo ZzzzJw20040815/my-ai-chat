@@ -14,11 +14,16 @@ import { storyRuntimeActionTurn, storyRuntimeSystemInstruction, validateStoryRun
 import {
   GOOGLE_SEARCH_TOOLS, groundingMetadataFromChunk, preferGroundingMetadata, publicGrounding,
 } from '../shared/web-search.js';
+import { InvalidApiChannelError, requestApiChannel } from '../shared/settings.js';
+import { readVertexConfig } from './vertex-auth.js';
+import { vertexChatStream } from './vertex-transport.js';
 
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_MESSAGES = 100;
 export const ERROR_TEXT = Object.freeze({
   KEY_MISSING: '服务器尚未配置 GEMINI_API_KEY。请在 Vercel Project Settings 中将其添加为 Secret，不要发送到聊天中。',
+  VERTEX_CONFIG: 'Vertex AI 尚未完成服务器配置。请由站点所有者检查项目、区域和凭据，不要把凭据发到聊天中。',
+  VERTEX_AUTH: 'Vertex AI 凭据无法刷新或被拒绝。请由站点所有者检查授权配置。',
   KEY_INVALID: 'Gemini 凭据无效或没有访问权限，请由 Site Owner 检查 Secret 和 Google 项目。',
   RATE_LIMIT: 'Gemini 请求过于频繁或额度不足（429）。请稍后重试，或检查 Google 项目的配额。',
   MODEL_UNAVAILABLE: '所选 Gemini 模型目前不可用，请切换模型或稍后重试。',
@@ -47,7 +52,7 @@ export function classifyError(error) {
 export function validatePayload(payload, authorizedModel = modelMetadata(payload?.model)) {
   if (!payload || !authorizedModel || authorizedModel.id !== payload.model || !Array.isArray(payload.messages) || !payload.messages.length)
     throw new Error('INVALID_REQUEST');
-  const allowedPayloadKeys = new Set(['model', 'messages', 'settings', 'storyMemory', 'styleReferences', 'regenerationReason', 'storyRuntime']);
+  const allowedPayloadKeys = new Set(['model', 'messages', 'settings', 'storyMemory', 'styleReferences', 'regenerationReason', 'storyRuntime', 'apiChannel']);
   if (Object.keys(payload).some(key => !allowedPayloadKeys.has(key))) throw new Error('INVALID_REQUEST');
   if (payload.messages.length > MAX_MESSAGES) throw new Error('CONTEXT_LIMIT');
   const ids = new Set();
@@ -219,17 +224,31 @@ export async function handleChat(request, env, transport = googleStream, timeout
     return jsonError(error.message === 'CONTEXT_LIMIT' ? 'CONTEXT_LIMIT' : 'INVALID_REQUEST', error.message === 'CONTEXT_LIMIT' ? 413 : 400);
   }
   let params, authorizedModel = modelMetadata(payload.model);
+  let channel;
+  try { channel = requestApiChannel(payload.apiChannel); }
+  catch (error) {
+    if (error instanceof InvalidApiChannelError) return jsonError('INVALID_REQUEST', 400);
+    return jsonError('INVALID_REQUEST', 400);
+  }
+  const vertex = channel === 'vertex';
   try {
     if (authorizedModel) params = validatePayload(payload, authorizedModel);
+    else if (vertex) return jsonError('MODEL_UNAVAILABLE', 502);
     else if (!env.GEMINI_API_KEY?.trim()) return jsonError('INVALID_REQUEST', 400);
   } catch (error) {
     return jsonError(error.message === 'CONTEXT_LIMIT' ? 'CONTEXT_LIMIT' : 'INVALID_REQUEST', error.message === 'CONTEXT_LIMIT' ? 413 : 400);
   }
-  if (!env.GEMINI_API_KEY?.trim()) return jsonError('KEY_MISSING', 503);
-  try {
-    authorizedModel ||= await trustedModelMetadata(payload.model, env.GEMINI_API_KEY, catalogOptions);
+  if (vertex) {
     if (!authorizedModel) return jsonError('MODEL_UNAVAILABLE', 502);
-    params ||= validatePayload(payload, authorizedModel);
+    const vertexConfig = readVertexConfig(env);
+    if (!vertexConfig.ok) return jsonError('VERTEX_CONFIG', 503);
+  } else if (!env.GEMINI_API_KEY?.trim()) return jsonError('KEY_MISSING', 503);
+  try {
+    if (!vertex) {
+      authorizedModel ||= await trustedModelMetadata(payload.model, env.GEMINI_API_KEY, catalogOptions);
+      if (!authorizedModel) return jsonError('MODEL_UNAVAILABLE', 502);
+      params ||= validatePayload(payload, authorizedModel);
+    }
   } catch (error) {
     if (error.message === 'INVALID_REQUEST' || error.message === 'CONTEXT_LIMIT') {
       return jsonError(error.message, error.message === 'CONTEXT_LIMIT' ? 413 : 400);
@@ -252,7 +271,9 @@ export async function handleChat(request, env, transport = googleStream, timeout
         try {
           abort.signal.throwIfAborted();
           emit({ type: 'start' });
-          const iterator = await transport(env.GEMINI_API_KEY, params, abort.signal);
+          const iterator = vertex
+            ? await vertexChatStream(env, params, abort.signal, catalogOptions.vertex)
+            : await transport(env.GEMINI_API_KEY, params, abort.signal);
           for await (const chunk of iterator) {
             if (abort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
             const safetyMessage = safetyBlockedFeedback(chunk);
@@ -276,7 +297,7 @@ export async function handleChat(request, env, transport = googleStream, timeout
             ...(publicGrounding(grounding) || {}),
           });
         } catch (error) {
-          const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'SAFETY_BLOCKED', 'CONTEXT_LIMIT'].includes(error?.code) ? error.code : classifyError(error)[0];
+          const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'SAFETY_BLOCKED', 'CONTEXT_LIMIT', 'VERTEX_CONFIG', 'VERTEX_AUTH', 'TIMEOUT'].includes(error?.code) ? error.code : classifyError(error)[0];
           const safeMessage = code === 'SAFETY_BLOCKED' && error?.message?.startsWith(ERROR_TEXT.SAFETY_BLOCKED)
             ? error.message : ERROR_TEXT[code];
           if (!cancelled) emit({ type: 'error', code, message: safeMessage });

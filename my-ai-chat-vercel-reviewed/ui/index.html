@@ -106,6 +106,14 @@
             <div class="model-menu" id="modelMenu" role="listbox" aria-label="Choose model"></div>
           </div>
           <div class="topbar-actions">
+            <label class="channel-switch">
+              <span class="visually-hidden">API 通道</span>
+              <select id="apiChannelToolbar" aria-label="API 通道，Gemini API Key 或 Vertex AI">
+                <option value="" disabled>选择通道</option>
+                <option value="ai-studio">Gemini</option>
+                <option value="vertex">Vertex</option>
+              </select>
+            </label>
             <button class="icon-button quick-theme" id="quickTheme" aria-label="Switch to light mode" title="Toggle theme">
               <svg class="moon-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.2A8 8 0 0 1 8.8 4 8 8 0 1 0 20 15.2Z"/></svg>
               <svg class="sun-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
@@ -136,10 +144,13 @@
                   <button class="composer-icon" type="button" id="attachButton" disabled aria-label="Attachments not enabled" title="Attachments are not enabled in Phase 2">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8.5 12.5 6.6-6.6a3 3 0 0 1 4.2 4.2l-8.5 8.5a5 5 0 0 1-7.1-7.1l8-8"/></svg>
                   </button>
-                  <button class="mode-pill" type="button" id="thinkingMode" disabled aria-label="Thinking uses model defaults" title="Uses model defaults">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 22h4M8.2 14.5A7 7 0 1 1 15.8 14.5c-.8.6-1.3 1.4-1.4 2.5h-4.8c-.1-1.1-.6-1.9-1.4-2.5Z"/></svg>
-                    <span>Thinking</span>
-                  </button>
+                  <div class="thinking-control">
+                    <button class="thinking-depth" type="button" id="thinkingMode" aria-haspopup="listbox" aria-expanded="false" aria-controls="thinkingMenu">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 22h4M8.2 14.5A7 7 0 1 1 15.8 14.5c-.8.6-1.3 1.4-1.4 2.5h-4.8c-.1-1.1-.6-1.9-1.4-2.5Z"/></svg>
+                      <span id="thinkingModeLabel">默认</span>
+                    </button>
+                    <div class="thinking-menu" id="thinkingMenu" role="listbox" aria-label="思考深度" hidden></div>
+                  </div>
                 </div>
                 <button class="send-button" type="submit" id="sendButton" aria-label="Send message">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg>
@@ -165,6 +176,12 @@
             <div><p class="eyebrow">Model</p><h3 id="modelSettingsTitle">Model settings</h3></div>
             <button class="text-button danger-text" type="button" id="resetGlobalSettings">Reset to defaults</button>
           </div>
+          <fieldset class="channel-fieldset">
+            <legend>API 通道</legend>
+            <label class="channel-option"><input type="radio" name="apiChannelSetting" value="ai-studio" /> <span><strong>Gemini API Key</strong><small>沿用 Gemini Developer API。密钥只留在服务器上。</small></span></label>
+            <label class="channel-option"><input type="radio" name="apiChannelSetting" value="vertex" /> <span><strong>Vertex AI</strong><small>使用服务器上的 Vertex 凭据。浏览器请求不携带 Gemini API key。</small></span></label>
+            <p class="settings-intro" id="apiChannelNote"></p>
+          </fieldset>
           <div class="model-catalog-row">
             <span id="modelCatalogSynced">Last synced: Never</span>
             <button class="small-button" type="button" id="refreshModels">Refresh Models</button>

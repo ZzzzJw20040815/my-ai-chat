@@ -71,7 +71,7 @@ test('export is an explicit settings whitelist and excludes secrets, chats, Stor
   };
   const envelope = envelopeFrom(createSettingsCode({ settings, theme: 'dark' }));
   assert.deepEqual(Object.keys(envelope.globalSettings).sort(), [
-    'contextLimit', 'defaultModel', 'maxOutputTokens', 'mobileDisplay', 'safetySettings',
+    'apiChannel', 'contextLimit', 'defaultModel', 'maxOutputTokens', 'mobileDisplay', 'safetySettings',
     'samplingOverrides', 'systemInstruction', 'thinkingLevel',
   ]);
   const serialized = JSON.stringify(envelope);

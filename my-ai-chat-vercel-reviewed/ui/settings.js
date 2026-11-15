@@ -12,9 +12,16 @@ export function loadGlobalSettings(storage = localStorage) {
 }
 
 export function saveGlobalSettings(settings, storage = localStorage) {
-  const normalized = normalizeGlobalSettings(settings);
-  try { storage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, JSON.stringify(normalized)); } catch {}
-  return normalized;
+  const normalized = normalizeGlobalSettings(settings?.apiChannelInvalid ? { ...settings, apiChannel: undefined } : settings);
+  const stored = settings?.apiChannelInvalid
+    ? { ...normalized, apiChannel: settings.rejectedApiChannel || 'invalid' }
+    : normalized;
+  delete stored.apiChannelInvalid;
+  delete stored.rejectedApiChannel;
+  try { storage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, JSON.stringify(stored)); } catch {}
+  return settings?.apiChannelInvalid
+    ? { ...normalized, apiChannel: null, apiChannelInvalid: true, rejectedApiChannel: stored.apiChannel }
+    : normalized;
 }
 
 export function resetGlobalSettings(storage = localStorage) {
