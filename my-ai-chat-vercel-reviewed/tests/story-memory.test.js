@@ -906,6 +906,30 @@ test('official SDK extraction uses a shallow schema while fallback and repair us
   assert.ok(!JSON.stringify([body, fallbackBody, repairBody, recoveryBody, safetyBody]).includes('unit-test-sentinel'));
 });
 
+test('Gemini 4 story-memory requests omit thinking level and thinking budget', async t => {
+  const captured = [];
+  t.mock.method(globalThis, 'fetch', async (input, init) => {
+    captured.push(await new Request(input, init).json());
+    return Response.json({ candidates: [{
+      content: { role: 'model', parts: [{ text: JSON.stringify(memory()) }] }, finishReason: 'STOP',
+    }] });
+  });
+  for (const model of ['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-hydrogen']) {
+    await googleExtractStoryMemory('unit-test-sentinel', {
+      model, existingMemory: null,
+      conversation: [{ id: 'u', role: 'user', content: 'A', status: 'complete', createdAt: new Date().toISOString() }],
+    }, new AbortController().signal);
+  }
+  assert.equal(captured.length, 3);
+  for (const body of captured) {
+    const serialized = JSON.stringify(body);
+    assert.equal(serialized.includes('thinkingBudget'), false);
+    assert.equal(serialized.includes('thinking_budget'), false);
+    assert.equal(serialized.includes('thinkingConfig'), false);
+    assert.equal(serialized.includes('thinkingLevel'), false);
+  }
+});
+
 test('normal chat ignores empty memory but injects meaningful memory', () => {
   const base = {
     model: MODEL,

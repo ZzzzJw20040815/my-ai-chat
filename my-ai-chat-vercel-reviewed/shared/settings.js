@@ -2,7 +2,7 @@ import { DEFAULT_MODEL, isPersistableModelId } from './models.js';
 
 export const GLOBAL_SETTINGS_STORAGE_KEY = 'my-ai-chat-global-settings';
 export const CONTEXT_LIMITS = Object.freeze(['all', '50', '20', '10']);
-export const THINKING_LEVELS = Object.freeze(['default', 'minimal', 'low', 'medium', 'high']);
+export const THINKING_LEVELS = Object.freeze(['default', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 export const MAX_SYSTEM_INSTRUCTION_LENGTH = 20000;
 export const MAX_OUTPUT_TOKENS_LIMIT = 65536;
 export const SAMPLING_LIMITS = Object.freeze({
