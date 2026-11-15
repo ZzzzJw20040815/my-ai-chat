@@ -45,11 +45,11 @@ export const CURATED_MODELS = Object.freeze([
     source: 'curated', capabilities: curatedCapabilities(['minimal', 'low', 'medium', 'high']),
   },
   {
-    id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', description: 'Thinking low to high · Stable', stage: 'stable',
+    id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', description: '最强推理 · Stable', stage: 'stable',
     source: 'curated', capabilities: curatedCapabilities(['low', 'medium', 'high']),
   },
   {
-    id: 'gemini-4-argon', name: 'Gemini 4 Argon', description: 'Thinking low to high · Stable', stage: 'stable',
+    id: 'gemini-4-argon', name: 'Gemini 4 Argon', description: '均衡效率 · Stable', stage: 'stable',
     source: 'curated', capabilities: curatedCapabilities(['low', 'medium', 'high']),
   },
   {

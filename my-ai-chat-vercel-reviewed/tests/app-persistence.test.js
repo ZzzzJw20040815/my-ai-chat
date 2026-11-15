@@ -631,9 +631,9 @@ test('generation capability presentation follows the current chat rather than th
   document.querySelector('#settingsButton').click();
   assert.equal(document.querySelector('#defaultModelSetting').value, 'gemini-3.1-pro-preview');
   assert.match(document.querySelector('#currentChatModelSetting').textContent, /Gemini 3.1 Pro/);
-  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'default');
+  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'minimal');
   assert.equal(document.querySelector('#thinkingLevelSetting option[value="minimal"]').disabled, true);
-  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'default');
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'minimal');
   assert.equal(document.querySelector('#samplingEnabledSetting').disabled, true);
   document.querySelector('#samplingEnabledSetting').click();
   assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).samplingOverrides.enabled, false);
@@ -670,8 +670,8 @@ test('generation capability presentation follows the current chat rather than th
   dom.window.close(); await closeChatDatabase();
 });
 
-test('model switches and restored settings clear incompatible thinking levels without substituting one', async () => {
-  const indexedDB = new IDBFactory(); const { fetchMock } = createFetchMock(); const storage = createMemoryStorage();
+test('saved thinking level stays global while an incompatible model request falls back to default', async () => {
+  const indexedDB = new IDBFactory(); const { fetchMock, payloads } = createFetchMock(); const storage = createMemoryStorage();
   const dom = installDom(indexedDB, fetchMock, storage);
   dom.window.confirm = () => true;
   await import('../ui/app.js?gemini4-thinking=switch');
@@ -690,28 +690,37 @@ test('model switches and restored settings clear incompatible thinking levels wi
   document.querySelector('#modelButton').click();
   document.querySelector('[data-model="gemini-4-carbon"]').click();
   document.querySelector('#settingsButton').click();
-  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'default');
+  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'xhigh');
   assert.equal(document.querySelector('#thinkingLevelSetting option[value="xhigh"]').disabled, true);
   assert.equal(document.querySelector('#thinkingLevelSetting option[value="high"]').disabled, false);
-  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'default');
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'xhigh');
+  document.querySelector('#settingsDialog').close();
+  const requestsBefore = payloads.length;
+  submitMessage('carbon keeps the saved level out of this request');
+  await waitFor(() => payloads.length > requestsBefore);
+  assert.equal(payloads.at(-1).model, 'gemini-4-carbon');
+  assert.equal(payloads.at(-1).settings.thinkingLevel, 'default');
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'xhigh');
+  await waitFor(() => document.querySelector('#modelButton').disabled === false);
+
+  document.querySelector('#modelButton').click();
+  document.querySelector('[data-model="gemini-4-hydrogen"]').click();
+  document.querySelector('#settingsButton').click();
+  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'xhigh');
+  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'xhigh');
+  assert.equal(document.querySelector('#thinkingLevelSetting option[value="xhigh"]').disabled, false);
 
   const input = document.querySelector('#settingsCodeInput');
+  document.querySelector('#modelButton').click();
+  document.querySelector('[data-model="gemini-4-carbon"]').click();
   input.value = createSettingsCode({
     settings: { thinkingLevel: 'xhigh', defaultModel: 'gemini-4-hydrogen' }, theme: 'dark',
   });
   document.querySelector('#importSettingsCode').click();
   assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).defaultModel, 'gemini-4-hydrogen');
-  assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'default');
-  assert.equal(document.querySelector('#thinkingLevelSetting').value, 'default');
-
-  document.querySelector('#settingsDialog').close();
-  document.querySelector('#modelButton').click();
-  document.querySelector('[data-model="gemini-4-hydrogen"]').click();
-  document.querySelector('#settingsButton').click();
-  input.value = createSettingsCode({ settings: { thinkingLevel: 'xhigh' }, theme: 'dark' });
-  document.querySelector('#importSettingsCode').click();
   assert.equal(JSON.parse(storage.getItem(GLOBAL_SETTINGS_STORAGE_KEY)).thinkingLevel, 'xhigh');
   assert.equal(document.querySelector('#thinkingLevelSetting').value, 'xhigh');
+  assert.equal(document.querySelector('#thinkingLevelSetting option[value="xhigh"]').disabled, true);
   dom.window.close(); await closeChatDatabase();
 });
 
