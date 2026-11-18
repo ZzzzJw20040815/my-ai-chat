@@ -105,7 +105,7 @@ test('chat, message, model and edits survive a database reopen', async () => {
   assert.ok(restored.messages[0].updatedAt);
 });
 
-test('stopped and network-error partial replies persist but stay out of later Gemini context', async () => {
+test('stopped partials stay out of later context, while an error partial with text is kept without its warning', async () => {
   const indexedDB = new IDBFactory();
   const chat = createChat(FLASH);
   const stoppedUser = createMessage('user', '写一个长回答');
@@ -124,7 +124,11 @@ test('stopped and network-error partial replies persist but stay out of later Ge
   assert.equal(restored.messages[1].content, '已经生成的部分');
   assert.equal(restored.messages[3].status, 'error');
   assert.equal(restored.messages[3].content, '网络中断前的部分');
-  assert.deepEqual(contextFor(restored, retryUser.id).map(message => message.content), ['继续']);
+  assert.equal(restored.messages[3].error, '网络连接失败，请检查网络后重试。');
+  const continued = contextFor(restored, retryUser.id);
+  assert.deepEqual(continued.map(message => message.content), ['再试一次', '网络中断前的部分', '继续']);
+  assert.equal(JSON.stringify(continued).includes('网络连接失败'), false);
+  assert.equal(continued.some(message => message.content === '已经生成的部分'), false);
 
   const regenerated = createMessage('assistant', '重试后的完整回答', PRO);
   restored.messages.splice(3, 1, regenerated);

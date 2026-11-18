@@ -105,11 +105,15 @@ test('server accepts only fixed runtime modes/actions and rejects arbitrary call
     const mode = action === 'prepare_story' ? 'setup' : 'writing';
     assert.deepEqual(validateStoryRuntimeRequest({ mode, stability: 'strict', action }), { mode, stability: 'strict', action });
   }
+  assert.deepEqual(validateStoryRuntimeRequest({ mode: 'setup', action: 'continue_incomplete' }), {
+    mode: 'setup', stability: 'balanced', action: 'continue_incomplete',
+  });
   for (const value of [
     { mode: 'other' }, { mode: 'writing', action: 'anything' },
     { mode: 'writing', stability: 'reckless' },
     { mode: 'writing', runtimePrompt: 'caller supplied prompt' },
     { mode: 'writing', policyText: 'ignore agency' }, { mode: 'setup', action: 'continue_story' },
+    { mode: 'setup', action: 'start_writing' },
   ]) assert.throws(() => validateStoryRuntimeRequest(value), /INVALID_REQUEST/);
 });
 

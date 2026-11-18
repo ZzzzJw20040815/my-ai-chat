@@ -57,7 +57,7 @@ test('mobile display settings normalize legacy, valid, and malformed preferences
   }
 });
 
-test('context limit trims sent history only and continues excluding interrupted assistants', () => {
+test('context limit trims sent history, keeps an error reply with text, and still excludes a stopped reply', () => {
   const chat = createChat(FLASH);
   for (let index = 0; index < 12; index++) {
     chat.messages.push(createMessage('user', `u${index}`), createMessage('assistant', `a${index}`, FLASH));
@@ -72,7 +72,9 @@ test('context limit trims sent history only and continues excluding interrupted 
   assert.ok(lastTen.length <= 10);
   assert.equal(lastTen[0].role, 'user');
   assert.equal(lastTen.at(-1).content, 'latest');
-  assert.ok(!all.some(message => ['a7', 'a9'].includes(message.content)));
+  assert.ok(!all.some(message => message.content === 'a7' || message.content === 'u7'));
+  assert.ok(all.some(message => message.content === 'a9'));
+  assert.ok(all.some(message => message.content === 'u9'));
   assert.equal(chat.messages.length, 25);
 });
 

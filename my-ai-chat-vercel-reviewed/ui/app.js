@@ -55,6 +55,7 @@ import { storyPanelView } from './story-panel.js';
 import { hasMeaningfulStoryMemory } from '../shared/story-memory.js';
 import { clearMobileSheetPosition, positionMobileSheet } from './mobile-sheet.js';
 import { REGENERATION_REASON_OPTIONS, styleReferenceRequestItems } from '../shared/response-quality.js';
+import { isManualContinuationPrompt, systemInstructionWithContinuationAnchor } from '../shared/story-runtime.js';
 import {
   continuationAvailability, createRuntimeControl, isRuntimeControlMessage, isVisibleRuntimeControlMessage,
   regenerationRuntimeAction, runtimeControlLabel, setStoryRuntimeMode, setStoryRuntimeStability,
@@ -188,10 +189,13 @@ function messageHtml(message) {
   const variantNav = variants.length > 1 ? '<span class="variant-nav" aria-label="Response variants"><button data-action="variant-prev" aria-label="Previous response" title="Previous response"' +
     (busy || variantIndex === 0 ? ' disabled' : '') + '>‹</button><span>' + (variantIndex + 1) + ' / ' + variants.length + '</span><button data-action="variant-next" aria-label="Next response" title="Next response"' +
     (busy || variantIndex === variants.length - 1 ? ' disabled' : '') + '>›</button></span>' : '';
+  const lastAssistant = visibleConversationPath(current()).filter(item => item.role === 'assistant').at(-1);
+  const showContinue = message.id === lastAssistant?.id && continuationAvailability(current(), busy).action === 'continue_incomplete';
   return '<div class="assistant-mark" aria-hidden="true">AI</div><div class="assistant-body"><div class="message-content">' +
     (variant.content ? renderMarkdown(variant.content) : generating ? '<div class="typing" aria-label="Generating"><i></i><i></i><i></i></div>' : '') +
     '</div>' + webSearchMarkup(variant, escapeHtml) + status + error + (variant.notice ? '<p class="generation-status">' + escapeHtml(variant.notice) + '</p>' : '') +
     '<div class="message-actions">' + action('copy', 'Copy', icons.copy, false, !variant.content) +
+    (showContinue ? action('continue-incomplete', '继续未完成', icons.redo, false, busy) : '') +
     action('regenerate', variant.status === 'error' || variant.status === 'stopped' ? 'Retry' : '重新生成', icons.redo, false, busy) +
     action('save-style', styleSaved ? '已保存' : '保存风格', icons.bookmark, styleSaved, generating || !variant.content) +
     action('like', 'Like', icons.like, variant.feedback === 'like', generating) +
@@ -238,19 +242,27 @@ function storyPanelHtml(snapshot, disabled) {
     (summary.length ? '<div class="story-panel-summary">' + summary.map(item => '<span>' + escapeHtml(item) + '</span>').join('') + '</div>' : '') +
     (storyPanelExpanded ? '<div class="story-panel-grid">' + sections + '</div>' : '') + '</section>';
 }
+function continueIncompleteButton(continuation) {
+  if (continuation.action !== 'continue_incomplete') return '';
+  return '<button class="small-button" type="button" data-story-runtime-action="continue_incomplete"' +
+    (generation ? ' disabled' : '') + '>继续未完成</button>';
+}
 function storyRuntimeHtml(chat) {
   const runtime = storyRuntimeState(chat);
   const continuation = continuationAvailability(chat, !!generation);
+  const continueButton = continueIncompleteButton(continuation);
   if (!runtime.enabled) return '<div class="story-runtime-control"><button class="small-button" type="button" data-story-runtime-action="prepare_story"' +
-    (generation ? ' disabled' : '') + '>开始构思</button></div>';
+    (generation ? ' disabled' : '') + '>开始构思</button>' + continueButton + '</div>';
   if (runtime.mode === 'setup') {
     const availability = startWritingAvailability(chat);
     return '<div class="story-runtime-control"><span class="story-runtime-status"><i></i>构思中</span>' +
+    continueButton +
     '<button class="small-button primary" type="button" data-story-runtime-action="start_writing"' +
     (availability.enabled ? '' : ' disabled title="' + escapeHtml(availability.reason) + '"') + '>开始正文</button>' +
     '<button class="small-button" type="button" data-story-runtime-action="exit_story">退出故事模式</button></div>';
   }
   return '<div class="story-runtime-control"><span class="story-runtime-status"><i></i>正文中</span>' +
+    continueButton +
     '<button class="small-button" type="button" data-open-runtime-menu' + (continuation.action ? '' : ' disabled') + ' aria-haspopup="menu" aria-expanded="false">故事操作</button></div>';
 }
 function renderConversation(bottom = false) {
@@ -609,13 +621,26 @@ async function generate(chat, user, existingTurn = null, existingVariant = null,
   const job = { chatId: chat.id, messageId: assistant.id, variantId: variant.id, abort: new AbortController() };
   generation = job; syncComposer(); renderConversation(true);
   const runtime = storyRuntimeState(chat);
+  const path = visibleConversationPath(chat);
+  const userIndex = path.findIndex(message => message.id === user.id);
+  const previous = userIndex > 0 ? path[userIndex - 1] : null;
+  const previousVariant = previous?.role === 'assistant' ? activeAssistantVariant(previous) : null;
+  let settings = requestSettings(globalSettings, modelCatalog.metadata(chat.model) || {
+    source: 'discovered', capabilities: { thinkingLevels: [], samplingOverrides: false, safetySettings: false },
+  });
+  if (!isRuntimeControlMessage(user) && isManualContinuationPrompt(user.content)) {
+    const systemInstruction = systemInstructionWithContinuationAnchor(settings.systemInstruction, user.content, previousVariant);
+    if (systemInstruction !== settings.systemInstruction) settings = { ...settings, systemInstruction };
+  }
   let readerResponse;
   try {
     readerResponse = await fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: chat.model,
-        messages: contextFor(chat, user.id, runtimeAction === 'start_writing' ? 'all' : globalSettings.contextLimit),
+        messages: contextFor(chat, user.id, runtimeAction === 'start_writing' ? 'all' : globalSettings.contextLimit, {
+          clientContinuationAnchor: runtimeAction === 'continue_incomplete' && !runtime.enabled,
+        }),
         storyMemory: (() => {
           const memory = applicableStoryMemory(chat, storyMemorySnapshots)?.memory;
           return memory && hasMeaningfulStoryMemory(memory) ? memory : null;
@@ -625,9 +650,7 @@ async function generate(chat, user, existingTurn = null, existingVariant = null,
         ...(runtime.enabled ? { storyRuntime: {
           mode: runtime.mode, stability: storyRuntimeStability(chat), ...(runtimeAction ? { action: runtimeAction } : {}),
         } } : {}),
-        settings: requestSettings(globalSettings, modelCatalog.metadata(chat.model) || {
-          source: 'discovered', capabilities: { thinkingLevels: [], samplingOverrides: false, safetySettings: false },
-        }),
+        settings,
         apiChannel: globalSettings.apiChannel,
       }),
       signal: job.abort.signal,
@@ -836,6 +859,7 @@ function renderStoryMenu(viewName = 'overview') {
     if (runtime.mode === 'setup') actions =
       '<button class="story-menu-action" type="button" data-open-story-state><span>故事状态</span><small>' + (memory ? '查看当前状态' : '尚未生成记忆') + '</small></button>' +
       storyMemoryAction(canUpdate) +
+      (continuation.action === 'continue_incomplete' ? storyAction('continue_incomplete', '继续未完成', { primary: true }) : '') +
       startWritingAction(chat) + storyAction('exit_story', '退出故事模式');
     if (runtime.mode === 'writing') actions =
       '<button class="story-menu-action" type="button" data-open-story-state><span>故事状态</span><small>' + (memory ? '查看当前状态' : '尚未生成记忆') + '</small></button>' +
@@ -872,6 +896,18 @@ async function runStoryRuntimeAction(actionId) {
     setStoryRuntimeMode(chat, 'setup', actionId); renderConversation(); await persistChat(chat);
     if (!$('#storyMenu').hidden) renderStoryMenu();
     toast('已进入构思模式'); return;
+  }
+  if (actionId === 'continue_incomplete') {
+    if (continuationAvailability(chat, false).action !== 'continue_incomplete') return;
+    const assistant = visibleConversationPath(chat).filter(message => message.role === 'assistant').at(-1);
+    const variant = activeAssistantVariant(assistant);
+    if (!assistant || !variant?.content?.trim()) return;
+    const control = createRuntimeControl(actionId, variant.id);
+    chat.messages.push(control);
+    selectUserChild(chat, control.id);
+    closeRuntimeMenu(); closeStoryMenu(); renderConversation(true); await persistChat(chat);
+    void generate(chat, control, null, null, null, actionId);
+    return;
   }
   if ((actionId === 'start_writing' && runtime.mode !== 'setup')
     || !['start_writing', 'continue_story', 'continue_incomplete'].includes(actionId)
@@ -1268,6 +1304,9 @@ conversation.addEventListener('click', async event => {
       else openRegenerateMenu(message.id, button);
       break;
     }
+    case 'continue-incomplete':
+      void runStoryRuntimeAction('continue_incomplete');
+      break;
     case 'save-style': void saveActiveStyleReference(chat, message); break;
     case 'variant-prev': case 'variant-next': {
       if (generation || !Array.isArray(message.variants)) return;

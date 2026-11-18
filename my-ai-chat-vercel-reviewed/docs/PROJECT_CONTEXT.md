@@ -2,7 +2,7 @@
 
 本文描述 `fix/web-search-hardening` 上的运行代码，对应提交 `39fcefc`（联网搜索开关在一次点击里只切换一次）。起点是 `main` 的 `23cfe23`（PR #19，Gemini 联网搜索）。路径相对 `my-ai-chat-vercel-reviewed/`。
 
-整合说明：这份地图停留在 PR #20 的搜索加固快照。当前整合分支还包含 PR #21 的 Gemini 4 精选模型与 `xhigh`，以及 PR #22 的 Vertex 通道和主界面思考控件。通道、思考档和搜索开关以 `README.md` 与运行代码为准；下文里“只有 8 个内置模型”和“入口只传递 `GEMINI_API_KEY`”是这份快照的原话，不再单独代表整合后的行为。
+整合说明：这份地图停留在 PR #20 的搜索加固快照。当前整合分支还包含 PR #21 的 Gemini 4 精选模型与 `xhigh`、PR #22 的 Vertex 通道和主界面思考控件，以及 PR #23 的有正文中断保留、200000 字可见上限和 `OUTPUT_LIMIT`。通道、思考档、搜索开关和中断上下文以 `README.md` 与运行代码为准；下文里“只有 8 个内置模型”“入口只传递 `GEMINI_API_KEY`”和“只发送 complete 回复”是这份快照的原话，不再单独代表整合后的行为。
 
 这是浏览器端聊天应用：Vite 打包静态页，Vercel Node Function 持有 `GEMINI_API_KEY` 并调用 `@google/genai`。聊天、故事记忆、风格参考和壁纸存在本机 IndexedDB；全局设置存在 `localStorage`。没有登录、服务端数据库或云同步。
 
