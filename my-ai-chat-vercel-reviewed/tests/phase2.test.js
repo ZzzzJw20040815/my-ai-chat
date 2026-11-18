@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
-import { handleChat, validatePayload, ERROR_TEXT } from '../server/chat.js';
+import { handleChat, validatePayload, ERROR_TEXT, MAX_BODY_BYTES } from '../server/chat.js';
 import { MODELS, DEFAULT_MODEL } from '../shared/models.js';
 import { createChat, createMessage, contextFor, uniqueId } from '../ui/state.js';
 import { renderMarkdown } from '../ui/markdown.js';
@@ -39,7 +39,7 @@ test('method, same-origin, JSON and body/context boundaries are enforced', async
   assert.equal((await handleChat(request(payload(), { headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' } }), {})).status, 403);
   assert.equal((await handleChat(request(payload(), { headers: { 'Content-Type': 'text/plain' } }), {})).status, 415);
   assert.equal((await handleChat(request(payload(), { body: '{bad-json' }), {})).status, 400);
-  assert.equal((await handleChat(request(payload(), { body: 'x'.repeat(262145) }), {})).status, 413);
+  assert.equal((await handleChat(request(payload(), { body: 'x'.repeat(MAX_BODY_BYTES + 1) }), {})).status, 413);
   assert.equal((await handleChat(request({ ...payload(), messages: [user('x'.repeat(50001))] }), {})).status, 413);
   assert.equal((await handleChat(request({ ...payload(), messages: Array.from({length:101}, () => user()) }), {})).status, 413);
 });

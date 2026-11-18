@@ -1,3 +1,5 @@
+import { MAX_SYSTEM_INSTRUCTION_LENGTH } from './settings.js';
+
 export const STORY_RUNTIME_VERSION = 1;
 export const STORY_RUNTIME_MODES = Object.freeze(['setup', 'writing']);
 export const STORY_STABILITY_LEVELS = Object.freeze(['free', 'balanced', 'strict']);
@@ -49,7 +51,8 @@ export function validateStoryRuntimeRequest(value) {
   const action = value.action ?? null;
   if (action !== null && !isStoryRuntimeAction(action)) throw new Error('INVALID_REQUEST');
   if (action === 'prepare_story' && value.mode !== 'setup') throw new Error('INVALID_REQUEST');
-  if (action && action !== 'prepare_story' && value.mode !== 'writing') throw new Error('INVALID_REQUEST');
+  if (action === 'continue_incomplete' && value.mode !== 'setup' && value.mode !== 'writing') throw new Error('INVALID_REQUEST');
+  if (action && action !== 'prepare_story' && action !== 'continue_incomplete' && value.mode !== 'writing') throw new Error('INVALID_REQUEST');
   return { mode: value.mode, stability: normalizeStoryStability(value.stability), ...(action ? { action } : {}) };
 }
 
@@ -96,6 +99,40 @@ const ACTION_TURNS = Object.freeze({
 export function storyRuntimeActionTurn(action) {
   const text = ACTION_TURNS[action];
   return text ? { role: 'user', parts: [{ text }] } : null;
+}
+
+const MANUAL_CONTINUATION_PROMPTS = new Set([
+  '继续',
+  '你的输出未完整 请继续输出',
+  '你的输出未完整，请继续输出',
+  '你的输出未完整,请继续输出',
+]);
+
+export function isManualContinuationPrompt(value) {
+  if (typeof value !== 'string') return false;
+  return MANUAL_CONTINUATION_PROMPTS.has(value.trim().replace(/\s+/g, ' '));
+}
+
+export function manualContinuationAnchor() {
+  return ACTION_TURNS.continue_incomplete;
+}
+
+function continuationNeedsAnchor(previous) {
+  const content = typeof previous?.content === 'string' ? previous.content.trim() : '';
+  if (!content) return false;
+  return previous.status === 'stopped'
+    || previous.status === 'error'
+    || previous.status === 'interrupted'
+    || previous.status === 'incomplete'
+    || previous.status === 'blocked'
+    || previous.completionReason === 'max_tokens';
+}
+
+export function systemInstructionWithContinuationAnchor(systemInstruction, userText, previous) {
+  const base = typeof systemInstruction === 'string' ? systemInstruction : '';
+  if (!isManualContinuationPrompt(userText) || !continuationNeedsAnchor(previous)) return base;
+  const next = base ? `${base}\n\n${manualContinuationAnchor()}` : manualContinuationAnchor();
+  return next.length <= MAX_SYSTEM_INSTRUCTION_LENGTH ? next : base;
 }
 
 export function storyRuntimeSystemInstruction(base, runtime) {

@@ -1,4 +1,5 @@
 import { DEFAULT_MODEL } from '../shared/models.js';
+import { isManualContinuationPrompt, manualContinuationAnchor } from '../shared/story-runtime.js';
 import { storedWebSearchFields } from '../shared/web-search.js';
 export function uniqueId(source = crypto) {
   if (typeof source.randomUUID === 'function') return source.randomUUID();
@@ -189,8 +190,29 @@ export function createChat(model = DEFAULT_MODEL) {
     group: 'Today', messages: [], draft: '', scrollTop: 0, demo: false, titleInitialized: false,
     storyRuntime: { version: 1, stability: 'balanced', transitions: [] } };
 }
-// Include complete turns only. Failed/stopped partial responses never masquerade as valid context.
-export function contextFor(chat, userId, contextLimit = 'all') {
+const RETAINED_PARTIAL_STATUSES = new Set(['error', 'interrupted', 'incomplete', 'blocked']);
+const assistantBody = variant => typeof variant?.content === 'string' ? variant.content : '';
+const hasAssistantBody = variant => assistantBody(variant).trim().length > 0;
+const isRetainedPartial = variant => hasAssistantBody(variant) && RETAINED_PARTIAL_STATUSES.has(variant.status);
+function contextUser(message) {
+  return { id: message.id, role: 'user', content: message.content, status: 'complete' };
+}
+function contextAssistant(variant, status = variant.status) {
+  return { id: variant.id, role: 'assistant', content: variant.content, status };
+}
+function appendAssistant(result, variant, status) {
+  const reply = contextAssistant(variant, status);
+  if (result.at(-1)?.role === 'assistant') {
+    result.at(-1).content += '\n\n' + reply.content;
+    result.at(-1).status = reply.status === 'complete' ? 'complete' : reply.status;
+    return;
+  }
+  result.push(reply);
+}
+// Complete turns stay in context. A safety block, stream failure, or other
+// interruption also stays when it already has real text. User-stopped partials
+// stay out until this request explicitly continues them. Warnings are not content.
+export function contextFor(chat, userId, contextLimit = 'all', options = {}) {
   const visibleMessages = visibleConversationPath(chat);
   const end = visibleMessages.findIndex(message => message.id === userId && message.role === 'user');
   if (end < 0) throw new Error('Message not found');
@@ -199,55 +221,69 @@ export function contextFor(chat, userId, contextLimit = 'all') {
     const user = visibleMessages[index];
     if (user.role !== 'user' || user.status !== 'complete') continue;
     if (user.kind === 'runtime-control') {
-      if (index === end) break;
+      if (index === end) {
+        if (options.clientContinuationAnchor && user.runtimeAction === 'continue_incomplete') {
+          result.push({ id: user.id, role: 'user', content: manualContinuationAnchor(), status: 'complete' });
+        }
+        break;
+      }
       const assistant = visibleMessages[index + 1];
       const activeVariant = activeAssistantVariant(assistant);
-      if (assistant?.role === 'assistant' && activeVariant?.status === 'complete' && activeVariant.content.trim()) {
-        const reply = { ...activeVariant, role: 'assistant' };
-        if (result.at(-1)?.role === 'assistant') result.at(-1).content += '\n\n' + reply.content;
-        else result.push(reply);
+      if (assistant?.role === 'assistant' && (activeVariant?.status === 'complete' ? hasAssistantBody(activeVariant) : isRetainedPartial(activeVariant))) {
+        appendAssistant(result, activeVariant, activeVariant.status === 'complete' ? 'complete' : activeVariant.status);
         index++;
       }
       continue;
     }
-    if (index === end) { result.push(user); break; }
+    if (index === end) {
+      const assistant = visibleMessages[index - 1];
+      const variant = activeAssistantVariant(assistant);
+      const parent = visibleMessages[index - 2];
+      if (isManualContinuationPrompt(user.content) && assistant?.role === 'assistant' && parent?.role === 'user'
+        && parent.kind !== 'runtime-control' && variant?.status === 'stopped' && hasAssistantBody(variant)
+        && result.at(-1)?.id !== variant.id) {
+        result.push(contextUser(parent), contextAssistant(variant, 'interrupted'));
+      }
+      result.push(contextUser(user));
+      break;
+    }
     const assistant = visibleMessages[index + 1];
     const activeVariant = activeAssistantVariant(assistant);
-    if (assistant?.role === 'assistant' && activeVariant?.status === 'complete' && activeVariant.content.trim()) {
-      result.push(user, { ...activeVariant, role: 'assistant' });
+    if (assistant?.role === 'assistant' && (activeVariant?.status === 'complete' ? hasAssistantBody(activeVariant) : isRetainedPartial(activeVariant))) {
+      result.push(contextUser(user), contextAssistant(activeVariant, activeVariant.status === 'complete' ? 'complete' : activeVariant.status));
       index++;
     } else if (assistant?.role === 'assistant' && visibleMessages[index + 2]?.kind === 'runtime-control') {
       const control = visibleMessages[index + 2];
       const continuation = visibleMessages[index + 3];
       const continuationVariant = activeAssistantVariant(continuation);
-      if (control.runtimeAction === 'continue_incomplete' && activeVariant?.content?.trim() && control.id === userId) {
+      if (control.runtimeAction === 'continue_incomplete' && hasAssistantBody(activeVariant) && control.id === userId) {
         // Only an explicit continue_incomplete request may promote this immediate
-        // partial response into request-scoped context.
-        result.push(user, { ...activeVariant, role: 'assistant', status: 'complete' });
+        // user-stopped partial into request-scoped context.
+        result.push(contextUser(user), contextAssistant(activeVariant, 'complete'));
         index++;
-      } else if (control.runtimeAction === 'continue_incomplete' && activeVariant?.content?.trim()
-        && continuation?.role === 'assistant' && continuationVariant?.content?.trim()
-        && (continuationVariant.status === 'complete'
+      } else if (control.runtimeAction === 'continue_incomplete' && hasAssistantBody(activeVariant)
+        && continuation?.role === 'assistant' && hasAssistantBody(continuationVariant)
+        && (continuationVariant.status === 'complete' || isRetainedPartial(continuationVariant)
           || visibleMessages[index + 4]?.kind === 'runtime-control'
             && visibleMessages[index + 4]?.runtimeAction === 'continue_incomplete')) {
         // Persisted history remains branch-safe while the partial and its successful
         // (or explicitly continued) response become one legal model turn.
-        result.push(user, {
-          ...continuationVariant,
-          role: 'assistant',
-          status: 'complete',
+        const status = continuationVariant.status === 'complete' || !isRetainedPartial(continuationVariant)
+          ? 'complete' : continuationVariant.status;
+        result.push(contextUser(user), {
+          id: continuationVariant.id, role: 'assistant', status,
           content: activeVariant.content + '\n\n' + continuationVariant.content,
         });
         index += 3;
       } else if (control.runtimeAction === 'start_writing' && control.id === userId) {
         // A failed or stopped setup reply must not strand the user's latest premise.
-        result.push(user);
+        result.push(contextUser(user));
         index++;
       } else if (control.runtimeAction === 'start_writing' && continuation?.role === 'assistant'
-        && continuationVariant?.status === 'complete' && continuationVariant.content.trim()) {
+        && continuationVariant?.status === 'complete' && hasAssistantBody(continuationVariant)) {
         // The discarded setup partial remains excluded; its completed start_writing
         // reply is paired with the retained premise for all later requests.
-        result.push(user, { ...continuationVariant, role: 'assistant' });
+        result.push(contextUser(user), contextAssistant(continuationVariant, 'complete'));
         index += 3;
       }
     }
