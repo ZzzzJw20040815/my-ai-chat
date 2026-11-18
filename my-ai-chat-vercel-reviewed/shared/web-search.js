@@ -1,16 +1,64 @@
-// Chat requests enable this tool. The model decides whether a prompt needs a search.
+import createDOMPurify from 'dompurify';
+
+// Chat requests enable this tool only when the caller asks for search.
 export const GOOGLE_SEARCH_TOOLS = Object.freeze([{ googleSearch: Object.freeze({}) }]);
 
 const MAX_SOURCES = 8;
 const MAX_TITLE = 180;
 const MAX_SUGGESTION_HTML = 20000;
-const UNSAFE_SUGGESTION = /<\s*script|javascript\s*:|data\s*:\s*text\/html|on[a-z]+\s*=|<\s*(?:iframe|object|embed|base|meta|link|form|button|input|textarea|img)\b|data-action\s*=|data-story|data-code-copy/i;
+const SUGGESTION_TAGS = Object.freeze(['style', 'div', 'span', 'a', 'svg', 'path', 'g', 'title', 'circle', 'rect']);
+const SUGGESTION_ATTRS = Object.freeze([
+  'href', 'class', 'style', 'target', 'rel', 'xmlns', 'viewBox', 'd', 'fill', 'width', 'height', 'aria-hidden', 'role',
+]);
 
-export function safeSearchSuggestionHtml(value) {
+function httpsStyleUrl(value) {
+  try {
+    const url = new URL(String(value).trim());
+    return url.protocol === 'https:' && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+function stripUnsafeStyleText(css) {
+  if (typeof css !== 'string' || !css) return '';
+  const withoutImport = css.replace(/@import\b[^;]*;?/gi, '');
+  return withoutImport.replace(/url\(\s*(['"]?)([\s\S]*?)\1\s*\)/gi, (full, _quote, raw) => (
+    httpsStyleUrl(raw) ? full : ''
+  ));
+}
+
+export function sanitizeSearchSuggestionHtml(value, win = globalThis.window) {
   if (typeof value !== 'string') return null;
   const html = value.trim();
-  if (!html || html.length > MAX_SUGGESTION_HTML || UNSAFE_SUGGESTION.test(html)) return null;
-  return html;
+  if (!html || html.length > MAX_SUGGESTION_HTML || !win?.document) return null;
+  const purify = createDOMPurify(win);
+  const clean = purify.sanitize(html, {
+    ALLOWED_TAGS: [...SUGGESTION_TAGS],
+    ALLOWED_ATTR: [...SUGGESTION_ATTRS],
+    ALLOW_DATA_ATTR: false,
+    ADD_TAGS: ['style'],
+    FORCE_BODY: true,
+  });
+  const template = win.document.createElement('template');
+  template.innerHTML = clean;
+  for (const link of template.content.querySelectorAll('a')) {
+    const href = link.getAttribute('href') || '';
+    let parsed;
+    try { parsed = new URL(href); } catch { parsed = null; }
+    if (!parsed || parsed.protocol !== 'https:' || parsed.username || parsed.password) link.removeAttribute('href');
+    else link.setAttribute('href', parsed.href);
+    link.setAttribute('target', '_blank');
+    link.setAttribute('rel', 'noopener noreferrer');
+  }
+  for (const style of template.content.querySelectorAll('style')) style.textContent = stripUnsafeStyleText(style.textContent);
+  for (const element of template.content.querySelectorAll('[style]')) {
+    const cleaned = stripUnsafeStyleText(element.getAttribute('style'));
+    if (cleaned.trim()) element.setAttribute('style', cleaned);
+    else element.removeAttribute('style');
+  }
+  const result = template.innerHTML.trim();
+  return result || null;
 }
 
 export function normalizeWebSources(value) {
@@ -53,13 +101,19 @@ export function preferGroundingMetadata(current, next) {
   return groundingScore(next) >= groundingScore(current) ? next : current;
 }
 
+// The server forwards this string unchanged. The browser sanitizes it on save and again before display.
+function passThroughSearchSuggestionHtml(value) {
+  if (typeof value !== 'string' || value.length > MAX_SUGGESTION_HTML) return null;
+  return value;
+}
+
 export function publicGrounding(metadata) {
   if (!metadata || typeof metadata !== 'object') return null;
   const webSources = normalizeWebSources((Array.isArray(metadata.groundingChunks) ? metadata.groundingChunks : []).map(chunk => ({
     title: chunk?.web?.title,
     url: chunk?.web?.uri,
   })));
-  const searchSuggestionHtml = safeSearchSuggestionHtml(metadata.searchEntryPoint?.renderedContent);
+  const searchSuggestionHtml = passThroughSearchSuggestionHtml(metadata.searchEntryPoint?.renderedContent);
   if (!webSources.length && !searchSuggestionHtml) return null;
   return {
     ...(webSources.length ? { webSources } : {}),
@@ -67,22 +121,37 @@ export function publicGrounding(metadata) {
   };
 }
 
-export function storedWebSearchFields(record) {
+export function storedWebSearchFields(record, win = globalThis.window) {
   const webSources = normalizeWebSources(record?.webSources);
-  const searchSuggestionHtml = safeSearchSuggestionHtml(record?.searchSuggestionHtml);
+  const searchSuggestionHtml = sanitizeSearchSuggestionHtml(record?.searchSuggestionHtml, win);
   return {
     ...(webSources.length ? { webSources } : {}),
     ...(searchSuggestionHtml ? { searchSuggestionHtml } : {}),
   };
 }
 
-export function webSearchMarkup(record, escapeHtml) {
-  const { webSources = [], searchSuggestionHtml = null } = storedWebSearchFields(record);
+export function webSearchMarkup(record, escapeHtml, win = globalThis.window) {
+  const { webSources = [], searchSuggestionHtml = null } = storedWebSearchFields(record, win);
   const sourceHtml = webSources.length
     ? '<div class="web-sources">' + webSources.map(source =>
       '<a href="' + escapeHtml(source.url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(source.title) + '</a>'
     ).join('') + '</div>'
     : '';
-  const suggestionHtml = searchSuggestionHtml ? '<div class="search-suggestion">' + searchSuggestionHtml + '</div>' : '';
+  const suggestionHtml = searchSuggestionHtml
+    ? '<div class="search-suggestion-host"><template class="search-suggestion-source">' + searchSuggestionHtml + '</template></div>'
+    : '';
   return sourceHtml + suggestionHtml;
+}
+
+export function mountSearchSuggestion(host, win = globalThis.window) {
+  if (!host || host.shadowRoot) return host?.shadowRoot || null;
+  const source = host.querySelector?.('template.search-suggestion-source');
+  const clean = sanitizeSearchSuggestionHtml(source?.innerHTML || '', win);
+  source?.remove();
+  if (!clean || !host.attachShadow) return null;
+  host.style.setProperty('contain', 'paint');
+  host.style.setProperty('overflow', 'hidden');
+  const root = host.attachShadow({ mode: 'open' });
+  root.innerHTML = clean;
+  return root;
 }

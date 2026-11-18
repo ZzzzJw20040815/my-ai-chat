@@ -4,6 +4,7 @@ export const GLOBAL_SETTINGS_STORAGE_KEY = 'my-ai-chat-global-settings';
 export const LOCAL_GEMINI_KEY_STORAGE_KEY = 'my-ai-chat-gemini-api-key';
 export const API_CHANNELS = Object.freeze(['ai-studio', 'vertex']);
 export const CONTEXT_LIMITS = Object.freeze(['all', '50', '20', '10']);
+export const WEB_SEARCH_MODES = Object.freeze(['on', 'off']);
 export const THINKING_LEVELS = Object.freeze(['default', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 export const THINKING_LEVEL_LABELS = Object.freeze({
   default: '默认',
@@ -55,6 +56,7 @@ export const DEFAULT_GLOBAL_SETTINGS = Object.freeze({
   }),
   mobileDisplay: Object.freeze({ density: 'standard', chatTextSize: 'standard' }),
   apiChannel: 'ai-studio',
+  webSearch: 'on',
 });
 
 export class InvalidApiChannelError extends Error {
@@ -121,5 +123,6 @@ export function normalizeGlobalSettings(value) {
       apiChannelInvalid: true,
       rejectedApiChannel: typeof source.apiChannel === 'string' ? source.apiChannel.slice(0, 80) : 'invalid',
     } : {}),
+    webSearch: source.webSearch === 'off' ? 'off' : 'on',
   };
 }

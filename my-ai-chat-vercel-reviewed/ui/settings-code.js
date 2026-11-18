@@ -1,7 +1,7 @@
 import {
   CHAT_TEXT_SIZES, CONTEXT_LIMITS, MAX_OUTPUT_TOKENS_LIMIT, MAX_SYSTEM_INSTRUCTION_LENGTH,
   MOBILE_DENSITIES, SAFETY_CATEGORIES, SAFETY_MODES, SAFETY_THRESHOLDS, SAMPLING_LIMITS,
-  API_CHANNELS, THINKING_LEVELS, normalizeGlobalSettings,
+  API_CHANNELS, THINKING_LEVELS, WEB_SEARCH_MODES, normalizeGlobalSettings,
 } from '../shared/settings.js';
 import { isPersistableModelId } from '../shared/models.js';
 
@@ -63,6 +63,7 @@ function exportableSettings(settings) {
     samplingOverrides: { ...normalized.samplingOverrides },
     safetySettings: { ...normalized.safetySettings },
     mobileDisplay: { ...normalized.mobileDisplay },
+    webSearch: normalized.webSearch,
   };
 }
 
@@ -75,9 +76,10 @@ function validateSettings(source) {
     && value > 0 && value <= MAX_OUTPUT_TOKENS_LIMIT));
   validateOptional(source, 'thinkingLevel', value => THINKING_LEVELS.includes(value));
   validateOptional(source, 'apiChannel', value => API_CHANNELS.includes(value));
+  validateOptional(source, 'webSearch', value => WEB_SEARCH_MODES.includes(value));
 
   const candidate = {};
-  for (const key of ['defaultModel', 'systemInstruction', 'contextLimit', 'maxOutputTokens', 'thinkingLevel', 'apiChannel']) {
+  for (const key of ['defaultModel', 'systemInstruction', 'contextLimit', 'maxOutputTokens', 'thinkingLevel', 'apiChannel', 'webSearch']) {
     if (has(source, key)) candidate[key] = source[key];
   }
 
