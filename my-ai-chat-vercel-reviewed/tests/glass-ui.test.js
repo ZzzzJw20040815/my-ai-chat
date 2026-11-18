@@ -24,7 +24,11 @@ test('glass design tokens provide distinct dark and light wallpaper surfaces', a
 test('both message roles have readable surfaces without per-message backdrop blur', async () => {
   const css = await readFile(cssUrl, 'utf8');
   assert.match(css, /\.message-bubble\s*\{[^}]*background:\s*var\(--message-user-bg\)[^}]*box-shadow:\s*var\(--glass-shadow-soft\)/s);
-  assert.match(css, /\.assistant-body\s*\{[^}]*background:\s*var\(--message-assistant-bg\)[^}]*box-shadow:\s*var\(--glass-shadow-soft\)/s);
+  // The reading proposal removes the assistant card. Transparent background, no border
+  // and no shadow are the contract; the user turn keeps its quiet surface token.
+  assert.match(css, /\.assistant-body\s*\{[^}]*background:\s*transparent[^}]*border:\s*0[^}]*box-shadow:\s*none/s);
+  assert.match(css, /\.message-content\s*\{[^}]*font-size:\s*var\(--font-size-body\)[^}]*line-height:\s*var\(--line-height-body\)/s);
+  assert.match(css, /--reading-measure:\s*72ch/);
   for (const selector of ['message-bubble', 'assistant-body']) {
     const block = css.match(new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`, 's'))?.[1] || '';
     assert.doesNotMatch(block, /backdrop-filter/);
