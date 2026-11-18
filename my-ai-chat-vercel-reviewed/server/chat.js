@@ -17,6 +17,7 @@ import {
 
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_MESSAGES = 100;
+const ASSISTANT_HISTORY_STATUSES = new Set(['complete', 'error', 'interrupted', 'incomplete', 'blocked']);
 export const ERROR_TEXT = Object.freeze({
   KEY_MISSING: '服务器尚未配置 GEMINI_API_KEY。请在 Vercel Project Settings 中将其添加为 Secret，不要发送到聊天中。',
   KEY_INVALID: 'Gemini 凭据无效或没有访问权限，请由 Site Owner 检查 Secret 和 Google 项目。',
@@ -53,14 +54,18 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
   const ids = new Set();
   let total = 0;
   const contents = payload.messages.map((message, index) => {
+    const expectedRole = index % 2 ? 'assistant' : 'user';
+    const content = typeof message?.content === 'string' ? message.content : '';
+    const historyStatus = message?.role === 'assistant'
+      ? ASSISTANT_HISTORY_STATUSES.has(message.status)
+      : message?.status === 'complete';
     if (!message || typeof message.id !== 'string' || !message.id || message.id.length > 100 || ids.has(message.id)
-      || message.role !== (index % 2 ? 'assistant' : 'user')
-      || typeof message.content !== 'string' || !message.content.trim() || message.status !== 'complete')
+      || message.role !== expectedRole || !content.trim() || !historyStatus)
       throw new Error('INVALID_REQUEST');
     ids.add(message.id);
-    total += message.content.length;
-    if (message.content.length > 50000 || total > 150000) throw new Error('CONTEXT_LIMIT');
-    return { role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] };
+    total += content.length;
+    if (content.length > 50000 || total > 150000) throw new Error('CONTEXT_LIMIT');
+    return { role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: content }] };
   });
   const storyRuntime = validateStoryRuntimeRequest(payload.storyRuntime);
   if (storyRuntime?.action && storyRuntime.action !== 'prepare_story') {
