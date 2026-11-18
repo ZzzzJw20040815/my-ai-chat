@@ -17,6 +17,7 @@ import {
 
 export const MAX_BODY_BYTES = 256 * 1024;
 export const MAX_MESSAGES = 100;
+export const MAX_VISIBLE_OUTPUT_CHARS = 100000;
 const ASSISTANT_HISTORY_STATUSES = new Set(['complete', 'error', 'interrupted', 'incomplete', 'blocked']);
 export const ERROR_TEXT = Object.freeze({
   KEY_MISSING: '服务器尚未配置 GEMINI_API_KEY。请在 Vercel Project Settings 中将其添加为 Secret，不要发送到聊天中。',
@@ -31,7 +32,16 @@ export const ERROR_TEXT = Object.freeze({
   BLOCKED: 'Gemini 未返回可显示的文本，或此回复被安全机制阻止。请调整问题后重试。',
   SAFETY_BLOCKED: '回复被 Gemini 安全设置阻止。',
   TRUNCATED: '回复达到输出长度限制，可继续提问。',
+  OUTPUT_LIMIT: '模型在写出可见文字之前就达到了输出长度限制。请缩短问题或提高输出上限后再试；这次没有可继续的正文。',
 });
+export function clipVisibleText(text, room) {
+  if (typeof text !== 'string' || room <= 0) return '';
+  if (text.length <= room) return text;
+  let end = room;
+  const boundary = text.charCodeAt(end - 1);
+  if (boundary >= 0xD800 && boundary <= 0xDBFF) end -= 1;
+  return end > 0 ? text.slice(0, end) : '';
+}
 const jsonError = (code, status) => Response.json({ error: { code, message: ERROR_TEXT[code] } }, {
   status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' },
 });
@@ -64,7 +74,8 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
       throw new Error('INVALID_REQUEST');
     ids.add(message.id);
     total += content.length;
-    if (content.length > 50000 || total > 150000) throw new Error('CONTEXT_LIMIT');
+    const maxContent = message.role === 'assistant' ? MAX_VISIBLE_OUTPUT_CHARS : 50000;
+    if (content.length > maxContent || total > 150000) throw new Error('CONTEXT_LIMIT');
     return { role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: content }] };
   });
   const storyRuntime = validateStoryRuntimeRequest(payload.storyRuntime);
@@ -253,35 +264,55 @@ export async function handleChat(request, env, transport = googleStream, timeout
     start(controller) {
       const emit = event => { if (!cancelled) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)); };
       void (async () => {
-        let textLength = 0, finishReason, grounding = null;
+        let textLength = 0, finishReason, grounding = null, outputCapped = false;
+        const emitDone = (reason) => emit({
+          type: 'done',
+          notice: reason === 'max_tokens' ? ERROR_TEXT.TRUNCATED : null,
+          completionReason: reason,
+          ...(publicGrounding(grounding) || {}),
+        });
         try {
           abort.signal.throwIfAborted();
           emit({ type: 'start' });
           const iterator = await transport(env.GEMINI_API_KEY, params, abort.signal);
-          for await (const chunk of iterator) {
-            if (abort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-            const safetyMessage = safetyBlockedFeedback(chunk);
-            if (safetyMessage) throw { code: 'SAFETY_BLOCKED', message: safetyMessage };
-            grounding = preferGroundingMetadata(grounding, groundingMetadataFromChunk(chunk));
-            finishReason = chunk.candidates?.[0]?.finishReason || finishReason;
-            const delta = chunk.text;
-            if (typeof delta === 'string' && delta) {
-              textLength += delta.length;
-              if (textLength > 100000) { abort.abort(); throw { code: 'CONTEXT_LIMIT' }; }
-              emit({ type: 'delta', text: delta });
+          try {
+            for await (const chunk of iterator) {
+              if (abort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+              const safetyMessage = safetyBlockedFeedback(chunk);
+              if (safetyMessage) throw { code: 'SAFETY_BLOCKED', message: safetyMessage };
+              grounding = preferGroundingMetadata(grounding, groundingMetadataFromChunk(chunk));
+              finishReason = chunk.candidates?.[0]?.finishReason || finishReason;
+              const delta = chunk.text;
+              if (typeof delta === 'string' && delta) {
+                const room = MAX_VISIBLE_OUTPUT_CHARS - textLength;
+                const piece = clipVisibleText(delta, room);
+                if (piece) {
+                  textLength += piece.length;
+                  emit({ type: 'delta', text: piece });
+                }
+                if (piece.length < delta.length) outputCapped = true;
+              }
+              if (outputCapped) {
+                abort.abort();
+                break;
+              }
             }
+          } catch (error) {
+            if (!outputCapped) throw error;
           }
-          if (finishReason === 'SAFETY') throw { code: 'SAFETY_BLOCKED', message: ERROR_TEXT.SAFETY_BLOCKED };
-          if (finishReason && !['STOP', 'MAX_TOKENS'].includes(finishReason)) throw { code: 'BLOCKED' };
-          if (!textLength) throw { code: 'BLOCKED' };
-          emit({
-            type: 'done',
-            notice: finishReason === 'MAX_TOKENS' ? ERROR_TEXT.TRUNCATED : null,
-            completionReason: finishReason === 'MAX_TOKENS' ? 'max_tokens' : 'complete',
-            ...(publicGrounding(grounding) || {}),
-          });
+          if (outputCapped) {
+            if (textLength > 0) emitDone('max_tokens');
+            else emit({ type: 'error', code: 'OUTPUT_LIMIT', message: ERROR_TEXT.OUTPUT_LIMIT });
+          } else if (finishReason === 'MAX_TOKENS' && !textLength) {
+            emit({ type: 'error', code: 'OUTPUT_LIMIT', message: ERROR_TEXT.OUTPUT_LIMIT });
+          } else {
+            if (finishReason === 'SAFETY') throw { code: 'SAFETY_BLOCKED', message: ERROR_TEXT.SAFETY_BLOCKED };
+            if (finishReason && !['STOP', 'MAX_TOKENS'].includes(finishReason)) throw { code: 'BLOCKED' };
+            if (!textLength) throw { code: 'BLOCKED' };
+            emitDone(finishReason === 'MAX_TOKENS' ? 'max_tokens' : 'complete');
+          }
         } catch (error) {
-          const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'SAFETY_BLOCKED', 'CONTEXT_LIMIT'].includes(error?.code) ? error.code : classifyError(error)[0];
+          const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'SAFETY_BLOCKED', 'CONTEXT_LIMIT', 'OUTPUT_LIMIT'].includes(error?.code) ? error.code : classifyError(error)[0];
           const safeMessage = code === 'SAFETY_BLOCKED' && error?.message?.startsWith(ERROR_TEXT.SAFETY_BLOCKED)
             ? error.message : ERROR_TEXT[code];
           if (!cancelled) emit({ type: 'error', code, message: safeMessage });
