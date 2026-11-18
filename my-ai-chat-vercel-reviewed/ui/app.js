@@ -517,7 +517,7 @@ function setTheme(theme) {
   try { localStorage.setItem('my-ai-chat-theme', theme); } catch {}
   $('#themeHint').textContent = theme === 'dark' ? 'Dark' : 'Light';
   $('#quickTheme').setAttribute('aria-label', 'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' mode');
-  $('meta[name="theme-color"]').content = theme === 'dark' ? '#0f1219' : '#f7f8fb';
+  $('meta[name="theme-color"]').content = theme === 'dark' ? '#1c1916' : '#f4f0e8';
   $$('[data-theme-choice]').forEach(b => b.classList.toggle('active', b.dataset.themeChoice === theme));
 }
 async function refreshStoragePersistence() {
