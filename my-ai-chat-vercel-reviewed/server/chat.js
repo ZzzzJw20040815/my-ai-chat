@@ -15,9 +15,14 @@ import {
   GOOGLE_SEARCH_TOOLS, groundingMetadataFromChunk, preferGroundingMetadata, publicGrounding,
 } from '../shared/web-search.js';
 
-export const MAX_BODY_BYTES = 256 * 1024;
+// Visible output is a local runaway ceiling, not a model token budget.
+// History fits one capped reply plus one 50k user message. The body cap
+// covers that history at 4 UTF-8 bytes per character, plus settings, and
+// stays under the platform request limit.
+export const MAX_BODY_BYTES = 1536 * 1024;
 export const MAX_MESSAGES = 100;
-export const MAX_VISIBLE_OUTPUT_CHARS = 100000;
+export const MAX_VISIBLE_OUTPUT_CHARS = 200000;
+export const MAX_HISTORY_CHARS = MAX_VISIBLE_OUTPUT_CHARS + 50000;
 const ASSISTANT_HISTORY_STATUSES = new Set(['complete', 'error', 'interrupted', 'incomplete', 'blocked']);
 export const ERROR_TEXT = Object.freeze({
   KEY_MISSING: '服务器尚未配置 GEMINI_API_KEY。请在 Vercel Project Settings 中将其添加为 Secret，不要发送到聊天中。',
@@ -75,7 +80,7 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
     ids.add(message.id);
     total += content.length;
     const maxContent = message.role === 'assistant' ? MAX_VISIBLE_OUTPUT_CHARS : 50000;
-    if (content.length > maxContent || total > 150000) throw new Error('CONTEXT_LIMIT');
+    if (content.length > maxContent || total > MAX_HISTORY_CHARS) throw new Error('CONTEXT_LIMIT');
     return { role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: content }] };
   });
   const storyRuntime = validateStoryRuntimeRequest(payload.storyRuntime);

@@ -40,7 +40,7 @@ function upstream(body, signal) {
   if (text.includes('exact ending') || text.includes('Continue directly')) return stream([textEvent('续写完成。', 'STOP')]);
   if (text.includes('你的输出未完整') || text.trim() === '继续') return stream([textEvent('续写完成。', 'STOP')]);
   if (text.includes('超长输出')) return stream([
-    textEvent('A'.repeat(60000)),
+    textEvent('A'.repeat(MAX_VISIBLE_OUTPUT_CHARS - 40000)),
     textEvent('B'.repeat(60000), 'STOP'),
   ]);
   if (text.includes('额度耗尽')) return stream([sse({
@@ -255,10 +255,13 @@ test('Chrome keeps capped output and does not present thought-only exhaustion as
     const beforeLong = app.payloads.length;
     await sendText('超长输出');
     await waitFor(() => see(ERROR_TEXT.TRUNCATED));
-    const shown = await browser.evaluate(`document.querySelector('.message.assistant .message-content')?.textContent || ''`);
-    assert.equal(shown.trim().length, MAX_VISIBLE_OUTPUT_CHARS);
-    assert.equal(shown.startsWith('A'.repeat(60)), true);
-    assert.equal(shown.includes('B'), true);
+    const shown = await browser.evaluate(`(() => {
+      const text = (document.querySelector('.message.assistant .message-content')?.textContent || '').trim();
+      return { length: text.length, startsWithA: text.startsWith('A'.repeat(60)), includesB: text.includes('B') };
+    })()`);
+    assert.equal(shown.length, MAX_VISIBLE_OUTPUT_CHARS);
+    assert.equal(shown.startsWithA, true);
+    assert.equal(shown.includesB, true);
     assert.equal(await see('新建聊天'), false);
     assert.equal(await see('安全'), false);
     assert.equal(await browser.evaluate(`Boolean(document.querySelector('[data-action="continue-incomplete"]'))`), true);

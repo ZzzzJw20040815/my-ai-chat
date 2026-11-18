@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import api from '../api/chat.js';
 import {
-  ERROR_TEXT, MAX_VISIBLE_OUTPUT_CHARS, clipVisibleText, handleChat, validatePayload,
+  ERROR_TEXT, MAX_BODY_BYTES, MAX_HISTORY_CHARS, MAX_VISIBLE_OUTPUT_CHARS, clipVisibleText, handleChat, validatePayload,
 } from '../server/chat.js';
 import { createChat, createMessage, contextFor } from '../ui/state.js';
 import { continuationAvailability, createRuntimeControl, setStoryRuntimeMode } from '../ui/story-runtime.js';
@@ -23,13 +23,16 @@ async function events(response) {
 const visible = output => output.filter(event => event.type === 'delta').map(event => event.text).join('');
 
 test('visible text is clipped at the output cap without calling the limit a conversation error', async () => {
+  assert.equal(MAX_VISIBLE_OUTPUT_CHARS, 200000);
+  assert.equal(MAX_HISTORY_CHARS, 250000);
+  const head = MAX_VISIBLE_OUTPUT_CHARS - 40000;
   const split = await events(await handleChat(request(), env, async function* () {
-    yield { text: 'A'.repeat(60000) };
+    yield { text: 'A'.repeat(head) };
     yield { text: 'B'.repeat(60000), candidates: [{ finishReason: 'STOP' }] };
   }));
   const splitText = visible(split);
   assert.equal(splitText.length, MAX_VISIBLE_OUTPUT_CHARS);
-  assert.equal(splitText, 'A'.repeat(60000) + 'B'.repeat(40000));
+  assert.equal(splitText, 'A'.repeat(head) + 'B'.repeat(40000));
   assert.equal(split.at(-1).type, 'done');
   assert.equal(split.at(-1).completionReason, 'max_tokens');
   assert.equal(split.at(-1).notice, ERROR_TEXT.TRUNCATED);
@@ -55,19 +58,27 @@ test('visible text is clipped at the output cap without calling the limit a conv
   }));
   assert.equal(visible(repeated), '哈'.repeat(6));
   assert.equal(repeated.at(-1).completionReason, 'complete');
+
+  const boundary = await events(await handleChat(request(), env, async function* () {
+    yield { text: 'A'.repeat(MAX_VISIBLE_OUTPUT_CHARS - 1) };
+    yield { text: 'BC', candidates: [{ finishReason: 'STOP' }] };
+  }));
+  assert.equal(visible(boundary), 'A'.repeat(MAX_VISIBLE_OUTPUT_CHARS - 1) + 'B');
+  assert.equal(boundary.at(-1).completionReason, 'max_tokens');
 });
 
 test('the output cap keeps whole Unicode characters and still rejects oversized inputs', async () => {
   const emoji = '😀';
+  const prefix = MAX_VISIBLE_OUTPUT_CHARS - 1;
   assert.equal(emoji.length, 2);
-  assert.equal(clipVisibleText('A'.repeat(99999) + emoji, MAX_VISIBLE_OUTPUT_CHARS), 'A'.repeat(99999));
+  assert.equal(clipVisibleText('A'.repeat(prefix) + emoji, MAX_VISIBLE_OUTPUT_CHARS), 'A'.repeat(prefix));
   assert.equal(clipVisibleText(emoji, 1), '');
   const output = await events(await handleChat(request(), env, async function* () {
-    yield { text: 'A'.repeat(99999) + emoji, candidates: [{ finishReason: 'STOP' }] };
+    yield { text: 'A'.repeat(prefix) + emoji, candidates: [{ finishReason: 'STOP' }] };
   }));
   const text = visible(output);
-  assert.equal(text, 'A'.repeat(99999));
-  assert.equal([...text].length, 99999);
+  assert.equal(text, 'A'.repeat(prefix));
+  assert.equal([...text].length, prefix);
   assert.equal(output.at(-1).completionReason, 'max_tokens');
 
   const kept = await handleChat(request({
@@ -79,6 +90,15 @@ test('the output cap keeps whole Unicode characters and still rejects oversized 
     ],
   }), env, async function* () { yield { text: 'ok', candidates: [{ finishReason: 'STOP' }] }; });
   assert.equal(kept.status, 200);
+  const cjkKept = await handleChat(request({
+    model: MODEL,
+    messages: [
+      { id: 'u', role: 'user', content: '问', status: 'complete' },
+      { id: 'a', role: 'assistant', content: '哈'.repeat(MAX_VISIBLE_OUTPUT_CHARS), status: 'complete' },
+      { id: 'u2', role: 'user', content: '继续', status: 'complete' },
+    ],
+  }), env, async function* () { yield { text: 'ok', candidates: [{ finishReason: 'STOP' }] }; });
+  assert.equal(cjkKept.status, 200);
   const tooLongOutput = await handleChat(request({
     model: MODEL,
     messages: [userMessage('问'), { id: 'a', role: 'assistant', content: 'A'.repeat(MAX_VISIBLE_OUTPUT_CHARS + 1), status: 'complete' }],
@@ -89,8 +109,18 @@ test('the output cap keeps whole Unicode characters and still rejects oversized 
   }), env, async () => assert.fail('input validation must not call the model'));
   assert.equal(oversized.status, 413);
   assert.equal((await oversized.json()).error.code, 'CONTEXT_LIMIT');
-  const hugeBody = await handleChat(request(undefined, { body: 'x'.repeat(262145) }), env, async () => assert.fail('body limit must not call the model'));
+  const hugeBody = await handleChat(request(undefined, { body: 'x'.repeat(MAX_BODY_BYTES + 1) }), env, async () => assert.fail('body limit must not call the model'));
   assert.equal(hugeBody.status, 413);
+  const overHistory = await handleChat(request({
+    model: MODEL,
+    messages: [
+      { id: 'u', role: 'user', content: 'B'.repeat(50000), status: 'complete' },
+      { id: 'a', role: 'assistant', content: 'A'.repeat(MAX_VISIBLE_OUTPUT_CHARS), status: 'complete' },
+      { id: 'u2', role: 'user', content: 'x', status: 'complete' },
+    ],
+  }), env, async () => assert.fail('history over the total cap must not call the model'));
+  assert.equal(overHistory.status, 413);
+  assert.equal((await overHistory.json()).error.code, 'CONTEXT_LIMIT');
 });
 
 test('a capped partial remains in the next normal, setup, and writing request', () => {
