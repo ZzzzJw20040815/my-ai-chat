@@ -67,6 +67,9 @@ import {
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const escapeHtml = value => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+const THINKING_LEVEL_LABELS = {
+  minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High',
+};
 const ACTIVE_CHAT_STORAGE_KEY = 'my-ai-chat-active-chat-id';
 const chats = new Map();
 function createDemoChats() {
@@ -447,7 +450,7 @@ function syncSettingsUi() {
     option.disabled = option.value !== 'default' && !thinkingLevels.includes(option.value);
   }
   $('#thinkingSupport').textContent = thinkingLevels.length
-    ? '当前聊天模型支持：' + thinkingLevels.map(level => level[0].toUpperCase() + level.slice(1)).join('、') + '；不支持的已保存偏好将使用模型默认值。'
+    ? '当前聊天模型支持：' + thinkingLevels.map(level => THINKING_LEVEL_LABELS[level] || level).join('、') + '；不支持的已保存偏好将使用模型默认值。'
     : '当前模型未提供可调 thinking level；将使用模型默认值。';
   const samplingSupported = capabilities?.samplingOverrides === true;
   // Preserve the global preference as read-only state even when this model keeps
