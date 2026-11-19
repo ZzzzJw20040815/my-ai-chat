@@ -1,8 +1,19 @@
 import { DEFAULT_MODEL, isPersistableModelId } from './models.js';
 
 export const GLOBAL_SETTINGS_STORAGE_KEY = 'my-ai-chat-global-settings';
+export const LOCAL_GEMINI_KEY_STORAGE_KEY = 'my-ai-chat-gemini-api-key';
+export const API_CHANNELS = Object.freeze(['ai-studio', 'vertex']);
 export const CONTEXT_LIMITS = Object.freeze(['all', '50', '20', '10']);
-export const THINKING_LEVELS = Object.freeze(['default', 'minimal', 'low', 'medium', 'high']);
+export const WEB_SEARCH_MODES = Object.freeze(['on', 'off']);
+export const THINKING_LEVELS = Object.freeze(['default', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+export const THINKING_LEVEL_LABELS = Object.freeze({
+  default: '默认',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra High',
+});
 export const MAX_SYSTEM_INSTRUCTION_LENGTH = 20000;
 export const MAX_OUTPUT_TOKENS_LIMIT = 65536;
 export const SAMPLING_LIMITS = Object.freeze({
@@ -44,7 +55,24 @@ export const DEFAULT_GLOBAL_SETTINGS = Object.freeze({
     dangerousContent: DEFAULT_SAFETY_THRESHOLD,
   }),
   mobileDisplay: Object.freeze({ density: 'standard', chatTextSize: 'standard' }),
+  apiChannel: 'ai-studio',
+  webSearch: 'on',
 });
+
+export class InvalidApiChannelError extends Error {
+  constructor(value) {
+    super('INVALID_API_CHANNEL');
+    this.name = 'InvalidApiChannelError';
+    this.code = 'INVALID_API_CHANNEL';
+    this.rejectedChannel = typeof value === 'string' ? value.slice(0, 80) : null;
+  }
+}
+
+export function requestApiChannel(value) {
+  if (value == null) return 'ai-studio';
+  if (API_CHANNELS.includes(value)) return value;
+  throw new InvalidApiChannelError(value);
+}
 
 const inRange = (value, limits) => typeof value === 'number' && Number.isFinite(value)
   && value >= limits.min && value <= limits.max;
@@ -60,6 +88,9 @@ export function normalizeGlobalSettings(value) {
   const maxOutputTokens = Number.isInteger(source.maxOutputTokens)
     && source.maxOutputTokens > 0 && source.maxOutputTokens <= MAX_OUTPUT_TOKENS_LIMIT
     ? source.maxOutputTokens : null;
+  const channelPresent = Object.prototype.hasOwnProperty.call(source, 'apiChannel')
+    && source.apiChannel != null && source.apiChannel !== '';
+  const apiChannelInvalid = channelPresent && !API_CHANNELS.includes(source.apiChannel);
   return {
     defaultModel: isPersistableModelId(source.defaultModel) ? source.defaultModel : DEFAULT_GLOBAL_SETTINGS.defaultModel,
     systemInstruction: typeof source.systemInstruction === 'string'
@@ -87,5 +118,11 @@ export function normalizeGlobalSettings(value) {
       density: MOBILE_DENSITIES.includes(mobileDisplay.density) ? mobileDisplay.density : 'standard',
       chatTextSize: CHAT_TEXT_SIZES.includes(mobileDisplay.chatTextSize) ? mobileDisplay.chatTextSize : 'standard',
     },
+    apiChannel: apiChannelInvalid ? null : (channelPresent ? source.apiChannel : 'ai-studio'),
+    ...(apiChannelInvalid ? {
+      apiChannelInvalid: true,
+      rejectedApiChannel: typeof source.apiChannel === 'string' ? source.apiChannel.slice(0, 80) : 'invalid',
+    } : {}),
+    webSearch: source.webSearch === 'off' ? 'off' : 'on',
   };
 }

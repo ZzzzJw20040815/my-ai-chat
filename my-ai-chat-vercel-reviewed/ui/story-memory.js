@@ -188,7 +188,7 @@ async function requestStoryMemoryChunk(payload, fetchImpl) {
 }
 
 export async function runStoryMemoryUpdate({
-  chat, snapshots = [], safetySettings, fetchImpl = fetch, save, onProgress = () => {},
+  chat, snapshots = [], safetySettings, apiChannel, fetchImpl = fetch, save, onProgress = () => {},
 }) {
   const plan = storyMemoryUpdatePlan(chat, snapshots);
   if (plan.upToDate) return { ...plan, updated: false, calls: 0, chunks: 0, snapshots };
@@ -204,6 +204,7 @@ export async function runStoryMemoryUpdate({
     nextMemory = await requestStoryMemoryChunk({
       model: chat.model, chatId: chat.id, anchorId: messages.at(-1).id, messages, existingMemory: nextMemory,
       ...(safetySettings ? { safetySettings } : {}),
+      ...(apiChannel ? { apiChannel } : {}),
     }, fetchImpl);
   }
   if (currentStoryAnchor(chat) !== plan.anchorId || JSON.stringify(storyMemoryConversation(chat)) !== activePathRevision) {

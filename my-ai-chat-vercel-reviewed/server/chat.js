@@ -14,11 +14,23 @@ import { storyRuntimeActionTurn, storyRuntimeSystemInstruction, validateStoryRun
 import {
   GOOGLE_SEARCH_TOOLS, groundingMetadataFromChunk, preferGroundingMetadata, publicGrounding,
 } from '../shared/web-search.js';
+import { InvalidApiChannelError, requestApiChannel } from '../shared/settings.js';
+import { readVertexConfig } from './vertex-auth.js';
+import { vertexChatStream } from './vertex-transport.js';
 
-export const MAX_BODY_BYTES = 256 * 1024;
+// Visible output is a local runaway ceiling, not a model token budget.
+// History fits one capped reply plus one 50k user message. The body cap
+// covers that history at 4 UTF-8 bytes per character, plus settings, and
+// stays under the platform request limit.
+export const MAX_BODY_BYTES = 1536 * 1024;
 export const MAX_MESSAGES = 100;
+export const MAX_VISIBLE_OUTPUT_CHARS = 200000;
+export const MAX_HISTORY_CHARS = MAX_VISIBLE_OUTPUT_CHARS + 50000;
+const ASSISTANT_HISTORY_STATUSES = new Set(['complete', 'error', 'interrupted', 'incomplete', 'blocked']);
 export const ERROR_TEXT = Object.freeze({
   KEY_MISSING: '服务器尚未配置 GEMINI_API_KEY。请在 Vercel Project Settings 中将其添加为 Secret，不要发送到聊天中。',
+  VERTEX_CONFIG: 'Vertex AI 尚未完成服务器配置。请由站点所有者检查项目、区域和凭据，不要把凭据发到聊天中。',
+  VERTEX_AUTH: 'Vertex AI 凭据无法刷新或被拒绝。请由站点所有者检查授权配置。',
   KEY_INVALID: 'Gemini 凭据无效或没有访问权限，请由 Site Owner 检查 Secret 和 Google 项目。',
   RATE_LIMIT: 'Gemini 请求过于频繁或额度不足（429）。请稍后重试，或检查 Google 项目的配额。',
   MODEL_UNAVAILABLE: '所选 Gemini 模型目前不可用，请切换模型或稍后重试。',
@@ -30,7 +42,16 @@ export const ERROR_TEXT = Object.freeze({
   BLOCKED: 'Gemini 未返回可显示的文本，或此回复被安全机制阻止。请调整问题后重试。',
   SAFETY_BLOCKED: '回复被 Gemini 安全设置阻止。',
   TRUNCATED: '回复达到输出长度限制，可继续提问。',
+  OUTPUT_LIMIT: '模型在写出可见文字之前就达到了输出长度限制。请缩短问题或提高输出上限后再试；这次没有可继续的正文。',
 });
+export function clipVisibleText(text, room) {
+  if (typeof text !== 'string' || room <= 0) return '';
+  if (text.length <= room) return text;
+  let end = room;
+  const boundary = text.charCodeAt(end - 1);
+  if (boundary >= 0xD800 && boundary <= 0xDBFF) end -= 1;
+  return end > 0 ? text.slice(0, end) : '';
+}
 const jsonError = (code, status) => Response.json({ error: { code, message: ERROR_TEXT[code] } }, {
   status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' },
 });
@@ -47,20 +68,25 @@ export function classifyError(error) {
 export function validatePayload(payload, authorizedModel = modelMetadata(payload?.model)) {
   if (!payload || !authorizedModel || authorizedModel.id !== payload.model || !Array.isArray(payload.messages) || !payload.messages.length)
     throw new Error('INVALID_REQUEST');
-  const allowedPayloadKeys = new Set(['model', 'messages', 'settings', 'storyMemory', 'styleReferences', 'regenerationReason', 'storyRuntime']);
+  const allowedPayloadKeys = new Set(['model', 'messages', 'settings', 'storyMemory', 'styleReferences', 'regenerationReason', 'storyRuntime', 'apiChannel']);
   if (Object.keys(payload).some(key => !allowedPayloadKeys.has(key))) throw new Error('INVALID_REQUEST');
   if (payload.messages.length > MAX_MESSAGES) throw new Error('CONTEXT_LIMIT');
   const ids = new Set();
   let total = 0;
   const contents = payload.messages.map((message, index) => {
+    const expectedRole = index % 2 ? 'assistant' : 'user';
+    const content = typeof message?.content === 'string' ? message.content : '';
+    const historyStatus = message?.role === 'assistant'
+      ? ASSISTANT_HISTORY_STATUSES.has(message.status)
+      : message?.status === 'complete';
     if (!message || typeof message.id !== 'string' || !message.id || message.id.length > 100 || ids.has(message.id)
-      || message.role !== (index % 2 ? 'assistant' : 'user')
-      || typeof message.content !== 'string' || !message.content.trim() || message.status !== 'complete')
+      || message.role !== expectedRole || !content.trim() || !historyStatus)
       throw new Error('INVALID_REQUEST');
     ids.add(message.id);
-    total += message.content.length;
-    if (message.content.length > 50000 || total > 150000) throw new Error('CONTEXT_LIMIT');
-    return { role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] };
+    total += content.length;
+    const maxContent = message.role === 'assistant' ? MAX_VISIBLE_OUTPUT_CHARS : 50000;
+    if (content.length > maxContent || total > MAX_HISTORY_CHARS) throw new Error('CONTEXT_LIMIT');
+    return { role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: content }] };
   });
   const storyRuntime = validateStoryRuntimeRequest(payload.storyRuntime);
   if (storyRuntime?.action && storyRuntime.action !== 'prepare_story') {
@@ -85,7 +111,9 @@ export function validatePayload(payload, authorizedModel = modelMetadata(payload
   if (storyRuntime) {
     config.systemInstruction = storyRuntimeSystemInstruction(config.systemInstruction || '', storyRuntime);
   }
-  config.tools = GOOGLE_SEARCH_TOOLS.map(tool => ({ googleSearch: { ...tool.googleSearch } }));
+  if (payload.settings?.webSearch !== 'off' && storyRuntime?.mode !== 'writing') {
+    config.tools = GOOGLE_SEARCH_TOOLS.map(tool => ({ googleSearch: { ...tool.googleSearch } }));
+  }
   return { model: payload.model, contents, config };
 }
 function invalidRequest() { throw new Error('INVALID_REQUEST'); }
@@ -113,8 +141,9 @@ export function validateGenerationSettings(value, modelOrMetadata) {
   if (!metadata?.capabilities) invalidRequest();
   if (value === undefined) return {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalidRequest();
-  const allowedSettingsKeys = new Set(['systemInstruction', 'maxOutputTokens', 'thinkingLevel', 'samplingOverrides', 'safetySettings']);
+  const allowedSettingsKeys = new Set(['systemInstruction', 'maxOutputTokens', 'thinkingLevel', 'samplingOverrides', 'safetySettings', 'webSearch']);
   if (Object.keys(value).some(key => !allowedSettingsKeys.has(key))) invalidRequest();
+  if ('webSearch' in value && value.webSearch !== 'on' && value.webSearch !== 'off') invalidRequest();
   const config = {};
   if ('systemInstruction' in value) {
     if (typeof value.systemInstruction !== 'string' || value.systemInstruction.length > MAX_SYSTEM_INSTRUCTION_LENGTH) invalidRequest();
@@ -219,17 +248,31 @@ export async function handleChat(request, env, transport = googleStream, timeout
     return jsonError(error.message === 'CONTEXT_LIMIT' ? 'CONTEXT_LIMIT' : 'INVALID_REQUEST', error.message === 'CONTEXT_LIMIT' ? 413 : 400);
   }
   let params, authorizedModel = modelMetadata(payload.model);
+  let channel;
+  try { channel = requestApiChannel(payload.apiChannel); }
+  catch (error) {
+    if (error instanceof InvalidApiChannelError) return jsonError('INVALID_REQUEST', 400);
+    return jsonError('INVALID_REQUEST', 400);
+  }
+  const vertex = channel === 'vertex';
   try {
     if (authorizedModel) params = validatePayload(payload, authorizedModel);
+    else if (vertex) return jsonError('MODEL_UNAVAILABLE', 502);
     else if (!env.GEMINI_API_KEY?.trim()) return jsonError('INVALID_REQUEST', 400);
   } catch (error) {
     return jsonError(error.message === 'CONTEXT_LIMIT' ? 'CONTEXT_LIMIT' : 'INVALID_REQUEST', error.message === 'CONTEXT_LIMIT' ? 413 : 400);
   }
-  if (!env.GEMINI_API_KEY?.trim()) return jsonError('KEY_MISSING', 503);
-  try {
-    authorizedModel ||= await trustedModelMetadata(payload.model, env.GEMINI_API_KEY, catalogOptions);
+  if (vertex) {
     if (!authorizedModel) return jsonError('MODEL_UNAVAILABLE', 502);
-    params ||= validatePayload(payload, authorizedModel);
+    const vertexConfig = readVertexConfig(env);
+    if (!vertexConfig.ok) return jsonError('VERTEX_CONFIG', 503);
+  } else if (!env.GEMINI_API_KEY?.trim()) return jsonError('KEY_MISSING', 503);
+  try {
+    if (!vertex) {
+      authorizedModel ||= await trustedModelMetadata(payload.model, env.GEMINI_API_KEY, catalogOptions);
+      if (!authorizedModel) return jsonError('MODEL_UNAVAILABLE', 502);
+      params ||= validatePayload(payload, authorizedModel);
+    }
   } catch (error) {
     if (error.message === 'INVALID_REQUEST' || error.message === 'CONTEXT_LIMIT') {
       return jsonError(error.message, error.message === 'CONTEXT_LIMIT' ? 413 : 400);
@@ -248,35 +291,57 @@ export async function handleChat(request, env, transport = googleStream, timeout
     start(controller) {
       const emit = event => { if (!cancelled) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)); };
       void (async () => {
-        let textLength = 0, finishReason, grounding = null;
+        let textLength = 0, finishReason, grounding = null, outputCapped = false;
+        const emitDone = (reason) => emit({
+          type: 'done',
+          notice: reason === 'max_tokens' ? ERROR_TEXT.TRUNCATED : null,
+          completionReason: reason,
+          ...(publicGrounding(grounding) || {}),
+        });
         try {
           abort.signal.throwIfAborted();
           emit({ type: 'start' });
-          const iterator = await transport(env.GEMINI_API_KEY, params, abort.signal);
-          for await (const chunk of iterator) {
-            if (abort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-            const safetyMessage = safetyBlockedFeedback(chunk);
-            if (safetyMessage) throw { code: 'SAFETY_BLOCKED', message: safetyMessage };
-            grounding = preferGroundingMetadata(grounding, groundingMetadataFromChunk(chunk));
-            finishReason = chunk.candidates?.[0]?.finishReason || finishReason;
-            const delta = chunk.text;
-            if (typeof delta === 'string' && delta) {
-              textLength += delta.length;
-              if (textLength > 100000) { abort.abort(); throw { code: 'CONTEXT_LIMIT' }; }
-              emit({ type: 'delta', text: delta });
+          const iterator = vertex
+            ? await vertexChatStream(env, params, abort.signal, catalogOptions.vertex)
+            : await transport(env.GEMINI_API_KEY, params, abort.signal);
+          try {
+            for await (const chunk of iterator) {
+              if (abort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+              const safetyMessage = safetyBlockedFeedback(chunk);
+              if (safetyMessage) throw { code: 'SAFETY_BLOCKED', message: safetyMessage };
+              grounding = preferGroundingMetadata(grounding, groundingMetadataFromChunk(chunk));
+              finishReason = chunk.candidates?.[0]?.finishReason || finishReason;
+              const delta = chunk.text;
+              if (typeof delta === 'string' && delta) {
+                const room = MAX_VISIBLE_OUTPUT_CHARS - textLength;
+                const piece = clipVisibleText(delta, room);
+                if (piece) {
+                  textLength += piece.length;
+                  emit({ type: 'delta', text: piece });
+                }
+                if (piece.length < delta.length) outputCapped = true;
+              }
+              if (outputCapped) {
+                abort.abort();
+                break;
+              }
             }
+          } catch (error) {
+            if (!outputCapped) throw error;
           }
-          if (finishReason === 'SAFETY') throw { code: 'SAFETY_BLOCKED', message: ERROR_TEXT.SAFETY_BLOCKED };
-          if (finishReason && !['STOP', 'MAX_TOKENS'].includes(finishReason)) throw { code: 'BLOCKED' };
-          if (!textLength) throw { code: 'BLOCKED' };
-          emit({
-            type: 'done',
-            notice: finishReason === 'MAX_TOKENS' ? ERROR_TEXT.TRUNCATED : null,
-            completionReason: finishReason === 'MAX_TOKENS' ? 'max_tokens' : 'complete',
-            ...(publicGrounding(grounding) || {}),
-          });
+          if (outputCapped) {
+            if (textLength > 0) emitDone('max_tokens');
+            else emit({ type: 'error', code: 'OUTPUT_LIMIT', message: ERROR_TEXT.OUTPUT_LIMIT });
+          } else if (finishReason === 'MAX_TOKENS' && !textLength) {
+            emit({ type: 'error', code: 'OUTPUT_LIMIT', message: ERROR_TEXT.OUTPUT_LIMIT });
+          } else {
+            if (finishReason === 'SAFETY') throw { code: 'SAFETY_BLOCKED', message: ERROR_TEXT.SAFETY_BLOCKED };
+            if (finishReason && !['STOP', 'MAX_TOKENS'].includes(finishReason)) throw { code: 'BLOCKED' };
+            if (!textLength) throw { code: 'BLOCKED' };
+            emitDone(finishReason === 'MAX_TOKENS' ? 'max_tokens' : 'complete');
+          }
         } catch (error) {
-          const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'SAFETY_BLOCKED', 'CONTEXT_LIMIT'].includes(error?.code) ? error.code : classifyError(error)[0];
+          const code = timedOut ? 'TIMEOUT' : ['BLOCKED', 'SAFETY_BLOCKED', 'CONTEXT_LIMIT', 'OUTPUT_LIMIT', 'VERTEX_CONFIG', 'VERTEX_AUTH', 'TIMEOUT'].includes(error?.code) ? error.code : classifyError(error)[0];
           const safeMessage = code === 'SAFETY_BLOCKED' && error?.message?.startsWith(ERROR_TEXT.SAFETY_BLOCKED)
             ? error.message : ERROR_TEXT[code];
           if (!cancelled) emit({ type: 'error', code, message: safeMessage });

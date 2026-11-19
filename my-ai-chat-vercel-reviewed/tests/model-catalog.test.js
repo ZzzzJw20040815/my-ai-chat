@@ -5,7 +5,7 @@ import { handleChat } from '../server/chat.js';
 import {
   handleModels, isChatModel, resetServerCatalogForTests, sanitizeListedModel, trustedModelMetadata,
 } from '../server/model-catalog.js';
-import { CURATED_MODELS, mergeModelCatalog } from '../shared/models.js';
+import { CURATED_MODELS, mergeModelCatalog, modelMetadata } from '../shared/models.js';
 import { DEFAULT_GLOBAL_SETTINGS, normalizeGlobalSettings } from '../shared/settings.js';
 import { requestSettings } from '../ui/settings.js';
 import {
@@ -44,6 +44,28 @@ test('catalog keeps curated models, accepts generateContent Gemini chat, and app
   const merged = mergeModelCatalog([discovered]);
   assert.deepEqual(merged.slice(0, CURATED_MODELS.length).map(model => model.id), CURATED_MODELS.map(model => model.id));
   assert.equal(merged.at(-1).id, 'gemini-4-flash');
+});
+
+test('discovered Gemini 4 records do not replace curated thinking levels', async () => {
+  const raw = ['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-hydrogen', 'gemini-4-neon'].map(id => ({
+    name: `models/${id}`, displayName: id, description: 'discovered copy',
+    supportedActions: ['generateContent'], outputTokenLimit: 1024, thinking: true,
+  }));
+  const sanitized = raw.map(sanitizeListedModel);
+  for (const model of sanitized) assert.deepEqual(model.capabilities.thinkingLevels, []);
+  const merged = mergeModelCatalog(sanitized);
+  for (const id of ['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-hydrogen', 'gemini-4-neon']) {
+    const matches = merged.filter(model => model.id === id);
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0].source, 'curated');
+    assert.deepEqual(matches[0].capabilities.thinkingLevels, modelMetadata(id).capabilities.thinkingLevels);
+    assert.equal(matches[0].capabilities.outputTokenLimit, 65536);
+    assert.equal(matches[0].capabilities.samplingOverrides, false);
+  }
+  let listed = false;
+  const trusted = await trustedModelMetadata('gemini-4-hydrogen', KEY, { listModels: async () => { listed = true; return raw; } });
+  assert.equal(listed, false);
+  assert.deepEqual(trusted.capabilities.thinkingLevels, ['low', 'medium', 'high', 'xhigh']);
 });
 
 test('specialized, non-Gemini and models without generateContent are filtered', () => {

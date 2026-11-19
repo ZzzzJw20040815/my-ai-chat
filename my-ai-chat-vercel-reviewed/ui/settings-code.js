@@ -1,7 +1,7 @@
 import {
   CHAT_TEXT_SIZES, CONTEXT_LIMITS, MAX_OUTPUT_TOKENS_LIMIT, MAX_SYSTEM_INSTRUCTION_LENGTH,
   MOBILE_DENSITIES, SAFETY_CATEGORIES, SAFETY_MODES, SAFETY_THRESHOLDS, SAMPLING_LIMITS,
-  THINKING_LEVELS, normalizeGlobalSettings,
+  API_CHANNELS, THINKING_LEVELS, WEB_SEARCH_MODES, normalizeGlobalSettings,
 } from '../shared/settings.js';
 import { isPersistableModelId } from '../shared/models.js';
 
@@ -59,9 +59,11 @@ function exportableSettings(settings) {
     contextLimit: normalized.contextLimit,
     maxOutputTokens: normalized.maxOutputTokens,
     thinkingLevel: normalized.thinkingLevel,
+    apiChannel: normalized.apiChannel,
     samplingOverrides: { ...normalized.samplingOverrides },
     safetySettings: { ...normalized.safetySettings },
     mobileDisplay: { ...normalized.mobileDisplay },
+    webSearch: normalized.webSearch,
   };
 }
 
@@ -73,9 +75,11 @@ function validateSettings(source) {
   validateOptional(source, 'maxOutputTokens', value => value === null || (Number.isInteger(value)
     && value > 0 && value <= MAX_OUTPUT_TOKENS_LIMIT));
   validateOptional(source, 'thinkingLevel', value => THINKING_LEVELS.includes(value));
+  validateOptional(source, 'apiChannel', value => API_CHANNELS.includes(value));
+  validateOptional(source, 'webSearch', value => WEB_SEARCH_MODES.includes(value));
 
   const candidate = {};
-  for (const key of ['defaultModel', 'systemInstruction', 'contextLimit', 'maxOutputTokens', 'thinkingLevel']) {
+  for (const key of ['defaultModel', 'systemInstruction', 'contextLimit', 'maxOutputTokens', 'thinkingLevel', 'apiChannel', 'webSearch']) {
     if (has(source, key)) candidate[key] = source[key];
   }
 
@@ -110,6 +114,7 @@ function validateSettings(source) {
 }
 
 export function createSettingsCode({ settings, theme, now = new Date() }) {
+  if (settings?.apiChannelInvalid) throw new SettingsCodeError('INVALID', 'API channel is invalid');
   const safeTheme = THEMES.includes(theme) ? theme : 'dark';
   const envelope = {
     format: SETTINGS_CODE_FORMAT,

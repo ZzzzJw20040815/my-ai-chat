@@ -7,7 +7,7 @@ import {
   CHAT_TEXT_SIZES, DEFAULT_GLOBAL_SETTINGS, GLOBAL_SETTINGS_STORAGE_KEY, MOBILE_DENSITIES, normalizeGlobalSettings,
 } from '../shared/settings.js';
 import { createChat, createMessage, contextFor } from '../ui/state.js';
-import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings } from '../ui/settings.js';
+import { loadGlobalSettings, requestSettings, resetGlobalSettings, saveGlobalSettings, thinkingLevelForModel } from '../ui/settings.js';
 
 const PRO = 'gemini-3.1-pro-preview';
 const FLASH = 'gemini-3.7-flash';
@@ -57,7 +57,7 @@ test('mobile display settings normalize legacy, valid, and malformed preferences
   }
 });
 
-test('context limit trims sent history only and continues excluding interrupted assistants', () => {
+test('context limit trims sent history, keeps an error reply with text, and still excludes a stopped reply', () => {
   const chat = createChat(FLASH);
   for (let index = 0; index < 12; index++) {
     chat.messages.push(createMessage('user', `u${index}`), createMessage('assistant', `a${index}`, FLASH));
@@ -72,7 +72,9 @@ test('context limit trims sent history only and continues excluding interrupted 
   assert.ok(lastTen.length <= 10);
   assert.equal(lastTen[0].role, 'user');
   assert.equal(lastTen.at(-1).content, 'latest');
-  assert.ok(!all.some(message => ['a7', 'a9'].includes(message.content)));
+  assert.ok(!all.some(message => message.content === 'a7' || message.content === 'u7'));
+  assert.ok(all.some(message => message.content === 'a9'));
+  assert.ok(all.some(message => message.content === 'u9'));
   assert.equal(chat.messages.length, 25);
 });
 
@@ -125,10 +127,20 @@ test('client request settings use current model capabilities and fail closed', (
 
   const minimalModel = requestSettings(preferences, modelMetadata('gemini-3.6-flash'));
   assert.equal(minimalModel.thinkingLevel, 'minimal');
+  const hydrogen = modelMetadata('gemini-4-hydrogen');
+  const carbon = modelMetadata('gemini-4-carbon');
+  assert.equal(thinkingLevelForModel('xhigh', hydrogen), 'xhigh');
+  assert.equal(requestSettings({ ...preferences, thinkingLevel: 'xhigh' }, hydrogen).thinkingLevel, 'xhigh');
+  assert.equal(thinkingLevelForModel('xhigh', carbon), 'default');
+  assert.equal(requestSettings({ ...preferences, thinkingLevel: 'xhigh' }, carbon).thinkingLevel, 'default');
+  assert.equal(thinkingLevelForModel('minimal', hydrogen), 'default');
+  assert.equal(requestSettings({ ...preferences, thinkingLevel: 'minimal' }, modelMetadata('gemini-4-argon')).thinkingLevel, 'default');
+  assert.equal(normalizeGlobalSettings({ thinkingLevel: 'xhigh' }).thinkingLevel, 'xhigh');
+  assert.equal(normalizeGlobalSettings({ thinkingLevel: 'extreme' }).thinkingLevel, 'default');
   const missing = requestSettings(preferences, null);
   assert.deepEqual(missing, {
     systemInstruction: '', maxOutputTokens: null, thinkingLevel: 'default',
-    samplingOverrides: { enabled: false }, safetySettings: { mode: 'default' },
+    samplingOverrides: { enabled: false }, safetySettings: { mode: 'default' }, webSearch: 'on',
   });
   const tooLarge = requestSettings({ ...preferences, maxOutputTokens: 65536 }, {
     id: 'gemini-discovered', capabilities: {

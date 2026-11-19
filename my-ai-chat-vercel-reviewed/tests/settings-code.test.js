@@ -47,6 +47,17 @@ test('the full supported Chinese System Instruction length fits the 128 KiB tran
   assert.equal(parseSettingsCode(code).settings.systemInstruction, systemInstruction);
 });
 
+test('xhigh is a portable thinking level and unknown levels are still rejected', () => {
+  const imported = parseSettingsCode(createSettingsCode({ settings: { thinkingLevel: 'xhigh' }, theme: 'dark' }));
+  assert.equal(imported.settings.thinkingLevel, 'xhigh');
+  assert.equal(imported.settings.defaultModel, DEFAULT_GLOBAL_SETTINGS.defaultModel);
+  const base = {
+    format: SETTINGS_CODE_FORMAT, version: 1, exportedAt: new Date().toISOString(),
+    globalSettings: { thinkingLevel: 'unlimited' }, appearance: { theme: 'dark' },
+  };
+  assert.throws(() => parseSettingsCode(utf8Code(base)), SettingsCodeError);
+});
+
 test('default safety mode round-trips without adding custom behavior', () => {
   const imported = parseSettingsCode(createSettingsCode({ settings: DEFAULT_GLOBAL_SETTINGS, theme: 'dark' }));
   assert.deepEqual(imported.settings.safetySettings, DEFAULT_GLOBAL_SETTINGS.safetySettings);
@@ -60,8 +71,8 @@ test('export is an explicit settings whitelist and excludes secrets, chats, Stor
   };
   const envelope = envelopeFrom(createSettingsCode({ settings, theme: 'dark' }));
   assert.deepEqual(Object.keys(envelope.globalSettings).sort(), [
-    'contextLimit', 'defaultModel', 'maxOutputTokens', 'mobileDisplay', 'safetySettings',
-    'samplingOverrides', 'systemInstruction', 'thinkingLevel',
+    'apiChannel', 'contextLimit', 'defaultModel', 'maxOutputTokens', 'mobileDisplay', 'safetySettings',
+    'samplingOverrides', 'systemInstruction', 'thinkingLevel', 'webSearch',
   ]);
   const serialized = JSON.stringify(envelope);
   for (const excluded of ['server-secret', 'client-secret', 'chats', 'storyMemory', 'styleReferences', 'wallpaper', 'activeChatId']) {
@@ -79,6 +90,7 @@ test('missing V1 setting fields use current normalization defaults and unknown f
   const result = parseSettingsCode(code);
   assert.equal(result.settings.systemInstruction, '保留我');
   assert.equal(result.settings.defaultModel, DEFAULT_GLOBAL_SETTINGS.defaultModel);
+  assert.equal(result.settings.webSearch, 'on');
   assert.deepEqual(result.settings.mobileDisplay, DEFAULT_GLOBAL_SETTINGS.mobileDisplay);
   assert.equal(Object.hasOwn(result.settings, 'futureSetting'), false);
   assert.equal({}.polluted, undefined);
@@ -100,6 +112,7 @@ test('malformed codes and invalid known fields are rejected before any caller ca
     utf8Code({ ...base, globalSettings: { samplingOverrides: { temperature: 99 } } }),
     utf8Code({ ...base, globalSettings: { safetySettings: { mode: 'unsafe' } } }),
     utf8Code({ ...base, globalSettings: { mobileDisplay: { density: 'tiny' } } }),
+    utf8Code({ ...base, globalSettings: { webSearch: 'sometimes' } }),
     utf8Code({ ...base, appearance: { theme: 'neon' } }),
   ];
   for (const code of rejected) assert.throws(() => parseSettingsCode(code), SettingsCodeError);

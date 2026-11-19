@@ -44,6 +44,22 @@ export const CURATED_MODELS = Object.freeze([
     id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash-Lite', description: 'Lightweight high-volume tasks · Stable', stage: 'stable',
     source: 'curated', capabilities: curatedCapabilities(['minimal', 'low', 'medium', 'high']),
   },
+  {
+    id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', description: '最强推理 · Stable', stage: 'stable',
+    source: 'curated', capabilities: curatedCapabilities(['low', 'medium', 'high']),
+  },
+  {
+    id: 'gemini-4-argon', name: 'Gemini 4 Argon', description: '均衡效率 · Stable', stage: 'stable',
+    source: 'curated', capabilities: curatedCapabilities(['low', 'medium', 'high']),
+  },
+  {
+    id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', description: 'Thinking low to extra high · Stable', stage: 'stable',
+    source: 'curated', capabilities: curatedCapabilities(['low', 'medium', 'high', 'xhigh']),
+  },
+  {
+    id: 'gemini-4-neon', name: 'Gemini 4 Neon', description: 'Coding, reasoning, and science · Stable', stage: 'stable',
+    source: 'curated', capabilities: curatedCapabilities(['low', 'medium', 'high', 'xhigh']),
+  },
 ]);
 export const MODELS = CURATED_MODELS;
 export const DEFAULT_MODEL = CURATED_MODELS[0].id;

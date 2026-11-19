@@ -106,18 +106,70 @@ test('Vercel Function Stop propagates to Gemini upstream fetch AbortSignal', asy
   assert.equal(signal.aborted,true);
 });
 
+test('Gemini 4 sends XHIGH only for Hydrogen and omits thinking budget and unspecified levels', async t => {
+  withTestKey(t);
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (input, init) => {
+    calls.push(await new Request(input, init).json());
+    return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(sse('ok', true)); controller.close();
+    } }), { headers: { 'Content-Type': 'text/event-stream' } });
+  });
+  const post = (model, settings) => api.fetch(new Request('https://app.example/api/chat', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://app.example' },
+    body: JSON.stringify({
+      model, settings, messages: [{ id: 'u1', role: 'user', content: 'hello', status: 'complete' }],
+    }),
+  }));
+  const hydrogen = await post('gemini-4-hydrogen', { thinkingLevel: 'xhigh' });
+  assert.equal(hydrogen.status, 200);
+  await hydrogen.text();
+  assert.deepEqual(calls.at(-1).generationConfig.thinkingConfig, { thinkingLevel: 'XHIGH' });
+  assert.equal(JSON.stringify(calls.at(-1)).includes('thinkingBudget'), false);
+  assert.equal(JSON.stringify(calls.at(-1)).includes('thinking_budget'), false);
+  for (const model of ['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-hydrogen']) {
+    const response = await post(model, { thinkingLevel: 'default' });
+    assert.equal(response.status, 200);
+    await response.text();
+    const serialized = JSON.stringify(calls.at(-1));
+    assert.equal(calls.at(-1).generationConfig?.thinkingConfig, undefined);
+    assert.equal(serialized.includes('thinkingBudget'), false);
+    assert.equal(serialized.includes('thinking_budget'), false);
+    assert.equal(serialized.includes('thinkingLevel'), false);
+  }
+  for (const [model, level] of [
+    ['gemini-4-carbon', 'xhigh'], ['gemini-4-carbon', 'minimal'],
+    ['gemini-4-argon', 'xhigh'], ['gemini-4-argon', 'minimal'],
+    ['gemini-4-hydrogen', 'minimal'],
+  ]) {
+    const before = calls.length;
+    const response = await post(model, { thinkingLevel: level });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, 'INVALID_REQUEST');
+    assert.equal(calls.length, before);
+  }
+});
+
 test('Vite output is static, keyless and separate from the server function', async t => {
   const previous = process.env.GEMINI_API_KEY;
   delete process.env.GEMINI_API_KEY;
   t.after(() => previous === undefined ? delete process.env.GEMINI_API_KEY : process.env.GEMINI_API_KEY = previous);
-  const html=await readFile('dist/client/index.html','utf8');
-  const assets=await readdir('dist/client/assets');
+  let html, assets;
+  try {
+    html = await readFile('dist/client/index.html', 'utf8');
+    assets = await readdir('dist/client/assets');
+  } catch (error) {
+    if (error?.code === 'ENOENT') assert.fail('请先运行 npm run build 或 npm run verify');
+    throw error;
+  }
   const scripts=assets.filter(name=>name.endsWith('.js'));
   assert.ok(scripts.length);
   const js=(await Promise.all(scripts.map(name=>readFile('dist/client/assets/'+name,'utf8')))).join('\n');
   assert.ok(!html.includes('GEMINI_API_KEY'));
   assert.ok(!js.includes('GEMINI_API_KEY'));
   assert.ok(!js.includes('generateContentStream'));
+  assert.ok(!js.includes('这不是 Gemini 实际回复'));
+  assert.ok(!js.includes('jsdom'));
   const response=await api.fetch(makeRequest()); assert.equal(response.status,503);
   assert.equal((await response.json()).error.code,'KEY_MISSING');
 });

@@ -15,6 +15,10 @@ const expected = [
   ['gemini-3-flash-preview', 'preview', ['minimal', 'low', 'medium', 'high']],
   ['gemini-3.5-flash-lite', 'stable', ['minimal', 'low', 'medium', 'high']],
   ['gemini-3.1-flash-lite', 'stable', ['minimal', 'low', 'medium', 'high']],
+  ['gemini-4-carbon', 'stable', ['low', 'medium', 'high']],
+  ['gemini-4-argon', 'stable', ['low', 'medium', 'high']],
+  ['gemini-4-hydrogen', 'stable', ['low', 'medium', 'high', 'xhigh']],
+  ['gemini-4-neon', 'stable', ['low', 'medium', 'high', 'xhigh']],
 ];
 const testEnv = { GEMINI_API_KEY: 'unit-test-sentinel-not-a-key' };
 
@@ -32,7 +36,7 @@ test('unified model metadata contains every approved API ID and capability', () 
 
 test('capability validation never emits unsupported thinking or Top K settings', () => {
   for (const model of MODELS) {
-    for (const level of ['minimal', 'low', 'medium', 'high']) {
+    for (const level of ['minimal', 'low', 'medium', 'high', 'xhigh']) {
       if (model.capabilities.thinkingLevels.includes(level)) {
         assert.deepEqual(validateGenerationSettings({ thinkingLevel: level }, model.id), {
           thinkingConfig: { thinkingLevel: level.toUpperCase() },
@@ -44,6 +48,33 @@ test('capability validation never emits unsupported thinking or Top K settings',
     assert.throws(() => validateGenerationSettings({
       samplingOverrides: { enabled: true, temperature: 1, topP: 0.95, topK: 40 },
     }, model.id), /INVALID_REQUEST/);
+    const unspecified = validateGenerationSettings({ thinkingLevel: 'default' }, model.id);
+    assert.equal(Object.hasOwn(unspecified, 'thinkingConfig'), false);
+    assert.equal(JSON.stringify(unspecified).includes('thinkingBudget'), false);
+    assert.equal(JSON.stringify(unspecified).includes('thinking_budget'), false);
+  }
+});
+
+test('Gemini 4 accepts only its curated thinking levels and never substitutes another level', () => {
+  const carbon = modelMetadata('gemini-4-carbon');
+  const argon = modelMetadata('gemini-4-argon');
+  const hydrogen = modelMetadata('gemini-4-hydrogen');
+  assert.equal(carbon.capabilities.samplingOverrides, false);
+  assert.equal(argon.capabilities.outputTokenLimit, 65536);
+  assert.equal(hydrogen.capabilities.outputTokenLimit, 65536);
+  assert.deepEqual(validateGenerationSettings({ thinkingLevel: 'xhigh' }, hydrogen.id), {
+    thinkingConfig: { thinkingLevel: 'XHIGH' },
+  });
+  for (const model of [carbon, argon, hydrogen]) {
+    assert.deepEqual(validateGenerationSettings({ thinkingLevel: 'default' }, model.id), {});
+    assert.deepEqual(validateGenerationSettings(undefined, model.id), {});
+  }
+  for (const [model, level] of [
+    [carbon, 'xhigh'], [carbon, 'minimal'],
+    [argon, 'xhigh'], [argon, 'minimal'],
+    [hydrogen, 'minimal'],
+  ]) {
+    assert.throws(() => validateGenerationSettings({ thinkingLevel: level }, model.id), /INVALID_REQUEST/);
   }
 });
 

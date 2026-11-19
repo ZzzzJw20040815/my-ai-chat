@@ -1,5 +1,5 @@
 import {
-  DEFAULT_GLOBAL_SETTINGS, GLOBAL_SETTINGS_STORAGE_KEY, normalizeGlobalSettings,
+  DEFAULT_GLOBAL_SETTINGS, GLOBAL_SETTINGS_STORAGE_KEY, THINKING_LEVELS, normalizeGlobalSettings,
 } from '../shared/settings.js';
 
 export function loadGlobalSettings(storage = localStorage) {
@@ -12,21 +12,32 @@ export function loadGlobalSettings(storage = localStorage) {
 }
 
 export function saveGlobalSettings(settings, storage = localStorage) {
-  const normalized = normalizeGlobalSettings(settings);
-  try { storage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, JSON.stringify(normalized)); } catch {}
-  return normalized;
+  const normalized = normalizeGlobalSettings(settings?.apiChannelInvalid ? { ...settings, apiChannel: undefined } : settings);
+  const stored = settings?.apiChannelInvalid
+    ? { ...normalized, apiChannel: settings.rejectedApiChannel || 'invalid' }
+    : normalized;
+  delete stored.apiChannelInvalid;
+  delete stored.rejectedApiChannel;
+  try { storage.setItem(GLOBAL_SETTINGS_STORAGE_KEY, JSON.stringify(stored)); } catch {}
+  return settings?.apiChannelInvalid
+    ? { ...normalized, apiChannel: null, apiChannelInvalid: true, rejectedApiChannel: stored.apiChannel }
+    : normalized;
 }
 
 export function resetGlobalSettings(storage = localStorage) {
   return saveGlobalSettings(DEFAULT_GLOBAL_SETTINGS, storage);
 }
 
+export function thinkingLevelForModel(thinkingLevel, model) {
+  const level = THINKING_LEVELS.includes(thinkingLevel) ? thinkingLevel : 'default';
+  const supported = Array.isArray(model?.capabilities?.thinkingLevels) ? model.capabilities.thinkingLevels : [];
+  return level !== 'default' && supported.includes(level) ? level : 'default';
+}
+
 export function requestSettings(settings, model = null) {
   const normalized = normalizeGlobalSettings(settings);
   const capabilities = model?.capabilities && typeof model.capabilities === 'object' ? model.capabilities : null;
-  const supportedThinkingLevels = Array.isArray(capabilities?.thinkingLevels) ? capabilities.thinkingLevels : [];
-  const thinkingLevel = normalized.thinkingLevel !== 'default' && supportedThinkingLevels.includes(normalized.thinkingLevel)
-    ? normalized.thinkingLevel : 'default';
+  const thinkingLevel = thinkingLevelForModel(normalized.thinkingLevel, model);
   const samplingEnabled = capabilities?.samplingOverrides === true && normalized.samplingOverrides.enabled;
   const outputTokenLimit = Number.isInteger(capabilities?.outputTokenLimit) && capabilities.outputTokenLimit > 0
     ? capabilities.outputTokenLimit : null;
@@ -45,5 +56,6 @@ export function requestSettings(settings, model = null) {
     thinkingLevel,
     samplingOverrides,
     safetySettings: customSafety ? { ...normalized.safetySettings, mode: 'custom' } : { mode: 'default' },
+    webSearch: normalized.webSearch,
   };
 }
