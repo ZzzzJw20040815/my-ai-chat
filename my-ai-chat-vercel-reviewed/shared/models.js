@@ -56,6 +56,10 @@ export const CURATED_MODELS = Object.freeze([
     id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', description: 'Thinking low to extra high · Stable', stage: 'stable',
     source: 'curated', capabilities: curatedCapabilities(['low', 'medium', 'high', 'xhigh']),
   },
+  {
+    id: 'gemini-4-neon', name: 'Gemini 4 Neon', description: 'Coding, reasoning, and science · Stable', stage: 'stable',
+    source: 'curated', capabilities: curatedCapabilities(['low', 'medium', 'high', 'xhigh']),
+  },
 ]);
 export const MODELS = CURATED_MODELS;
 export const DEFAULT_MODEL = CURATED_MODELS[0].id;

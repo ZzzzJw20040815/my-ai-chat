@@ -47,14 +47,14 @@ test('catalog keeps curated models, accepts generateContent Gemini chat, and app
 });
 
 test('discovered Gemini 4 records do not replace curated thinking levels', async () => {
-  const raw = ['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-hydrogen'].map(id => ({
+  const raw = ['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-hydrogen', 'gemini-4-neon'].map(id => ({
     name: `models/${id}`, displayName: id, description: 'discovered copy',
     supportedActions: ['generateContent'], outputTokenLimit: 1024, thinking: true,
   }));
   const sanitized = raw.map(sanitizeListedModel);
   for (const model of sanitized) assert.deepEqual(model.capabilities.thinkingLevels, []);
   const merged = mergeModelCatalog(sanitized);
-  for (const id of ['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-hydrogen']) {
+  for (const id of ['gemini-4-carbon', 'gemini-4-argon', 'gemini-4-hydrogen', 'gemini-4-neon']) {
     const matches = merged.filter(model => model.id === id);
     assert.equal(matches.length, 1);
     assert.equal(matches[0].source, 'curated');

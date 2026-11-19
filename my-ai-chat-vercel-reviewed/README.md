@@ -17,6 +17,7 @@
 - `gemini-4-carbon`：low、medium、high
 - `gemini-4-argon`：low、medium、high
 - `gemini-4-hydrogen`：low、medium、high、xhigh
+- `gemini-4-neon`：low、medium、high、xhigh。官方默认为 high，未选择档位时仍不在请求里写死。
 
 未选择档位时不写 `thinkingLevel`，也不写 `thinkingBudget`。不支持的档位返回 `INVALID_REQUEST`，不会被改写成另一个具体档。
 

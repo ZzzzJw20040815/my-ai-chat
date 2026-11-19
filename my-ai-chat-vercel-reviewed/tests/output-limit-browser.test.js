@@ -225,11 +225,14 @@ async function waitFor(check, timeout = 15000) {
   throw new Error('Timed out waiting for Chrome');
 }
 
-test('Chrome keeps capped output and does not present thought-only exhaustion as a safety block', { timeout: 90000 }, async () => {
-  await stat(new URL('../dist/client/index.html', import.meta.url));
-  const app = await startApp();
+test('Chrome keeps capped output and does not present thought-only exhaustion as a safety block', { timeout: 180000 }, async () => {
+  const { acquireChromeLock, releaseChromeLock } = await import('./chrome-lock.js');
+  await acquireChromeLock();
+  let app;
   let browser;
   try {
+    await stat(new URL('../dist/client/index.html', import.meta.url));
+    app = await startApp();
     browser = await launchChrome();
     await browser.goto(`${app.origin}/`);
     await browser.evaluate(`new Promise(resolve => {
@@ -313,6 +316,8 @@ test('Chrome keeps capped output and does not present thought-only exhaustion as
     assert.equal(app.signal().aborted, true);
   } finally {
     await browser?.close();
-    await app.close();
+    await app?.close();
+    const { releaseChromeLock } = await import('./chrome-lock.js');
+    await releaseChromeLock();
   }
 });

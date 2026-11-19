@@ -14,6 +14,7 @@ import { resetVertexAuthForTests } from '../server/vertex-auth.js';
 import { createBackup } from '../ui/backup.js';
 import { createChat, createMessage } from '../ui/state.js';
 import { SEARCH_SUGGESTION_ATTACK } from './search-suggestion-sample.js';
+import { acquireChromeLock, releaseChromeLock } from './chrome-lock.js';
 
 const CHROME = process.env.CHROME_PATH || '/usr/bin/google-chrome';
 const ROOT = new URL('../dist/client/', import.meta.url);
@@ -346,10 +347,12 @@ async function waitFor(check, timeout = 30000) {
 }
 
 test('Chrome exercises original UI, both providers, search, and continuation against mocked upstream', { timeout: 180000 }, async () => {
-  await stat(new URL('../dist/client/index.html', import.meta.url));
-  const app = await startApp();
+  await acquireChromeLock();
+  let app;
   let browser;
   try {
+    await stat(new URL('../dist/client/index.html', import.meta.url));
+    app = await startApp();
     browser = await launchChrome();
     assert.match(browser.browserVersion, /Chrome\/157/);
     await browser.viewport(1280, 800);
@@ -524,9 +527,10 @@ test('Chrome exercises original UI, both providers, search, and continuation aga
     await waitFor(() => browser.evaluate(`document.querySelector('#sendButton').getAttribute('aria-label') === 'Send message'`));
     await browser.evaluate(`document.querySelector('[data-action="variant-prev"]').click()`);
     await waitFor(() => see('回复：变体测试'));
-    await browser.evaluate(`document.querySelector('.message.user [data-action="edit"]').click()`);
     await browser.evaluate(`(() => {
+      document.querySelector('.message.user [data-action="edit"]').click();
       const editor = document.querySelector('.edit-area textarea');
+      if (!editor) throw new Error('edit area missing');
       editor.value = '另一条用户分支';
       editor.dispatchEvent(new Event('input', { bubbles: true }));
       document.querySelector('[data-action="edit-save"]').click();
@@ -560,6 +564,36 @@ test('Chrome exercises original UI, both providers, search, and continuation aga
     assert.equal(JSON.stringify(vertexCall.body).includes('thinkingBudget'), false);
     assert.deepEqual(vertexCall.body.tools, [{ googleSearch: {} }]);
     assert.equal(vertexCall.url.includes(GEMINI_KEY), false);
+
+    await browser.viewport(375, 812);
+    await browser.evaluate(`(() => {
+      document.querySelector('#modelButton').click();
+      document.querySelector('[data-model="gemini-4-neon"]').click();
+    })()`);
+    await waitFor(() => browser.evaluate(`document.querySelector('#currentModel').textContent === 'Gemini 4 Neon'`));
+    const neonLayout = await browser.evaluate(`({
+      overflow: document.documentElement.scrollWidth - window.innerWidth,
+      model: document.querySelector('#currentModel').textContent,
+      channel: document.querySelector('#apiChannelToolbar').value,
+    })`);
+    assert.equal(neonLayout.model, 'Gemini 4 Neon');
+    assert.equal(neonLayout.channel, 'vertex');
+    assert.ok(neonLayout.overflow <= 1, JSON.stringify(neonLayout));
+    await browser.evaluate(`document.querySelector('#closeSidebar')?.click()`);
+    await browser.shot('neon-vertex-375.png');
+    const neonCount = await sendText('Neon 请求');
+    await waitFor(() => see('回复：Neon 请求'));
+    const neonPayload = await waitFor(() => app.chatPayloads.length > neonCount && lastPayload('Neon 请求'));
+    assert.equal(neonPayload.model, 'gemini-4-neon');
+    assert.equal(neonPayload.apiChannel, 'vertex');
+    assert.equal(neonPayload.settings.thinkingLevel, 'xhigh');
+    const neonCall = lastModel();
+    assert.match(neonCall.url, /\/models\/gemini-4-neon:streamGenerateContent\?alt=sse$/);
+    assert.equal(neonCall.url.startsWith('https://aiplatform.googleapis.com/v1beta1/'), true);
+    assert.equal(neonCall.body.generationConfig.thinkingConfig.thinkingLevel, 'XHIGH');
+    assert.equal(JSON.stringify(neonCall.body).includes('thinkingBudget'), false);
+    assert.deepEqual(neonCall.body.tools, [{ googleSearch: {} }]);
+    await browser.viewport(1280, 800);
 
     await browser.evaluate(`document.querySelector('[data-story-runtime-action="prepare_story"]').click()`);
     await waitFor(() => see('构思中'));
@@ -640,6 +674,7 @@ test('Chrome exercises original UI, both providers, search, and continuation aga
     assert.equal(JSON.stringify(app.chatPayloads).includes(GEMINI_KEY), false);
   } finally {
     await browser?.close();
-    await app.close();
+    await app?.close();
+    await releaseChromeLock();
   }
 });

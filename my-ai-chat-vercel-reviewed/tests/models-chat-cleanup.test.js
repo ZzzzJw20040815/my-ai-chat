@@ -18,6 +18,7 @@ const expected = [
   ['gemini-4-carbon', 'stable', ['low', 'medium', 'high']],
   ['gemini-4-argon', 'stable', ['low', 'medium', 'high']],
   ['gemini-4-hydrogen', 'stable', ['low', 'medium', 'high', 'xhigh']],
+  ['gemini-4-neon', 'stable', ['low', 'medium', 'high', 'xhigh']],
 ];
 const testEnv = { GEMINI_API_KEY: 'unit-test-sentinel-not-a-key' };
 
